@@ -71,7 +71,7 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
          - "./secrets/.pgpass:/secrets/.pgpass:ro"   # mode 0600
          - "./dumps:/dumps"
        tmpfs:
-         - "/tmp:size=16m,mode=0700"
+         - "/tmp:size=16m,mode=1777"   # 1777 so the non-root user can write the health marker
    ```
 
 4. Trigger a backup:

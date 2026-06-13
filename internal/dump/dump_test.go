@@ -136,19 +136,19 @@ func TestStageAndReplaceContextTimeout(t *testing.T) {
 
 func TestClassify(t *testing.T) {
 	tests := []struct {
-		name     string
-		exitCode int
 		ctxErr   error
-		kind     FailKind
+		name     string
 		want     Reason
+		exitCode int
+		kind     FailKind
 	}{
-		{"deadline wins", 1, context.DeadlineExceeded, FailConnect, ReasonTimeout},
-		{"cancel wins", 1, context.Canceled, FailAuth, ReasonKilled},
-		{"connect", 0, nil, FailConnect, ReasonConnectError},
-		{"auth", 0, nil, FailAuth, ReasonAuthError},
-		{"version", 0, nil, FailVersion, ReasonVersionMismatch},
-		{"generic exit", 2, nil, FailNone, ReasonPGError},
-		{"clean none", 0, nil, FailNone, ReasonOther},
+		{name: "deadline wins", exitCode: 1, ctxErr: context.DeadlineExceeded, kind: FailConnect, want: ReasonTimeout},
+		{name: "cancel wins", exitCode: 1, ctxErr: context.Canceled, kind: FailAuth, want: ReasonKilled},
+		{name: "connect", exitCode: 0, ctxErr: nil, kind: FailConnect, want: ReasonConnectError},
+		{name: "auth", exitCode: 0, ctxErr: nil, kind: FailAuth, want: ReasonAuthError},
+		{name: "version", exitCode: 0, ctxErr: nil, kind: FailVersion, want: ReasonVersionMismatch},
+		{name: "generic exit", exitCode: 2, ctxErr: nil, kind: FailNone, want: ReasonPGError},
+		{name: "clean none", exitCode: 0, ctxErr: nil, kind: FailNone, want: ReasonOther},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

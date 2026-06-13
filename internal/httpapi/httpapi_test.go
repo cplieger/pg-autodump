@@ -16,9 +16,9 @@ import (
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
 // release after signalling entered, so single-flight (429) can be exercised.
 type stubPG struct {
-	exit    int
 	entered chan struct{}
 	release chan struct{}
+	exit    int
 }
 
 func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {

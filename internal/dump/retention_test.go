@@ -13,12 +13,12 @@ func TestDumpFileName(t *testing.T) {
 	ts := time.Date(2026, 6, 13, 22, 30, 5, 0, time.UTC)
 	tests := []struct {
 		name string
-		keep int
 		want string
+		keep int
 	}{
-		{"keep_default_stable", 1, "app.dump"},
-		{"keep_zero_treated_as_stable", 0, "app.dump"},
-		{"keep_many_timestamped", 3, "app.20260613T223005Z.dump"},
+		{name: "keep_default_stable", keep: 1, want: "app.dump"},
+		{name: "keep_zero_treated_as_stable", keep: 0, want: "app.dump"},
+		{name: "keep_many_timestamped", keep: 3, want: "app.20260613T223005Z.dump"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

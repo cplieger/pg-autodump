@@ -4,11 +4,11 @@ import "testing"
 
 func TestParseSpecs(t *testing.T) {
 	tests := []struct {
+		check       func(t *testing.T, specs []DBSpec)
 		name        string
 		raw         string
+		wantInvalid []bool
 		wantCount   int
-		wantInvalid []bool // per spec, in order
-		check       func(t *testing.T, specs []DBSpec)
 	}{
 		{
 			name:        "three-field defaults port",

@@ -1,0 +1,7 @@
+# Built CGI server binary (compiled from cmd/cgiserver)
+/cgiserver
+
+# Kiro skill artifacts (code-review, refactor, steering-maintenance)
+**/.code-review/
+**/.refactor/
+**/.steering-maintenance/

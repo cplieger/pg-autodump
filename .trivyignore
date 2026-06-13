@@ -1,0 +1,9 @@
+# Suppress AVD-DS-0002 (Image user should not be 'root') — db-dumper talks to
+# the host docker daemon via the docker.sock bind-mount. To access the socket
+# without root, the container user must be in a group whose GID matches the
+# host's docker group GID, which varies per-host and breaks portability.
+# Running as root inside the container is acceptable here because:
+#   - the only privileged capability required is access to the docker socket,
+#   - the host owns that socket and gates which clients can mount it,
+#   - the container does not expose root-privileged ports (9847 is unprivileged).
+AVD-DS-0002

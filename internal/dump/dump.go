@@ -1,0 +1,200 @@
+package dump
+
+import (
+	"context"
+	"log/slog"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/cplieger/pg-autodump/internal/spec"
+)
+
+// probeTimeoutCap bounds the per-database reachability probe so a dead host
+// classifies as connect_error quickly instead of consuming the dump budget.
+const probeTimeoutCap = 10 * time.Second
+
+// Params configures an Orchestrator. The pg boundary and recorder are
+// injected; the rest are validated config values.
+type Params struct {
+	PG          PGTool
+	Recorder    Recorder // may be nil (metrics disabled)
+	Logger      *slog.Logger
+	Now         func() time.Time // injectable clock; defaults to time.Now
+	DumpDir     string
+	Specs       []spec.DBSpec
+	DumpTimeout time.Duration
+	Concurrency int
+	Keep        int
+	FreeKBWarn  int64
+}
+
+// Orchestrator owns a dump run: split valid from invalid specs, drive the
+// bounded worker pool, and return one Result per spec in spec order.
+type Orchestrator struct {
+	pg          PGTool
+	rec         Recorder
+	log         *slog.Logger
+	now         func() time.Time
+	dumpDir     string
+	specs       []spec.DBSpec
+	dumpTimeout time.Duration
+	concurrency int
+	keep        int
+	freeKBWarn  int64
+	inFlight    atomic.Int64
+}
+
+// New builds an Orchestrator from validated params.
+func New(p *Params) *Orchestrator {
+	now := p.Now
+	if now == nil {
+		now = time.Now
+	}
+	log := p.Logger
+	if log == nil {
+		log = slog.Default()
+	}
+	return &Orchestrator{
+		pg:          p.PG,
+		rec:         p.Recorder,
+		log:         log,
+		now:         now,
+		dumpDir:     p.DumpDir,
+		specs:       p.Specs,
+		dumpTimeout: p.DumpTimeout,
+		concurrency: p.Concurrency,
+		keep:        max(1, p.Keep),
+		freeKBWarn:  p.FreeKBWarn,
+	}
+}
+
+// Run executes every spec and returns one Result per database in spec order.
+// Invalid and duplicate specs yield a Result without being dispatched; valid
+// specs run through the bounded worker pool. It never returns a partial slice.
+func (o *Orchestrator) Run(ctx context.Context) []Result {
+	o.checkDiskSpace()
+
+	results := make([]Result, len(o.specs))
+	valid := make([]spec.DBSpec, 0, len(o.specs))
+	validPos := make([]int, 0, len(o.specs))
+
+	for i, s := range o.specs {
+		if s.Invalid != "" {
+			results[i] = invalidResult(&s)
+			continue
+		}
+		valid = append(valid, s)
+		validPos = append(validPos, i)
+	}
+
+	if len(valid) > 0 {
+		n := clamp(o.concurrency, 1, len(valid))
+		sub := runPool(ctx, n, valid, o.dumpOne)
+		for j, r := range sub {
+			results[validPos[j]] = r
+		}
+	}
+	return results
+}
+
+// dumpOne probes one database, then (on success) stages, verifies, and
+// atomically replaces its dump file. It records metrics and logs the outcome.
+// Safe for concurrent use across the worker pool.
+func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
+	conn := Conn{Host: s.Host, Port: s.Port, DBName: s.DBName, User: s.User}
+	start := o.now()
+
+	o.setInFlight(o.inFlight.Add(1))
+	defer func() { o.setInFlight(o.inFlight.Add(-1)) }()
+
+	probeCtx, cancelProbe := context.WithTimeout(ctx, min(probeTimeoutCap, o.dumpTimeout))
+	major, kind, perr := o.pg.Probe(probeCtx, conn)
+	probeErr := probeCtx.Err()
+	cancelProbe()
+
+	if kind != FailNone || perr != nil {
+		reason := classify(0, probeErr, kind)
+		detail := string(reason)
+		if reason == ReasonOther && perr != nil {
+			detail = perr.Error()
+		}
+		return o.finish(&Result{
+			Host: s.Host, DBName: s.DBName, Reason: reason,
+			Detail: detail, ServerVersion: major, Duration: o.now().Sub(start),
+		})
+	}
+
+	dumpCtx, cancelDump := context.WithTimeout(ctx, o.dumpTimeout)
+	defer cancelDump()
+
+	res := stageAndReplace(dumpCtx, o.pg, o.dumpDir, dumpFileName(s.DBName, o.keep, start), conn)
+	res.Host = s.Host
+	res.DBName = s.DBName
+	res.ServerVersion = major
+	res.Duration = o.now().Sub(start)
+
+	if res.Reason == ReasonOK && o.keep > 1 {
+		if removed, err := pruneOldDumps(o.dumpDir, s.DBName, o.keep); err != nil {
+			o.log.Warn("dump retention prune failed", "db", s.DBName, "keep", o.keep, "err", err)
+		} else if removed > 0 {
+			o.log.Info("pruned old dumps", "db", s.DBName, "keep", o.keep, "removed", removed)
+		}
+	}
+	return o.finish(&res)
+}
+
+// finish records metrics and logs a result, then returns it (by value) so
+// callers can `return o.finish(&res)`.
+func (o *Orchestrator) finish(r *Result) Result {
+	if o.rec != nil {
+		o.rec.RecordResult(r)
+	}
+	o.log.Log(context.Background(), levelFor(r.Reason), "dump "+string(r.Reason),
+		"host", r.Host, "db", r.DBName, "reason", string(r.Reason),
+		"bytes", r.Bytes, "duration_s", r.Duration.Seconds())
+	return *r
+}
+
+func (o *Orchestrator) setInFlight(n int64) {
+	if o.rec != nil {
+		o.rec.SetInFlight(int(n))
+	}
+}
+
+// invalidResult builds the Result for a spec that failed validation, using the
+// raw token as the database label when the parsed name is empty.
+func invalidResult(s *spec.DBSpec) Result {
+	reason := ReasonInvalid
+	if strings.Contains(s.Invalid, "duplicate") {
+		reason = ReasonDuplicate
+	}
+	db := s.DBName
+	if db == "" {
+		db = s.Raw
+	}
+	return Result{Host: s.Host, DBName: db, Reason: reason, Detail: s.Invalid}
+}
+
+// levelFor maps a Reason to the slog level its log line should use.
+func levelFor(r Reason) slog.Level {
+	switch r {
+	case ReasonOK:
+		return slog.LevelInfo
+	case ReasonInvalid, ReasonDuplicate, ReasonSkipped:
+		return slog.LevelWarn
+	default:
+		return slog.LevelError
+	}
+}
+
+// clamp constrains v to [lo, hi].
+func clamp(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}

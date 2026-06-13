@@ -1,0 +1,18 @@
+---
+# Minimal pg-autodump example. The image runs unprivileged and ships its own
+# HEALTHCHECK. See the README for the full config reference, the .pgpass /
+# backup-role setup, triggering, and hardened deployment (read_only, cap_drop,
+# AUTH_TOKEN, tmpfs).
+services:
+  pg-autodump:
+    image: ghcr.io/cplieger/pg-autodump:latest
+    container_name: pg-autodump
+    restart: unless-stopped
+    environment:
+      # Space-separated host[:port]:dbname:user tuples (port defaults to 5432).
+      DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"
+    ports:
+      - "127.0.0.1:9847:9847"
+    volumes:
+      - ./secrets/.pgpass:/secrets/.pgpass:ro   # mode 0600
+      - ./dumps:/dumps

@@ -1,0 +1,7 @@
+# Syft configuration for pg-autodump SBOM generation.
+#
+# pg-autodump is a single Go binary on an alpine base with the postgresql
+# client + tini added via apk. The honest inventory is this module's own Go
+# dependencies (stdlib plus the cplieger atomicfile/health/metrics libraries)
+# and the base image's apk packages. No catalogers are deselected: the Go
+# modules ARE pg-autodump's supply chain and belong in the SBOM.

@@ -1,13 +1,14 @@
 # pg-autodump
 
-[![CI](https://github.com/cplieger/pg-autodump/actions/workflows/ci.yaml/badge.svg)](https://github.com/cplieger/pg-autodump/actions/workflows/ci.yaml)
-[![GitHub release](https://img.shields.io/github/v/release/cplieger/pg-autodump)](https://github.com/cplieger/pg-autodump/releases)
 [![Image Size](https://ghcr-badge.egpl.dev/cplieger/pg-autodump/size)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/pg-autodump/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/pg-autodump)
-[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/coverage.json)](https://github.com/cplieger/pg-autodump/actions/workflows/coverage.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/pg-autodump)](https://goreportcard.com/report/github.com/cplieger/pg-autodump)
+[![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/coverage.json)](https://github.com/cplieger/pg-autodump/actions/workflows/coverage.yml)
+[![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/mutation.json)](https://github.com/cplieger/pg-autodump/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13215/badge)](https://www.bestpractices.dev/projects/13215)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/pg-autodump/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/pg-autodump)
+[![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/pg-autodump/releases)
 
 On-demand PostgreSQL logical-backup sidecar. Trigger it, and it writes a verified dump per database for your real backup tool to collect.
 

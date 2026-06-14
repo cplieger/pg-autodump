@@ -76,11 +76,9 @@ func runServer(getenv func(string) string) int {
 		marker.Set(true)
 	}
 
-	m := obs.NewMetrics()
 	guard := &dump.Guard{}
 	orch := dump.New(&dump.Params{
 		PG:          pg.New(cfg.PGPassFile, cfg.StmtTimeout),
-		Recorder:    m,
 		Logger:      log,
 		DumpDir:     cfg.DumpDir,
 		Specs:       cfg.Specs,
@@ -89,13 +87,12 @@ func runServer(getenv func(string) string) int {
 		Keep:        cfg.DumpKeep,
 		FreeKBWarn:  cfg.FreeKBWarn,
 	})
-	trigger := httpapi.NewTrigger(guard, orch, m, log)
+	trigger := httpapi.NewTrigger(guard, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{
 		ListenAddr: cfg.ListenAddr,
 		AuthToken:  cfg.AuthToken,
 		Trigger:    trigger,
 		Health:     marker,
-		Metrics:    m.Handler(),
 		Log:        log,
 	})
 

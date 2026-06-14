@@ -11,7 +11,7 @@ database in `DB_SPECS` **over the network** as a least-privilege role,
 runs `pg_dump --format=custom`, verifies each dump, and atomically
 replaces the previous `<dbname>.dump` in a shared volume. There is no
 shell, no CGI, and no Docker socket — the runtime surfaces are the HTTP
-server (`POST /dump`, `GET /healthz`, `GET /metrics`), the `/dumps`
+server (`POST /dump`, `GET /healthz`), the `/dumps`
 volume, and a read-only `.pgpass`.
 
 The repo, image, Go module, and binary are all `pg-autodump`
@@ -33,11 +33,11 @@ The real work lives under `internal/`:
   returns `ErrNoDeadline` for a deadline-less context.
 - `internal/dump` — the core: orchestrator, bounded worker pool,
   single-flight guard, verify-before-replace, the result/reason taxonomy.
-  It defines the narrow interfaces it consumes (`PGTool`, `Recorder`) so
+  It defines the narrow interface it consumes (`PGTool`) so
   it is testable against fakes with no network/daemon.
 - `internal/httpapi` — routes, handlers, bearer auth, the shared `Trigger`.
-- `internal/obs` — adapters for the `metrics` registry and the `health`
-  preflight.
+- `internal/obs` — the startup preflight (binaries/dir/specs) that
+  decides the health-marker state.
 
 If you add a new `internal/<pkg>/`, the `Dockerfile` builder must
 `COPY internal/ internal/` — there is no per-repo path list.

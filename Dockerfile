@@ -35,7 +35,6 @@ COPY --from=builder /pg-autodump /usr/local/bin/pg-autodump
 # network reach to the databases, a read-only .pgpass, and a writable /dumps.
 USER 65532:65532
 
-EXPOSE 9847
 # Liveness via the binary's own probe (file marker): no shell, no curl, no port.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=10s \
     CMD ["pg-autodump", "health"]

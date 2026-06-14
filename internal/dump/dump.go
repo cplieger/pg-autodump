@@ -1,10 +1,15 @@
+// Package dump is the core of pg-autodump: it orchestrates one dump run,
+// drives the pg boundary to stream a network pg_dump per database, verifies
+// each dump locally, atomically replaces the previous good file, and reports
+// a typed result per database. It defines the narrow interface it consumes
+// (PGTool) so the logic is testable against fakes with no network,
+// no daemon, and no real filesystem dependencies beyond a temp dir.
 package dump
 
 import (
 	"context"
 	"log/slog"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/spec"
@@ -14,11 +19,10 @@ import (
 // classifies as connect_error quickly instead of consuming the dump budget.
 const probeTimeoutCap = 10 * time.Second
 
-// Params configures an Orchestrator. The pg boundary and recorder are
-// injected; the rest are validated config values.
+// Params configures an Orchestrator. The pg boundary is injected; the rest are
+// validated config values.
 type Params struct {
 	PG          PGTool
-	Recorder    Recorder // may be nil (metrics disabled)
 	Logger      *slog.Logger
 	Now         func() time.Time // injectable clock; defaults to time.Now
 	DumpDir     string
@@ -33,7 +37,6 @@ type Params struct {
 // bounded worker pool, and return one Result per spec in spec order.
 type Orchestrator struct {
 	pg          PGTool
-	rec         Recorder
 	log         *slog.Logger
 	now         func() time.Time
 	dumpDir     string
@@ -42,7 +45,6 @@ type Orchestrator struct {
 	concurrency int
 	keep        int
 	freeKBWarn  int64
-	inFlight    atomic.Int64
 }
 
 // New builds an Orchestrator from validated params.
@@ -57,7 +59,6 @@ func New(p *Params) *Orchestrator {
 	}
 	return &Orchestrator{
 		pg:          p.PG,
-		rec:         p.Recorder,
 		log:         log,
 		now:         now,
 		dumpDir:     p.DumpDir,
@@ -99,14 +100,11 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 }
 
 // dumpOne probes one database, then (on success) stages, verifies, and
-// atomically replaces its dump file. It records metrics and logs the outcome.
-// Safe for concurrent use across the worker pool.
+// atomically replaces its dump file. It logs the outcome. Safe for concurrent
+// use across the worker pool.
 func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	conn := Conn{Host: s.Host, Port: s.Port, DBName: s.DBName, User: s.User}
 	start := o.now()
-
-	o.setInFlight(o.inFlight.Add(1))
-	defer func() { o.setInFlight(o.inFlight.Add(-1)) }()
 
 	probeCtx, cancelProbe := context.WithTimeout(ctx, min(probeTimeoutCap, o.dumpTimeout))
 	major, kind, perr := o.pg.Probe(probeCtx, conn)
@@ -144,22 +142,13 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	return o.finish(&res)
 }
 
-// finish records metrics and logs a result, then returns it (by value) so
-// callers can `return o.finish(&res)`.
+// finish logs a result, then returns it (by value) so callers can
+// `return o.finish(&res)`.
 func (o *Orchestrator) finish(r *Result) Result {
-	if o.rec != nil {
-		o.rec.RecordResult(r)
-	}
 	o.log.Log(context.Background(), levelFor(r.Reason), "dump "+string(r.Reason),
 		"host", r.Host, "db", r.DBName, "reason", string(r.Reason),
 		"bytes", r.Bytes, "duration_s", r.Duration.Seconds())
 	return *r
-}
-
-func (o *Orchestrator) setInFlight(n int64) {
-	if o.rec != nil {
-		o.rec.SetInFlight(int(n))
-	}
 }
 
 // invalidResult builds the Result for a spec that failed validation, using the

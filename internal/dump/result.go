@@ -61,15 +61,6 @@ type PGTool interface {
 	VerifyTOC(ctx context.Context, path string) error
 }
 
-// Recorder is the narrow metrics sink the orchestrator records through. The
-// concrete implementation lives in internal/obs; tests supply a fake or nil.
-type Recorder interface {
-	// RecordResult records one completed per-database outcome.
-	RecordResult(r *Result)
-	// SetInFlight reports the current number of dumps actively running.
-	SetInFlight(n int)
-}
-
 // Reason is the closed dump-result taxonomy.
 type Reason string
 

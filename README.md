@@ -31,7 +31,7 @@ known-good backup.
 - **Verify before replace** — each dump stages to a temp file, passes a non-empty and `pg_restore --list` (TOC) check, then atomically renames into place. The last known-good dump survives any failure (`atomicfile` adds the dir-fsync a plain `mv` lacks).
 - **Bounded parallelism** — `DUMP_CONCURRENCY` dumps databases concurrently with no per-host serialization, so the common one-server-many-DBs case is not forced serial. One knob, safe default.
 - **Built-in retention** — keeps the newest `DUMP_KEEP` timestamped dumps per database (7 by default), pruning older ones after each successful run, so it works as a self-contained incremental backup out of the box. Set `DUMP_KEEP=1` to instead keep a single stable `<dbname>.dump` and delegate versioning to your backup tool.
-- **Standard surface** — `POST /dump`, `GET /healthz`, `GET /metrics` (Prometheus). Trigger by the built-in daily timer (default), over HTTP, or `docker exec ... pg-autodump trigger`.
+- **Standard surface** — `POST /dump`, `GET /healthz`. Trigger by the built-in daily timer (default), over HTTP, or `docker exec ... pg-autodump trigger`.
 
 ## Quick start
 
@@ -110,11 +110,10 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
 
 - `POST /dump` — run all dumps; `200` if every database succeeded, `500` if any failed, `429` if a run is already in progress, `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: reason` line per database.
 - `GET /healthz` — `200 ok` / `503 unhealthy`. Reflects liveness preconditions (client binaries present, `/dumps` writable, `DB_SPECS` non-empty), **not** per-host database reachability, so a transiently-down database never flips the container unhealthy.
-- `GET /metrics` — Prometheus text exposition. Key series: `pg_autodump_dump_db_total{host,db,reason}`, `pg_autodump_dump_failures_total{host,db,reason}`, `pg_autodump_dump_duration_seconds{host,db}`, `pg_autodump_dump_bytes{host,db}`, `pg_autodump_dump_in_flight`, and `pg_autodump_dump_last_success_timestamp_seconds{host,db}` (alert on stale backups).
 
 ## Healthcheck
 
-The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand — a file-marker probe, so no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (the client binaries resolve, `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump` and `/metrics`, not liveness.
+The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand — a file-marker probe, so no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (the client binaries resolve, `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump`, not liveness.
 
 ## The backup role
 
@@ -156,7 +155,6 @@ Updated automatically via [Renovate](https://github.com/renovatebot/renovate) an
 | tini | [GitHub](https://github.com/krallin/tini) |
 | github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile) |
 | github.com/cplieger/health | [GitHub](https://github.com/cplieger/health) |
-| github.com/cplieger/metrics | [GitHub](https://github.com/cplieger/metrics) |
 | pgregory.net/rapid | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 
 A logical backup is far more than one query — `pg_dump` reconstructs the full schema from the system catalogs, dependency-orders it, streams every table via `COPY`, and emits the custom archive format `pg_restore` reads and verifies. So the `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless.
@@ -167,7 +165,7 @@ The PostgreSQL client tools `pg_dump`, `pg_restore`, and `psql` are part of [Pos
 
 ## Migrating from db-dumper 1.x
 
-pg-autodump is the successor to `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket. pg-autodump is a network client instead: no socket, no root. To migrate: remove the socket mount and `user: "0:0"`; rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`; provide credentials via a read-only `.pgpass` and a least-privilege role (above); triggers move from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`), health to `GET /healthz`, and metrics are new at `/metrics`; the healthcheck becomes `["CMD", "pg-autodump", "health"]`; set `stop_grace_period` >= `SHUTDOWN_GRACE`. `CGI_DIR` and `TZ` are gone.
+pg-autodump is the successor to `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket. pg-autodump is a network client instead: no socket, no root. To migrate: remove the socket mount and `user: "0:0"`; rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`; provide credentials via a read-only `.pgpass` and a least-privilege role (above); triggers move from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`) and health to `GET /healthz`; the healthcheck becomes `["CMD", "pg-autodump", "health"]`; set `stop_grace_period` >= `SHUTDOWN_GRACE`. `CGI_DIR` and `TZ` are gone.
 
 ## Contributing
 

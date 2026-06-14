@@ -55,7 +55,7 @@ func newTestServer(t *testing.T, pg dump.PGTool, token string) *http.Server {
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, orch, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return NewServer(&Deps{
 		ListenAddr: ":0",
 		AuthToken:  token,

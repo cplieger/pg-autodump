@@ -1,8 +1,7 @@
 // Package httpapi is the HTTP control surface: POST /dump (optional bearer
-// auth), GET /healthz (liveness, via the health library), and GET /metrics. It
-// owns no domain logic; the dump run is driven through a Trigger that both the
-// handler and the optional built-in ticker share, so single-flight and the
-// run-counter increment live in exactly one place.
+// auth) and GET /healthz (liveness, via the health library). It owns no domain
+// logic; the dump run is driven through a Trigger that both the handler and the
+// optional built-in ticker share, so single-flight lives in exactly one place.
 package httpapi
 
 import (
@@ -23,9 +22,6 @@ import (
 // write timeout: a dump run holds the response open for minutes by design.
 const readHeaderTimeout = 10 * time.Second
 
-// RunRecorder records that a dump run started (one increment per run).
-type RunRecorder interface{ IncRun() }
-
 // Trigger runs one dump under the single-flight guard. The run context is
 // derived from context.Background(), NOT the HTTP request, so a trigger client
 // that disconnects (a short wget firing a long backup) never cancels the dump;
@@ -33,16 +29,15 @@ type RunRecorder interface{ IncRun() }
 type Trigger struct {
 	guard *dump.Guard
 	orch  *dump.Orchestrator
-	runs  RunRecorder
 	log   *slog.Logger
 }
 
-// NewTrigger builds a Trigger. runs may be nil (metrics disabled).
-func NewTrigger(guard *dump.Guard, orch *dump.Orchestrator, runs RunRecorder, log *slog.Logger) *Trigger {
+// NewTrigger builds a Trigger.
+func NewTrigger(guard *dump.Guard, orch *dump.Orchestrator, log *slog.Logger) *Trigger {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Trigger{guard: guard, orch: orch, runs: runs, log: log}
+	return &Trigger{guard: guard, orch: orch, log: log}
 }
 
 // Run executes one dump run if none is in flight. It returns the per-database
@@ -56,9 +51,6 @@ func (t *Trigger) Run() (results []dump.Result, ok bool) {
 	}
 	defer release()
 	defer cancel()
-	if t.runs != nil {
-		t.runs.IncRun()
-	}
 	return t.orch.Run(runCtx), true
 }
 
@@ -66,7 +58,6 @@ func (t *Trigger) Run() (results []dump.Result, ok bool) {
 type Deps struct {
 	Trigger    *Trigger
 	Health     health.Signal
-	Metrics    http.Handler
 	Log        *slog.Logger
 	ListenAddr string
 	AuthToken  string
@@ -81,9 +72,6 @@ func NewServer(d *Deps) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
-	if d.Metrics != nil {
-		mux.Handle("GET /metrics", d.Metrics)
-	}
 	return &http.Server{
 		Addr:              d.ListenAddr,
 		Handler:           mux,

@@ -6,6 +6,8 @@
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/pg-autodump/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/pg-autodump)
+[![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/coverage.json)](https://github.com/cplieger/pg-autodump/actions/workflows/coverage.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13215/badge)](https://www.bestpractices.dev/projects/13215)
 
 On-demand PostgreSQL logical-backup sidecar. Trigger it, and it writes a verified dump per database for your real backup tool to collect.
 

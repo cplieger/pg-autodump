@@ -23,7 +23,7 @@ unauthenticated path to arbitrary command execution.
 | Threat | Mitigation | Evidence |
 |---|---|---|
 | Command injection via DB name/params | `pg_dump` invoked with an argument vector (no shell); inputs validated | `internal/httpapi`, source review |
-| Untrusted HTTP trigger abuse | the trigger only runs the *configured* dump set; it takes no arbitrary command/target from the request body | `httpapi.go`, handler tests |
+| Untrusted HTTP trigger abuse | the trigger only runs the _configured_ dump set; it takes no arbitrary command/target from the request body | `httpapi.go`, handler tests |
 | Silent backup corruption | each dump is verified after creation; atomic write (temp→rename) | dump + verify tests |
 | Credential exposure | DB credentials come from config/env, never logged; redaction on error paths | source review |
 | Privilege escalation at runtime | runs as non-root; distroless; `/healthz` for the Docker probe | Dockerfile, healthcheck |

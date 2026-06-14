@@ -21,9 +21,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # renovate: datasource=docker depName=alpine
 FROM alpine:3.24@sha256:a2d49ea686c2adfe3c992e47dc3b5e7fa6e6b5055609400dc2acaeb241c829f4
 
+# apk upgrade: the pinned base ships some packages (e.g. libssl3) at a stale,
+# CVE-affected revision; upgrading floats them forward on each rebuild.
 # postgresql18-client: pg_dump / pg_restore / psql (network clients).
 # tini: PID 1 for clean signal handling and zombie reaping.
-RUN apk add --no-cache postgresql18-client tini \
+RUN apk upgrade --no-cache \
+    && apk add --no-cache postgresql18-client tini \
     && addgroup -S pgautodump && adduser -S -G pgautodump -u 65532 pgautodump
 
 COPY --from=builder /pg-autodump /usr/local/bin/pg-autodump

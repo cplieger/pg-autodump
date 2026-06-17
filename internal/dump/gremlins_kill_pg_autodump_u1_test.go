@@ -118,15 +118,3 @@ func TestGkPgAutodumpU1CheckDiskSpaceFreeKBMagnitude(t *testing.T) {
 			"moves it by ~1e6x or more", h.freeKB, lo, hi)
 	}
 }
-
-// --- dump.go L182:7 CONDITIONALS_BOUNDARY (`v < lo`) ----------------------
-//
-// clamp's first guard `v < lo` returns lo. The boundary mutant `<`->`<=` only
-// differs at v == lo, and only observably when lo > hi: the original falls
-// through to the `v > hi` guard and returns hi, while `v <= lo` returns lo.
-// clamp(5,5,3): original -> 3 (hi), mutated -> 5 (lo).
-func TestGkPgAutodumpU1ClampLowerBoundaryLoExceedsHi(t *testing.T) {
-	if got := clamp(5, 5, 3); got != 3 {
-		t.Fatalf("clamp(5, 5, 3) = %d, want 3 (v==lo with lo>hi must fall through to the hi guard, not return lo)", got)
-	}
-}

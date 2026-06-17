@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -142,5 +144,93 @@ func TestHealthz(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/healthz status = %d, want 200", rec.Code)
+	}
+}
+
+// newTestServerWithLog mirrors newTestServer but routes the server's logger to
+// a caller-owned buffer so log output can be asserted.
+func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http.Server {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(buf, nil))
+	orch := dump.New(&dump.Params{
+		PG:          pg,
+		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		DumpDir:     t.TempDir(),
+		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
+		DumpTimeout: 30 * time.Second,
+		Concurrency: 1,
+	})
+	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return NewServer(&Deps{
+		ListenAddr: ":0",
+		Trigger:    trigger,
+		Health:     okSignal{ok: true},
+		Log:        logger,
+	})
+}
+
+// failingWriter is an http.ResponseWriter whose Write always errors, so the
+// response-write failure branch in dumpHandler is exercised.
+type failingWriter struct {
+	header http.Header
+	code   int
+}
+
+func (f *failingWriter) Header() http.Header {
+	if f.header == nil {
+		f.header = make(http.Header)
+	}
+	return f.header
+}
+
+func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+func (f *failingWriter) WriteHeader(code int) { f.code = code }
+
+// The response body is the per-database Detail, not the bare Reason. A
+// successful dump details "ok (N bytes)"; dumpHandler only substitutes the
+// Reason string when Detail is empty (`detail == ""`). The negation
+// (`detail != ""`) would replace a present detail with the reason, collapsing
+// "ok (5 bytes)" to "ok".
+func TestDumpResponseBodyUsesDetail(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "") // stub writes "PGDMP" => 5 bytes
+	rec := post(t, srv, "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "h/db: ok (5 bytes)\n" {
+		t.Fatalf("body = %q, want %q", got, "h/db: ok (5 bytes)\n")
+	}
+}
+
+// On a successful response write there must be NO write-failure warning
+// (`err != nil`). The negation (`err == nil`) would log the warning on every
+// successful request.
+func TestDumpSuccessLogsNoWriteWarning(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newTestServerWithLog(t, &stubPG{}, &buf)
+
+	if rec := post(t, srv, ""); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(buf.String(), "write dump response failed") {
+		t.Fatalf("successful write should not log a failure warning, got %q", buf.String())
+	}
+}
+
+// When the response write fails, the warning is emitted through the logger the
+// caller supplied to NewServer. The negation on NewServer's guard
+// (`log == nil` -> `log != nil`) would discard the supplied logger for the
+// default, so the message would never reach the caller's buffer.
+func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
+	var buf bytes.Buffer
+	srv := newTestServerWithLog(t, &stubPG{}, &buf)
+
+	req := httptest.NewRequest(http.MethodPost, "/dump", nil)
+	srv.Handler.ServeHTTP(&failingWriter{}, req)
+
+	if !strings.Contains(buf.String(), "write dump response failed") {
+		t.Fatalf("expected write-failure warning in the supplied logger, got %q", buf.String())
 	}
 }

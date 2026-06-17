@@ -82,3 +82,25 @@ func TestParseSpecsNeverDropsTokens(t *testing.T) {
 		t.Fatalf("got %d specs for 4 tokens; tokens must never be dropped", got)
 	}
 }
+
+// Port boundary values 1 and 65535 are both valid. The validation guard
+// `port < 1 || port > 65535` has two boundary mutants: `port < 1` -> `port <= 1`
+// would reject port 1, and `port > 65535` -> `port >= 65535` would reject port
+// 65535. Both extremes must parse as valid with the exact port preserved.
+func TestParseSpecsPortBoundaries(t *testing.T) {
+	low := ParseSpecs("host:1:db:user")
+	if len(low) != 1 || low[0].Invalid != "" {
+		t.Fatalf("port 1 should be valid, got %+v", low)
+	}
+	if low[0].Port != 1 {
+		t.Errorf("port = %d, want 1 (lower boundary)", low[0].Port)
+	}
+
+	high := ParseSpecs("host:65535:db:user")
+	if len(high) != 1 || high[0].Invalid != "" {
+		t.Fatalf("port 65535 should be valid, got %+v", high)
+	}
+	if high[0].Port != 65535 {
+		t.Errorf("port = %d, want 65535 (upper boundary)", high[0].Port)
+	}
+}

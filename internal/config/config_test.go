@@ -160,3 +160,42 @@ func TestLoadDumpKeep(t *testing.T) {
 		}
 	}
 }
+
+// A valid DUMP_CONCURRENCY passes through unchanged and produces no warning.
+// This pins both negations on the rejection guard `err != nil || n < 1`
+// (loadConcurrency): mutating `err != nil` -> `err == nil` or `n < 1` ->
+// `n >= 1` would reject a perfectly valid value and fall back to the default.
+func TestLoadValidConcurrencyPassesThrough(t *testing.T) {
+	cfg, warns := Load(envFunc(map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "4"}))
+	if cfg.DumpConcurrency != 4 {
+		t.Fatalf("DumpConcurrency = %d, want 4 (valid value must pass through)", cfg.DumpConcurrency)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("valid DUMP_CONCURRENCY should produce no warnings, got %v", warns)
+	}
+}
+
+// DUMP_CONCURRENCY=1 is the exact lower boundary: it is valid and must NOT be
+// rejected. The boundary mutant `n < 1` -> `n <= 1` would reject 1.
+func TestLoadConcurrencyBoundaryOneIsValid(t *testing.T) {
+	cfg, warns := Load(envFunc(map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "1"}))
+	if cfg.DumpConcurrency != 1 {
+		t.Fatalf("DumpConcurrency = %d, want 1 (the boundary value is valid)", cfg.DumpConcurrency)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("DUMP_CONCURRENCY=1 should produce no warnings, got %v", warns)
+	}
+}
+
+// DUMP_KEEP=1 is the exact lower boundary: it selects the single-stable-file
+// scheme and is valid. The boundary mutant `n < 1` -> `n <= 1` (loadKeep)
+// would reject 1 and fall back to the default of 7.
+func TestLoadKeepBoundaryOneIsValid(t *testing.T) {
+	cfg, warns := Load(envFunc(map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": "1"}))
+	if cfg.DumpKeep != 1 {
+		t.Fatalf("DumpKeep = %d, want 1 (the boundary value is valid)", cfg.DumpKeep)
+	}
+	if len(warns) != 0 {
+		t.Fatalf("DUMP_KEEP=1 should produce no warnings, got %v", warns)
+	}
+}

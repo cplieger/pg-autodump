@@ -177,13 +177,9 @@ func levelFor(r Reason) slog.Level {
 	}
 }
 
-// clamp constrains v to [lo, hi].
+// clamp constrains v to [lo, hi]; the sole caller passes lo=1 <= hi. Expressed
+// with the min/max builtins (matching their use elsewhere in this file) rather
+// than a hand-rolled comparison chain.
 func clamp(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
+	return min(hi, max(lo, v))
 }

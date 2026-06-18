@@ -88,26 +88,26 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
 
 ### Environment variables
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `DB_SPECS` | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. Invalid entries are reported per-DB and skipped. IPv6 literals are unsupported (use a hostname). | - | Yes |
-| `PGPASSFILE` | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user). | `/secrets/.pgpass` | No |
-| `DUMP_DIR` | Output directory. Values containing `..` are rejected. | `/dumps` | No |
-| `DUMP_TIMEOUT` | Per-dump seconds (min 10). | `300` | No |
-| `DUMP_CONCURRENCY` | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume. | `2` | No |
-| `DUMP_INTERVAL` | Built-in timer cadence (Go duration). `off` / `disabled` / `0` hand scheduling to an external trigger. | `24h` | No |
-| `DUMP_KEEP` | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool). | `7` | No |
-| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables. | `1048576` | No |
-| `AUTH_TOKEN` | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback). | `""` | No |
-| `LISTEN_ADDR` | HTTP listen address. | `:9847` | No |
-| `SHUTDOWN_GRACE` | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this. | `DUMP_TIMEOUT+15s` | No |
+| Variable            | Description                                                                                                                                                                                                                                                           | Default            | Required |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------- |
+| `DB_SPECS`          | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. Invalid entries are reported per-DB and skipped. IPv6 literals are unsupported (use a hostname). | -                  | Yes      |
+| `PGPASSFILE`        | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user).                                                                                                                               | `/secrets/.pgpass` | No       |
+| `DUMP_DIR`          | Output directory. Values containing `..` are rejected.                                                                                                                                                                                                                | `/dumps`           | No       |
+| `DUMP_TIMEOUT`      | Per-dump seconds (min 10).                                                                                                                                                                                                                                            | `300`              | No       |
+| `DUMP_CONCURRENCY`  | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume.                                                                                                                                                                         | `2`                | No       |
+| `DUMP_INTERVAL`     | Built-in timer cadence (Go duration). `off` / `disabled` / `0` hand scheduling to an external trigger.                                                                                                                                                                | `24h`              | No       |
+| `DUMP_KEEP`         | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool).                                  | `7`                | No       |
+| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables.                                                                                                                                                                                    | `1048576`          | No       |
+| `AUTH_TOKEN`        | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback).                                                                                                                                                      | `""`               | No       |
+| `LISTEN_ADDR`       | HTTP listen address.                                                                                                                                                                                                                                                  | `:9847`            | No       |
+| `SHUTDOWN_GRACE`    | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this.                                                                                                                                                                                                     | `DUMP_TIMEOUT+15s` | No       |
 
 ### Volumes
 
-| Mount | Description |
-|-------|-------------|
-| `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used. |
-| `/dumps` | Output directory; verified dump files per database (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). |
+| Mount              | Description                                                                                                         |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used.                                                |
+| `/dumps`           | Output directory; verified dump files per database (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). |
 
 ### Endpoints
 
@@ -150,15 +150,15 @@ The CI battery runs govulncheck, golangci-lint (gosec, gocritic), trivy, grype, 
 
 Updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest. Builds carry signed SBOMs and provenance attestations verifiable with `gh attestation verify`.
 
-| Dependency | Source |
-|------------|--------|
-| golang | [Go](https://hub.docker.com/_/golang) |
-| alpine | [Alpine](https://hub.docker.com/_/alpine) |
-| postgresql18-client | [PostgreSQL](https://www.postgresql.org/) |
-| tini | [GitHub](https://github.com/krallin/tini) |
-| github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile) |
-| github.com/cplieger/health | [GitHub](https://github.com/cplieger/health) |
-| pgregory.net/rapid | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
+| Dependency                     | Source                                              |
+| ------------------------------ | --------------------------------------------------- |
+| golang                         | [Go](https://hub.docker.com/_/golang)               |
+| alpine                         | [Alpine](https://hub.docker.com/_/alpine)           |
+| postgresql18-client            | [PostgreSQL](https://www.postgresql.org/)           |
+| tini                           | [GitHub](https://github.com/krallin/tini)           |
+| github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile)    |
+| github.com/cplieger/health     | [GitHub](https://github.com/cplieger/health)        |
+| pgregory.net/rapid             | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 
 A logical backup is far more than one query — `pg_dump` reconstructs the full schema from the system catalogs, dependency-orders it, streams every table via `COPY`, and emits the custom archive format `pg_restore` reads and verifies. So the `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless.
 

@@ -41,7 +41,10 @@ func NewTrigger(guard *dump.Guard, orch *dump.Orchestrator, log *slog.Logger) *T
 }
 
 // Run executes one dump run if none is in flight. It returns the per-database
-// results and ok=true, or (nil, false) when a run is already in progress.
+// results and ok=true, or (nil, false) when a run is already in progress. On
+// completion it emits a single "dump cycle complete" heartbeat (total/ok/failed
+// tallied from the results) so a Loki absence alert can catch a silent non-run
+// of this backup-critical sidecar, not just a loud per-DB failure.
 func (t *Trigger) Run() (results []dump.Result, ok bool) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	release, acquired := t.guard.TryAcquire(cancel)
@@ -51,7 +54,20 @@ func (t *Trigger) Run() (results []dump.Result, ok bool) {
 	}
 	defer release()
 	defer cancel()
-	return t.orch.Run(runCtx), true
+
+	results = t.orch.Run(runCtx)
+
+	var okN, failedN int
+	for _, r := range results {
+		if r.OK() {
+			okN++
+		} else {
+			failedN++
+		}
+	}
+	t.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
+
+	return results, true
 }
 
 // Deps are the wiring NewServer needs.

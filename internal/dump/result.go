@@ -64,6 +64,7 @@ type PGTool interface {
 // Reason is the closed dump-result taxonomy.
 type Reason string
 
+// ReasonOK and the following constants are the valid Reason values for a dump result.
 const (
 	ReasonOK              Reason = "ok"
 	ReasonEmpty           Reason = "empty"

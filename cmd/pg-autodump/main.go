@@ -60,8 +60,12 @@ func runServer(getenv func(string) string) int {
 		log.Warn(string(w))
 	}
 
-	// At startup no dump is in flight, so any leftover temp is a crash orphan.
-	if removed, err := atomicfile.CleanupStaleTemps(cfg.DumpDir, 0); err != nil {
+	// At startup nothing is in flight, so every leftover temp is a crash
+	// orphan. Reclaim them regardless of age: CleanupStaleTemps removes temps
+	// older than maxAge and no-ops on a non-positive maxAge, so the smallest
+	// positive age ("older than ~now") reaps them all.
+	const reclaimAllOrphans = time.Nanosecond
+	if removed, err := atomicfile.CleanupStaleTemps(cfg.DumpDir, reclaimAllOrphans); err != nil {
 		log.Warn("stale temp cleanup failed", "dir", cfg.DumpDir, "err", err)
 	} else if removed > 0 {
 		log.Info("reclaimed stale temp files", "count", removed)

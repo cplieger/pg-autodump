@@ -1,0 +1,19 @@
+# Keep the build context minimal: only go.mod/go.sum + cmd/ + internal/ are
+# COPY'd into the image. Everything else (VCS history, review/CI scratch, docs,
+# tests, and any local secrets) must never enter the build context.
+.git
+.github
+.code-review
+.judgement
+.refactor
+.steering-maintenance
+docs
+tests
+*_test.go
+*.md
+compose.yaml
+.env
+*.env
+secrets
+dumps
+.pgpass

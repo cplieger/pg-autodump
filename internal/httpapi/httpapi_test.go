@@ -92,6 +92,25 @@ func TestDumpFailureReturns500(t *testing.T) {
 	}
 }
 
+// On an execution-tool failure the response body carries only the reason word,
+// not the raw pg_dump stderr (l-f21 hardening): the bounded stderr can echo
+// schema/object/role names, and the endpoint may run open, so the detail is
+// routed to the logs only. stubPG with exit 1 writes stderr "boom" => pg_error.
+func TestDumpFailureBodyOmitsStderr(t *testing.T) {
+	srv := newTestServer(t, &stubPG{exit: 1}, "")
+	rec := post(t, srv, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "pg_error") {
+		t.Fatalf("body = %q, want it to name the reason 'pg_error'", body)
+	}
+	if strings.Contains(body, "boom") {
+		t.Fatalf("body = %q leaked pg_dump stderr 'boom'; it must be logs-only", body)
+	}
+}
+
 func TestAuthRequired(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "sekret")
 	if rec := post(t, srv, ""); rec.Code != http.StatusUnauthorized {
@@ -232,5 +251,25 @@ func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 
 	if !strings.Contains(buf.String(), "write dump response failed") {
 		t.Fatalf("expected write-failure warning in the supplied logger, got %q", buf.String())
+	}
+}
+
+// NewTrigger defaults a nil logger to a non-nil one and keeps a supplied logger
+// unchanged: exercise both the nil input (defaulted) and a non-nil input
+// (retained) and assert the stored logger in each.
+func TestNewTriggerLoggerDefaulting(t *testing.T) {
+	guard := &dump.Guard{}
+
+	// nil logger is replaced with a non-nil default.
+	trNil := NewTrigger(guard, nil, nil)
+	if trNil.log == nil {
+		t.Fatalf("NewTrigger(.., nil) left log nil; want it defaulted to a non-nil logger")
+	}
+
+	// a supplied logger is retained unchanged.
+	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
+	trCustom := NewTrigger(guard, nil, custom)
+	if trCustom.log != custom {
+		t.Fatalf("NewTrigger(.., custom) did not retain the supplied logger; want it stored as-is")
 	}
 }

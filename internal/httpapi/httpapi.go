@@ -92,6 +92,11 @@ func NewServer(d *Deps) *http.Server {
 		Addr:              d.ListenAddr,
 		Handler:           mux,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// No WriteTimeout: a dump run holds the response open for minutes by
+		// design. ReadTimeout/IdleTimeout are safe to bound (they cover the
+		// request-read and idle-keepalive phases, not the long dump response).
+		ReadTimeout: readHeaderTimeout,
+		IdleTimeout: 60 * time.Second,
 	}
 }
 
@@ -109,11 +114,7 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 		var b strings.Builder
 		allOK := true
 		for _, r := range results {
-			detail := r.Detail
-			if detail == "" {
-				detail = string(r.Reason)
-			}
-			fmt.Fprintf(&b, "%s/%s: %s\n", r.Host, r.DBName, detail)
+			fmt.Fprintf(&b, "%s/%s: %s\n", r.Host, r.DBName, r.BodyDetail())
 			if !r.OK() {
 				allOK = false
 			}

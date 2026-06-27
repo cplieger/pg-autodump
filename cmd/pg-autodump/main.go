@@ -12,10 +12,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -51,13 +51,27 @@ func run(args []string, getenv func(string) string) int {
 	}
 }
 
+// runServer runs the serve subcommand (the default with no argument). It builds the
+// slog handler, loads config, reclaims crash-orphaned temp dumps, sets the health
+// marker from the startup preflight, wires the dump orchestrator and HTTP server,
+// optionally starts the built-in ticker, then serves until a signal and drains any
+// in-flight dump within ShutdownGrace. It returns the process exit code.
 func runServer(getenv func(string) string) int {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(log)
 
-	cfg, warns := config.Load(getenv)
+	cfg, warns, err := config.Load(getenv)
 	for _, w := range warns {
 		log.Warn(string(w))
+	}
+	if err != nil {
+		log.Error("invalid configuration; refusing to start", "err", err)
+		return 1
+	}
+	if config.ListenerOpenAndPublic(cfg.AuthToken, cfg.ListenAddr) {
+		log.Warn("POST /dump is unauthenticated and bound to a non-loopback address; "+
+			"publish the port to loopback only (127.0.0.1:<port>:<port>) or set AUTH_TOKEN if the network is untrusted",
+			"listen_addr", cfg.ListenAddr)
 	}
 
 	// At startup nothing is in flight, so every leftover temp is a crash
@@ -104,7 +118,7 @@ func runServer(getenv func(string) string) int {
 	defer stop()
 
 	if cfg.DumpInterval > 0 {
-		go runTicker(ctx, cfg.DumpInterval, trigger, log)
+		go runTicker(ctx, cfg.DumpDir, cfg.DumpInterval, trigger, log)
 	}
 
 	serveErr := make(chan error, 1)
@@ -127,20 +141,52 @@ func runServer(getenv func(string) string) int {
 		return 0
 	case <-ctx.Done():
 		log.Info("shutting down", "cause", context.Cause(ctx))
+		marker.Set(false)
 	}
 
 	drainCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
 	defer cancel()
+	// Stop accepting new requests; let an HTTP-triggered dump drain within budget.
 	if err := srv.Shutdown(drainCtx); err != nil {
-		log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", cfg.ShutdownGrace, "err", err)
-		guard.CancelInFlight()
+		log.Warn("HTTP drain budget exceeded", "grace", cfg.ShutdownGrace, "err", err)
 	}
+	// A built-in-ticker dump holds no HTTP connection, so srv.Shutdown cannot
+	// see it. Wait for any in-flight run to finish within the remaining budget;
+	// if it does not, cancel it and let it unwind so pg_dump is killed cleanly
+	// and the staged temp is removed.
+	if !guard.WaitIdle(drainCtx) {
+		log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", cfg.ShutdownGrace)
+		guard.CancelInFlight()
+		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer unwindCancel()
+		if !guard.WaitIdle(unwindCtx) {
+			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", cfg.ShutdownGrace)
+			return 0
+		}
+	}
+	log.Info("shutdown complete", "grace", cfg.ShutdownGrace)
 	return 0
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL). The homelab
 // leaves this off and triggers externally via Ofelia.
-func runTicker(ctx context.Context, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
+func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
+	// The ticker's first fire is one full interval after start and its clock
+	// resets on every restart, so a deployment that restarts more often than
+	// DUMP_INTERVAL could go a long time with no backups. Fire once at startup
+	// to close that gap, but only when no existing dump is newer than one
+	// interval, so a restart that already has a fresh dump does not re-dump (a
+	// crash/restart loop must not become a dump loop). The run goes through the
+	// shared single-flight guard, so it is cancelled by the same drain path as
+	// any other run on shutdown.
+	if dump.DueForStartupDump(dumpDir, interval, time.Now()) && ctx.Err() == nil {
+		if _, ok := trigger.Run(); ok {
+			log.Info("startup dump complete (no dump within one interval at boot)")
+		} else {
+			log.Warn("startup dump skipped; a run is already in progress")
+		}
+	}
+
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
@@ -148,6 +194,15 @@ func runTicker(ctx context.Context, interval time.Duration, trigger *httpapi.Tri
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			// A tick that fired (or sat buffered in t.C) while a run was in
+			// flight can be selected in the SAME iteration ctx is cancelled:
+			// select chooses among ready cases at random, so a pending tick
+			// and a fresh ctx.Done() are a coin flip. Re-check the stop
+			// request first so SIGTERM never lets the ticker launch a new run
+			// that races the drain and is then abandoned by os.Exit.
+			if ctx.Err() != nil {
+				return
+			}
 			if _, ok := trigger.Run(); !ok {
 				log.Warn("scheduled dump skipped; a run is already in progress")
 			}
@@ -159,9 +214,25 @@ func runTicker(ctx context.Context, interval time.Duration, trigger *httpapi.Tri
 // exiting non-zero if the run reported any failure. Used by exec-based
 // schedulers that prefer `docker exec <c> pg-autodump trigger` over an HTTP call.
 func runTrigger(getenv func(string) string) int {
-	cfg, _ := config.Load(getenv)
+	cfg, warns, err := config.Load(getenv)
+	for _, w := range warns {
+		fmt.Fprintln(os.Stderr, "trigger: config warning:", string(w))
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "trigger: invalid configuration:", err)
+		return 1
+	}
 	url := "http://" + localAddr(cfg.ListenAddr) + "/dump"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, http.NoBody)
+	// Bound the trigger on the server's worst-case total dump time, NOT on
+	// SHUTDOWN_GRACE (a drain knob the operator may set low for unrelated
+	// reasons). The server dumps Specs in ceil(len/concurrency) serial waves,
+	// each database bounded by DumpTimeout plus the reachability probe cap, so
+	// a flat DumpTimeout+slack would falsely time out a multi-database run and
+	// make `trigger` report exit 1 while the dump is still succeeding.
+	timeout := triggerTimeout(&cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trigger:", err)
 		return 1
@@ -169,7 +240,7 @@ func runTrigger(getenv func(string) string) int {
 	if cfg.AuthToken != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
 	}
-	resp, err := (&http.Client{}).Do(req) // no client timeout: a dump may run for minutes
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "trigger failed:", err)
 		return 1
@@ -182,12 +253,51 @@ func runTrigger(getenv func(string) string) int {
 	return 0
 }
 
-// localAddr turns a listen address (":9847", "0.0.0.0:9847", "[::]:9847") into
-// a loopback dial target on the same port.
-func localAddr(listen string) string {
-	port := listen
-	if i := strings.LastIndex(listen, ":"); i >= 0 {
-		port = listen[i+1:]
+// triggerProbeCap mirrors the orchestrator's per-database reachability probe
+// cap (internal/dump.probeTimeoutCap) so the trigger's wait estimate matches
+// the server's actual per-database ceiling.
+const triggerProbeCap = 10 * time.Second
+
+// triggerHTTPSlack covers connection setup, the handler's bookkeeping, and the
+// retention prune that runs after the dumps, on top of the modeled dump time.
+const triggerHTTPSlack = 30 * time.Second
+
+// triggerTimeout estimates the worst-case time POST /dump can legitimately take
+// so `trigger` blocks long enough for a real dump to finish but is never
+// unbounded. The server dumps cfg.Specs in ceil(len/concurrency) serial waves;
+// each database is bounded by min(probeCap, DumpTimeout) for the probe plus
+// DumpTimeout for the dump itself. The bound is the wave count times that
+// per-database ceiling, plus fixed HTTP/handler slack.
+func triggerTimeout(cfg *config.Config) time.Duration {
+	concurrency := max(cfg.DumpConcurrency, 1)
+	// At least one wave even when no specs are configured, so the trigger
+	// still waits out the handler's own work.
+	waves := 1
+	if n := len(cfg.Specs); n > 0 {
+		waves = (n + concurrency - 1) / concurrency
 	}
-	return "127.0.0.1:" + port
+	perDB := cfg.DumpTimeout + min(triggerProbeCap, cfg.DumpTimeout)
+	return time.Duration(waves)*perDB + triggerHTTPSlack
+}
+
+// localAddr turns a listen address into the dial target for the trigger's POST /dump on
+// the same port. A wildcard or unspecified bind (":9847", "0.0.0.0:9847", "[::]:9847")
+// and an unparseable value map to 127.0.0.1; an explicit host (loopback or otherwise) is
+// preserved, so a listener bound to a specific address is dialed where it actually bound.
+func localAddr(listen string) string {
+	host, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		// No port (e.g. a bare "9847") or otherwise unparseable: treat the
+		// whole string as the port and dial IPv4 loopback.
+		return net.JoinHostPort("127.0.0.1", listen)
+	}
+	// A wildcard or unspecified bind is reachable on loopback, so dial IPv4
+	// loopback. An explicit loopback host is preserved as-is, so an
+	// IPv6-only-loopback listener (LISTEN_ADDR="[::1]:port") is dialed on ::1
+	// rather than on 127.0.0.1 (which it never bound).
+	switch host {
+	case "", "0.0.0.0", "::":
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, port)
 }

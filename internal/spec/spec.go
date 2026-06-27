@@ -10,6 +10,7 @@
 package spec
 
 import (
+	"net"
 	"strconv"
 	"strings"
 )
@@ -17,16 +18,24 @@ import (
 // DefaultPort is the PostgreSQL port assumed when a spec omits one.
 const DefaultPort = 5432
 
+// maxServerDirLen bounds the per-server subdirectory name (ServerDir) to the
+// common Linux filesystem per-component limit (NAME_MAX = 255 bytes on
+// ext4/xfs/btrfs). A spec whose ServerDir would exceed it is rejected at parse
+// so an over-long host surfaces as a per-DB "invalid" rather than a generic OS
+// error mid-run.
+const maxServerDirLen = 255
+
 // DBSpec is one validated host[:port]:dbname:user tuple. A spec with a
 // non-empty Invalid field failed validation and must never be passed to
 // pg_dump; the orchestrator reports it per-DB and skips it.
 type DBSpec struct {
-	Host    string
-	DBName  string
-	User    string
-	Raw     string // original token, for error reporting and logs
-	Invalid string // non-empty => why this spec is invalid
-	Port    int
+	Host      string
+	DBName    string
+	User      string
+	Raw       string // original token, for error reporting and logs
+	Invalid   string // non-empty => why this spec is invalid
+	Port      int
+	Duplicate bool // true => Invalid because it duplicates an earlier host:port:dbname
 }
 
 // ParseSpecs splits raw on whitespace and validates each tuple. Every token
@@ -44,6 +53,7 @@ func ParseSpecs(raw string) []DBSpec {
 			key := s.Host + ":" + strconv.Itoa(s.Port) + ":" + s.DBName
 			if _, dup := seen[key]; dup {
 				s.Invalid = "duplicate host:port:dbname (kept first)"
+				s.Duplicate = true
 			} else {
 				seen[key] = struct{}{}
 			}
@@ -53,29 +63,41 @@ func ParseSpecs(raw string) []DBSpec {
 	return specs
 }
 
-// parseOne validates a single colon-separated token. It accepts 3 fields
-// (host:dbname:user, port defaults to DefaultPort) or 4 fields
-// (host:port:dbname:user, port numeric 1..65535). Any other shape is Invalid.
+// parseOne validates a single token. It accepts the plain
+// host[:port]:dbname:user form (host a hostname or IPv4 literal) and the
+// bracketed IPv6 form [addr][:port]:dbname:user (the brackets disambiguate the
+// address colons from the field separators). The port defaults to DefaultPort
+// when omitted and is numeric 1..65535 otherwise. Any other shape, an invalid
+// host, or a host whose ServerDir would exceed the filesystem component limit
+// is Invalid.
 func parseOne(tok string) DBSpec {
 	s := DBSpec{Raw: tok, Port: DefaultPort}
-	parts := strings.Split(tok, ":")
 
-	var host, portStr, dbname, user string
-	switch len(parts) {
-	case 3:
-		host, dbname, user = parts[0], parts[1], parts[2]
-	case 4:
-		host, portStr, dbname, user = parts[0], parts[1], parts[2], parts[3]
-	default:
-		s.Invalid = "invalid format (want host[:port]:dbname:user)"
+	host, portStr, dbname, user, invalid := splitFields(tok)
+	if invalid != "" {
+		s.Invalid = invalid
 		return s
 	}
 
-	if reason := validateHost(host); reason != "" {
-		s.Invalid = "host: " + reason
-		return s
+	// A bracketed token is an IPv6 (or IPv4) literal: validate it with
+	// net.ParseIP (which rejects zone-id forms like "fe80::1%eth0", "..", "/",
+	// and shell metacharacters) and store the CANONICAL address so different
+	// spellings collapse to one identity and one artifact path. A plain token
+	// goes through the hostname/IPv4 grammar unchanged.
+	if strings.HasPrefix(tok, "[") {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			s.Invalid = "host: invalid IP literal in brackets (zone IDs and non-IP values are rejected)"
+			return s
+		}
+		s.Host = ip.String()
+	} else {
+		if reason := validateHost(host); reason != "" {
+			s.Invalid = "host: " + reason
+			return s
+		}
+		s.Host = host
 	}
-	s.Host = host
 
 	if portStr != "" {
 		port, err := strconv.Atoi(portStr)
@@ -98,14 +120,77 @@ func parseOne(tok string) DBSpec {
 	}
 	s.User = user
 
+	// The per-server subdirectory name must fit one filesystem path component.
+	if len(ServerDir(s.Host, s.Port)) > maxServerDirLen {
+		s.Invalid = "host: too long for artifact path (server directory name exceeds " +
+			strconv.Itoa(maxServerDirLen) + " bytes)"
+		return s
+	}
+
 	return s
 }
 
-// validateHost enforces the host grammar: non-empty, no leading '-', no
-// control characters, no ".." traversal, and only [a-zA-Z0-9_.-] (dots permit
-// FQDNs and docker service names). IPv6 literals contain ':' and are therefore
-// unsupported by this grammar; use a hostname or service name. Returns "" when
-// valid, else a human-readable reason.
+// splitFields extracts (host, portStr, dbname, user) from a token. It handles
+// the bracketed IPv6 form "[addr][:port]:dbname:user" and the plain
+// "host[:port]:dbname:user" form; portStr is "" when the port is omitted. The
+// returned invalid string is non-empty (a human reason) when the token matches
+// neither shape. The trailing :dbname:user (and optional :port) is split on ':'
+// safely because port, dbname, and user contain no ':'.
+func splitFields(tok string) (host, portStr, dbname, user, invalid string) {
+	if strings.HasPrefix(tok, "[") {
+		end := strings.Index(tok, "]")
+		if end < 0 {
+			return "", "", "", "", "host: missing ']' for bracketed IP literal"
+		}
+		host = tok[1:end]
+		rest := tok[end+1:]
+		if !strings.HasPrefix(rest, ":") {
+			return "", "", "", "", "host: expected ':' after ']' (want [addr][:port]:dbname:user)"
+		}
+		switch parts := strings.Split(rest[1:], ":"); len(parts) {
+		case 2:
+			return host, "", parts[0], parts[1], ""
+		case 3:
+			return host, parts[0], parts[1], parts[2], ""
+		default:
+			return "", "", "", "", "invalid format (want [addr][:port]:dbname:user)"
+		}
+	}
+
+	switch parts := strings.Split(tok, ":"); len(parts) {
+	case 3:
+		return parts[0], "", parts[1], parts[2], ""
+	case 4:
+		return parts[0], parts[1], parts[2], parts[3], ""
+	default:
+		return "", "", "", "", "invalid format (want host[:port]:dbname:user)"
+	}
+}
+
+// ServerDir is the per-server subdirectory name under DUMP_DIR for a database's
+// dump artifacts, making the on-disk path honor the (host, port) server
+// identity (so two databases that share a name on different servers never map
+// to one file). For a hostname or IPv4 host (the grammar [a-zA-Z0-9_.-] has no
+// ':'), it is "<host>_<port>". For a canonical IPv6 host (the only host kind
+// containing ':'), it is "@<addr-with-colons-as-dashes>_<port>": the '@' prefix
+// (which the host grammar can never produce) keeps IPv6 directories in a
+// namespace disjoint from hostname/IPv4 directories, and ':'->'-' is injective
+// over a canonical IPv6 literal (which never contains '-'). The port is the
+// resolved port and is recovered as the trailing digit run, so distinct
+// (host, port) pairs never collide.
+func ServerDir(host string, port int) string {
+	if strings.ContainsRune(host, ':') {
+		return "@" + strings.ReplaceAll(host, ":", "-") + "_" + strconv.Itoa(port)
+	}
+	return host + "_" + strconv.Itoa(port)
+}
+
+// validateHost enforces the plain host grammar (hostnames and IPv4 literals):
+// non-empty, no leading '-', no control characters, no ".." traversal, and only
+// [a-zA-Z0-9_.-] (dots permit FQDNs and docker service names). IPv6 literals
+// contain ':' and are handled separately via the bracketed [addr] form in
+// parseOne (validated with net.ParseIP), so they never reach this grammar.
+// Returns "" when valid, else a human-readable reason.
 func validateHost(v string) string {
 	if v == "" {
 		return "must not be empty"

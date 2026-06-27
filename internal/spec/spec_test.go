@@ -37,6 +37,11 @@ func TestParseSpecs(t *testing.T) {
 		{name: "traversal rejected", raw: "host:..:user", wantCount: 1, wantInvalid: []bool{true}},
 		{name: "bad port rejected", raw: "host:0:db:user", wantCount: 1, wantInvalid: []bool{true}},
 		{name: "too many fields rejected", raw: "host:5432:db:user:extra", wantCount: 1, wantInvalid: []bool{true}},
+		{name: "empty host rejected", raw: ":db:user", wantCount: 1, wantInvalid: []bool{true}},
+		{name: "traversal in host rejected", raw: "a..b:db:user", wantCount: 1, wantInvalid: []bool{true}},
+		{name: "empty dbname rejected", raw: "host::user", wantCount: 1, wantInvalid: []bool{true}},
+		{name: "control char in dbname rejected", raw: "host:d\x01b:user", wantCount: 1, wantInvalid: []bool{true}},
+		{name: "control char in user rejected", raw: "host:db:u\x01v", wantCount: 1, wantInvalid: []bool{true}},
 		{
 			name:        "same db different user is still a duplicate (output keyed by dbname)",
 			raw:         "host:db:user host:db:user2",

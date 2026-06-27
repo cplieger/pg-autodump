@@ -1,12 +1,16 @@
 // Package config is the single environment-reading layer. os.Getenv appears
 // nowhere else in the codebase (per go.md): every tunable is a typed Config
-// field populated once at startup by Load and never mutated. No secret is ever
-// a Config field; pg_dump reads .pgpass (or the libpq-owned PGPASSWORD) itself,
-// so passwords never transit memory this package logs or formats.
+// field populated once at startup by Load and never mutated. No database
+// password is ever a Config field; pg_dump reads .pgpass (or the
+// libpq-owned PGPASSWORD) itself, so DB passwords never transit memory
+// this package logs or formats. The lone secret this package holds is
+// AuthToken (the AUTH_TOKEN /dump bearer token); Load records no warning
+// for it and no caller logs it, so it never reaches a log or error line.
 package config
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +38,7 @@ type Config struct {
 	ListenAddr      string
 	DumpDir         string
 	PGPassFile      string
-	AuthToken       string
+	AuthToken       string // AUTH_TOKEN bearer for POST /dump; the one secret field -- never logged or formatted
 	Specs           []spec.DBSpec
 	DumpTimeout     time.Duration
 	StmtTimeout     time.Duration // server-side statement_timeout, derived above DumpTimeout
@@ -50,16 +54,20 @@ type Config struct {
 type Warning string
 
 // Load reads configuration from getenv (injected for testability). It returns
-// the typed Config and a slice of non-fatal warnings. Load never fails: every
-// missing or malformed value falls back to a safe default, recording a warning
-// when it does. An empty DB_SPECS yields no specs (surfaced via the health
-// probe, matching 1.x); malformed DB_SPECS tokens are validated per-token in
+// the typed Config, a slice of non-fatal warnings, and an error. Almost every
+// missing or malformed value falls back to a safe default with a warning, so
+// Load succeeds; the sole fatal case is a DUMP_DIR containing ".." — refusing
+// to start beats silently relocating backups to the default when the operator
+// asked for a specific directory (the backup destination is too important to
+// guess at). An empty DB_SPECS yields no specs (surfaced via the health probe,
+// matching 1.x); malformed DB_SPECS tokens are validated per-token in
 // internal/spec and reported per-DB by the orchestrator, never here.
-func Load(getenv func(string) string) (Config, []Warning) {
+func Load(getenv func(string) string) (Config, []Warning, error) {
 	var w warnings
+	dumpDir, dumpDirErr := loadDumpDir(getenv("DUMP_DIR"))
 	cfg := Config{
 		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), DefaultListenAddr),
-		DumpDir:    loadDumpDir(getenv("DUMP_DIR"), &w),
+		DumpDir:    dumpDir,
 		PGPassFile: firstNonEmpty(getenv("PGPASSFILE"), DefaultPGPassFile),
 		AuthToken:  getenv("AUTH_TOKEN"),
 	}
@@ -75,13 +83,13 @@ func Load(getenv func(string) string) (Config, []Warning) {
 	// matters for an uncleanly-dropped network path, where it self-aborts the
 	// backend rather than aborting a legitimate long COPY.
 	cfg.StmtTimeout = cfg.DumpTimeout + stmtTimeoutSlack
-	cfg.DumpConcurrency = loadConcurrency(getenv("DUMP_CONCURRENCY"), &w)
+	cfg.DumpConcurrency = loadPositiveInt(getenv("DUMP_CONCURRENCY"), "DUMP_CONCURRENCY", DefaultConcurrency, &w)
 	cfg.DumpInterval = loadInterval(getenv("DUMP_INTERVAL"), &w)
-	cfg.DumpKeep = loadKeep(getenv("DUMP_KEEP"), &w)
+	cfg.DumpKeep = loadPositiveInt(getenv("DUMP_KEEP"), "DUMP_KEEP", DefaultDumpKeep, &w)
 	cfg.FreeKBWarn = loadFreeKB(getenv("DUMP_FREE_KB_WARN"), &w)
 	cfg.ShutdownGrace = loadShutdownGrace(getenv("SHUTDOWN_GRACE"), cfg.DumpTimeout, &w)
 
-	return cfg, w
+	return cfg, w, dumpDirErr
 }
 
 // warnings accumulates non-fatal notes; the addf helper keeps call sites terse.
@@ -91,18 +99,20 @@ func (w *warnings) addf(format string, args ...any) {
 	*w = append(*w, Warning(fmt.Sprintf(format, args...)))
 }
 
-func loadDumpDir(v string, w *warnings) string {
+// loadDumpDir resolves DUMP_DIR. An unset value uses the default. A value
+// containing ".." is fatal (returns an error): a path-traversal component could
+// let dumps escape the intended volume, and silently relocating backups to the
+// default would hide that the operator's chosen directory was ignored — for a
+// backup tool, failing to start is safer than backing up to the wrong place.
+// main surfaces the error and aborts startup.
+func loadDumpDir(v string) (string, error) {
 	if v == "" {
-		return DefaultDumpDir
+		return DefaultDumpDir, nil
 	}
-	// A ".." component could let dumps escape the intended volume. Rather than
-	// abort startup, reject the value and fall back to the default with a
-	// warning (graceful degradation; the traversal path is never used).
 	if strings.Contains(v, "..") {
-		w.addf("DUMP_DIR %q must not contain \"..\"; using default %s", v, DefaultDumpDir)
-		return DefaultDumpDir
+		return "", fmt.Errorf("DUMP_DIR %q must not contain %q (refusing to start; set a directory without path traversal)", v, "..")
 	}
-	return v
+	return v, nil
 }
 
 func loadDumpTimeout(v string, w *warnings) time.Duration {
@@ -122,14 +132,18 @@ func loadDumpTimeout(v string, w *warnings) time.Duration {
 	}
 }
 
-func loadConcurrency(v string, w *warnings) int {
+// loadPositiveInt parses a strictly-positive integer env var, falling
+// back to def (with a warning) on an empty, malformed, or non-positive
+// value. Shared by DUMP_CONCURRENCY and DUMP_KEEP, which carry the
+// identical "positive int or default" contract.
+func loadPositiveInt(v, name string, def int, w *warnings) int {
 	if v == "" {
-		return DefaultConcurrency
+		return def
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 1 {
-		w.addf("DUMP_CONCURRENCY %q is not a positive integer; using default %d", v, DefaultConcurrency)
-		return DefaultConcurrency
+		w.addf("%s %q is not a positive integer; using default %d", name, v, def)
+		return def
 	}
 	return n
 }
@@ -152,23 +166,14 @@ func loadInterval(v string, w *warnings) time.Duration {
 	case err != nil:
 		w.addf("DUMP_INTERVAL %q is not a valid duration; using default %s (set \"off\" to disable)", v, DefaultDumpInterval)
 		return DefaultDumpInterval
-	case d <= 0:
+	case d < 0:
+		w.addf("DUMP_INTERVAL %q is negative; built-in timer disabled (use a positive duration or 'off')", v)
+		return 0
+	case d == 0:
 		return 0
 	default:
 		return d
 	}
-}
-
-func loadKeep(v string, w *warnings) int {
-	if v == "" {
-		return DefaultDumpKeep
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 {
-		w.addf("DUMP_KEEP %q is not a positive integer; using default %d", v, DefaultDumpKeep)
-		return DefaultDumpKeep
-	}
-	return n
 }
 
 func loadFreeKB(v string, w *warnings) int64 {
@@ -205,4 +210,37 @@ func firstNonEmpty(v, def string) string {
 		return def
 	}
 	return v
+}
+
+// ListenerOpenAndPublic reports whether POST /dump would accept unauthenticated
+// requests on a non-loopback bind: AUTH_TOKEN is empty AND LISTEN_ADDR resolves
+// to something other than a loopback address. main emits a one-line startup
+// WARN when it is true, so a deployment that takes the open default without
+// restricting the published port to loopback (the documented 127.0.0.1: publish)
+// is surfaced at boot. Open mode stays supported — this only flags it, never
+// blocks startup.
+func ListenerOpenAndPublic(authToken, listenAddr string) bool {
+	if authToken != "" {
+		return false
+	}
+	return listenIsPublic(listenAddr)
+}
+
+// listenIsPublic reports whether a listen address binds a non-loopback
+// interface. A wildcard bind (":9847", "0.0.0.0:9847", "[::]:9847") is public;
+// an explicit loopback ("127.0.0.1", "::1", "localhost") is not. An address that
+// cannot be parsed is treated as public — a spurious warning is preferable to a
+// silently unflagged open endpoint.
+func listenIsPublic(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return true
+	}
+	if host == "" {
+		return true // wildcard bind, e.g. ":9847"
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return !ip.IsLoopback() // 0.0.0.0 and :: are unspecified => not loopback => public
+	}
+	return !strings.EqualFold(host, "localhost")
 }

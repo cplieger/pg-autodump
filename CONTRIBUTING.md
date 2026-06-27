@@ -25,7 +25,9 @@ fatal-vs-recover. It dispatches `serve` (default) / `health` / `trigger`.
 The real work lives under `internal/`:
 
 - `internal/config` — the single `os.Getenv` site. Every tunable is a
-  typed `Config` field. No secret is ever a field (libpq reads `.pgpass`).
+  typed `Config` field. No database password is ever a field (libpq reads
+  `.pgpass`); the lone secret it holds is the `AUTH_TOKEN` bearer
+  (`AuthToken`), which is never logged.
 - `internal/spec` — the single `DB_SPECS` validation path
   (`host[:port]:dbname:user`). Fuzzed. Nothing else validates specs.
 - `internal/pg` — the os/exec boundary over `pg_dump` / `pg_restore` /

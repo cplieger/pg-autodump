@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"net"
 	"strings"
 	"testing"
 	"unicode"
@@ -16,6 +17,8 @@ func FuzzParseSpecs(f *testing.F) {
 		"-bad:db:user", "host:..:user", "host:0:db:user",
 		"a:b:c d:e:f", "host:db:user host:db:user",
 		"a\x01b:db:user", "::::", "h:" + strings.Repeat("x", 300) + ":u",
+		"[2001:db8::1]:5432:db:user", "[::1]:db:user", "[fe80::1%eth0]:5432:db:user",
+		"[192.0.2.1]:5432:db:user", "[bad]:5432:db:user", "[]:db:user", "[2001:db8::1]db:user",
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -44,7 +47,17 @@ func FuzzParseSpecs(f *testing.F) {
 
 func assertSafeHost(t *testing.T, v string) {
 	t.Helper()
-	if v == "" || strings.HasPrefix(v, "-") || strings.Contains(v, "..") {
+	if v == "" {
+		t.Fatalf("valid spec has empty host")
+	}
+	// A bracketed IPv6/IPv4 literal is stored canonical and may contain ':' (and
+	// '.' for embedded IPv4). net.ParseIP accepts only IP syntax — no '/', no
+	// '..', no shell metacharacters — so a parseable IP is path-safe (ServerDir
+	// further replaces ':' with '-' and prefixes '@').
+	if ip := net.ParseIP(v); ip != nil {
+		return
+	}
+	if strings.HasPrefix(v, "-") || strings.Contains(v, "..") {
 		t.Fatalf("valid spec has unsafe host %q", v)
 	}
 	for _, r := range v {

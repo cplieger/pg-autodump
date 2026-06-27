@@ -16,7 +16,8 @@ On-demand PostgreSQL logical-backup sidecar. Trigger it, and it writes a verifie
 
 pg-autodump runs `pg_dump` (custom format) against every database in `DB_SPECS`,
 verifies each dump with `pg_restore --list`, and writes it atomically into a
-shared volume, keeping the newest `DUMP_KEEP` copies per database (7 by default).
+shared volume under a per-server `<host>_<port>/` subdirectory, keeping the
+newest `DUMP_KEEP` copies per database (7 by default).
 It does its one job well and delegates the heavy lifting: no compression,
 encryption, or off-site sync — your backup tool (Kopia, Restic, Borg, rsync)
 already does those, and points at the `/dumps` volume. If the collector also
@@ -88,31 +89,55 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
 
 ### Environment variables
 
-| Variable            | Description                                                                                                                                                                                                                                                           | Default            | Required |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------- |
-| `DB_SPECS`          | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. Invalid entries are reported per-DB and skipped. IPv6 literals are unsupported (use a hostname). | -                  | Yes      |
-| `PGPASSFILE`        | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user).                                                                                                                               | `/secrets/.pgpass` | No       |
-| `DUMP_DIR`          | Output directory. Values containing `..` are rejected.                                                                                                                                                                                                                | `/dumps`           | No       |
-| `DUMP_TIMEOUT`      | Per-dump seconds (min 10).                                                                                                                                                                                                                                            | `300`              | No       |
-| `DUMP_CONCURRENCY`  | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume.                                                                                                                                                                         | `2`                | No       |
-| `DUMP_INTERVAL`     | Built-in timer cadence (Go duration). `off` / `disabled` / `0` hand scheduling to an external trigger.                                                                                                                                                                | `24h`              | No       |
-| `DUMP_KEEP`         | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool).                                  | `7`                | No       |
-| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables.                                                                                                                                                                                    | `1048576`          | No       |
-| `AUTH_TOKEN`        | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback).                                                                                                                                                      | `""`               | No       |
-| `LISTEN_ADDR`       | HTTP listen address.                                                                                                                                                                                                                                                  | `:9847`            | No       |
-| `SHUTDOWN_GRACE`    | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this.                                                                                                                                                                                                     | `DUMP_TIMEOUT+15s` | No       |
+| Variable            | Description                                                                                                                                                                                                                                                                                         | Default            | Required |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------- |
+| `DB_SPECS`          | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped. | -                  | Yes      |
+| `PGPASSFILE`        | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user).                                                                                                                                                             | `/secrets/.pgpass` | No       |
+| `DUMP_DIR`          | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value containing `..` is **fatal** — startup aborts rather than silently relocate backups to the default.                                                  | `/dumps`           | No       |
+| `DUMP_TIMEOUT`      | Per-dump seconds (min 10).                                                                                                                                                                                                                                                                          | `300`              | No       |
+| `DUMP_CONCURRENCY`  | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume.                                                                                                                                                                                                       | `2`                | No       |
+| `DUMP_INTERVAL`     | Built-in timer cadence (Go duration). On startup it runs one dump only when no existing dump is newer than one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger.                       | `24h`              | No       |
+| `DUMP_KEEP`         | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool).                                                                | `7`                | No       |
+| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables.                                                                                                                                                                                                                  | `1048576`          | No       |
+| `AUTH_TOKEN`        | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback.                                                                                         | `""`               | No       |
+| `LISTEN_ADDR`       | HTTP listen address.                                                                                                                                                                                                                                                                                | `:9847`            | No       |
+| `SHUTDOWN_GRACE`    | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp).                                                                                                                            | `DUMP_TIMEOUT+15s` | No       |
+
+> **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port may be omitted). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`) — or use `PGPASSWORD` instead.
 
 ### Volumes
 
-| Mount              | Description                                                                                                         |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------- |
-| `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used.                                                |
-| `/dumps`           | Output directory; verified dump files per database (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). |
+| Mount              | Description                                                                                                                                        |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used.                                                                               |
+| `/dumps`           | Output directory; verified dumps under a per-server `<host>_<port>/` subdirectory (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). |
 
 ### Endpoints
 
-- `POST /dump` — run all dumps; `200` if every database succeeded, `500` if any failed, `429` if a run is already in progress, `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: reason` line per database.
+- `POST /dump` — run all dumps; `200` if every database succeeded, `500` if any failed, `429` if a run is already in progress, `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: <detail>` line per database; for an execution-tool failure (`pg_error` / `truncated` / `other`) the line carries only the reason word — the raw `pg_dump`/`pg_restore` stderr is logged, not returned, so an open endpoint never discloses schema or object names.
 - `GET /healthz` — `200 ok` / `503 unhealthy`. Reflects liveness preconditions (client binaries present, `/dumps` writable, `DB_SPECS` non-empty), **not** per-host database reachability, so a transiently-down database never flips the container unhealthy.
+
+### On-disk layout
+
+Each database's dump is written under a per-server subdirectory of `DUMP_DIR`
+named `<host>_<port>`, so two databases that share a name on different servers
+never collide on one file:
+
+```text
+/dumps/
+  db1.example.com_5432/myapp.dump
+  db2.example.com_5432/myapp.dump        # same dbname, different host — no clash
+  apphost_5433/myapp.dump                # same host, a second instance on :5433
+  @2001-db8--1_5432/myapp.dump           # IPv6 host (':' encoded as '-', '@'-prefixed)
+```
+
+With `DUMP_KEEP>1` the timestamped `<dbname>.<UTC>.dump` files live inside that
+subdirectory and are pruned per server, so retention never counts one server's
+dumps against another's. **Upgrading from a flat layout:** dumps previously
+written as `<dbname>.dump` at the `DUMP_DIR` root are no longer updated; new
+dumps appear under `<host>_<port>/`. A versioning collector (Kopia, etc.) simply
+begins a fresh chain at the new paths — pg-autodump never reads, moves, or
+deletes the old flat files, so remove them once at your convenience.
 
 ## Healthcheck
 
@@ -142,7 +167,7 @@ with a clear message rather than a cryptic pg_dump abort.
 - **No Docker socket, no root.** The container needs only network reach to the databases, a read-only `.pgpass`, and a writable `/dumps`. Runs as a non-root user with `cap_drop: [ALL]` and `read_only`.
 - **Credentials never on a command line or in logs.** They live in `.pgpass` (or `PGPASSWORD`); `pg_dump` is invoked with `--no-password` so it never prompts.
 - **No shell, explicit argv.** `DB_SPECS` is validated once, and identifiers are passed as long options (`--dbname=`, `--username=`) so a value can never be read as a flag. No shell is ever invoked.
-- **Keep it private or set `AUTH_TOKEN`.** A stray trigger can at most write a read-only-role dump to the volume.
+- **Keep it private or set `AUTH_TOKEN`.** A stray trigger can at most write a read-only-role dump to the volume. When the endpoint is open (`AUTH_TOKEN` empty) on a non-loopback `LISTEN_ADDR`, pg-autodump logs a startup warning; and `POST /dump` returns only the reason word for execution-tool failures (never the raw `pg_dump`/`pg_restore` stderr), so an open endpoint discloses no schema or object names.
 
 The CI battery runs govulncheck, golangci-lint (gosec, gocritic), trivy, grype, gitleaks, semgrep, and hadolint on every change; `DB_SPECS` parsing is fuzzed.
 

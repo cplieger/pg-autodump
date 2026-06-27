@@ -1,16 +1,9 @@
-// Package dump is the core of pg-autodump: it orchestrates one dump run,
-// drives the pg boundary to stream a network pg_dump per database, verifies
-// each dump locally, atomically replaces the previous good file, and reports
-// a typed result per database. It defines the narrow interfaces it consumes
-// (PGTool, Recorder) so the logic is testable against fakes with no network,
-// no daemon, and no real filesystem dependencies beyond a temp dir.
 package dump
 
 import (
 	"context"
 	"errors"
 	"io"
-	"strconv"
 	"time"
 )
 
@@ -22,9 +15,6 @@ type Conn struct {
 	User   string
 	Port   int
 }
-
-// Addr returns the "host:port" key used for logging and metrics labels.
-func (c Conn) Addr() string { return c.Host + ":" + strconv.Itoa(c.Port) }
 
 // FailKind is a typed classification the pg boundary returns from Probe (and
 // from a connection-phase Dump failure) so the orchestrator can map a failure
@@ -46,8 +36,8 @@ const (
 // implementation lives in internal/pg; tests supply a fake. Every method is
 // context-bounded and the implementation enforces that a deadline is present.
 type PGTool interface {
-	// Probe performs a single authenticated round-trip that classifies
-	// connect/auth/version failures and reports the server major version.
+	// Probe performs a TCP dial followed by an authenticated round-trip to
+	// classify connect/auth/version failures and report the server major version.
 	Probe(ctx context.Context, c Conn) (serverMajor int, kind FailKind, err error)
 
 	// Dump streams a network custom-format pg_dump for c to w and returns the
@@ -78,6 +68,7 @@ const (
 	ReasonOther           Reason = "other"
 	ReasonDuplicate       Reason = "duplicate"
 	ReasonInvalid         Reason = "invalid"
+	ReasonMkdirFailed     Reason = "mkdir_failed"
 	ReasonRenameFailed    Reason = "rename_failed"
 	ReasonSkipped         Reason = "skipped"
 )
@@ -89,12 +80,32 @@ type Result struct {
 	Reason        Reason
 	Detail        string // human line for the HTTP body, e.g. "ok (4823104 bytes)"
 	Bytes         int64
-	ServerVersion int // server_version_num from the probe, 0 if unknown
+	ServerVersion int // server major version from the probe (server_version_num/10000), 0 if unknown
 	Duration      time.Duration
 }
 
 // OK reports whether the dump succeeded.
 func (r *Result) OK() bool { return r.Reason == ReasonOK }
+
+// BodyDetail is the operator-facing line for the POST /dump (and `trigger`)
+// response body. For the execution-tool failure reasons whose Detail carries a
+// raw pg_dump/pg_restore stderr tail (pg_error, truncated, other), it returns
+// only the reason word: that stderr can echo schema/object/role names and error
+// text, and the endpoint may run open (no AUTH_TOKEN), so the full detail is
+// kept to the logs (the orchestrator's per-result log line records r.Detail) and
+// out of a body any reachable client could read. Every other reason returns its
+// Detail (e.g. "ok (4823104 bytes)", a validation reason, "connect_error"),
+// falling back to the reason word when Detail is empty.
+func (r *Result) BodyDetail() string {
+	switch r.Reason {
+	case ReasonPGError, ReasonTruncated, ReasonOther:
+		return string(r.Reason)
+	}
+	if r.Detail == "" {
+		return string(r.Reason)
+	}
+	return r.Detail
+}
 
 // classify maps a pg_dump exit code, a context error, and a typed FailKind
 // from the boundary to a Reason. Order matters: a cancelled or timed-out

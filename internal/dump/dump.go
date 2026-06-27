@@ -9,7 +9,8 @@ package dump
 import (
 	"context"
 	"log/slog"
-	"strings"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/spec"
@@ -120,34 +121,63 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 		return o.finish(&Result{
 			Host: s.Host, DBName: s.DBName, Reason: reason,
 			Detail: detail, ServerVersion: major, Duration: o.now().Sub(start),
-		})
+		}, perr)
 	}
 
 	dumpCtx, cancelDump := context.WithTimeout(ctx, o.dumpTimeout)
 	defer cancelDump()
 
-	res := stageAndReplace(dumpCtx, o.pg, o.dumpDir, dumpFileName(s.DBName, o.keep, start), conn)
+	// Qualify the artifact by its server: DUMP_DIR/<host>_<port>/<dbname>.dump.
+	// This makes the path honor the (host, port, dbname) identity the validator
+	// dedups on, so two databases sharing a name on different servers can never
+	// map to one file. MkdirAll is idempotent and safe for concurrent workers
+	// (same or different subdirs); 0700 matches the unprivileged, read-only,
+	// non-root runtime (only this process traverses it).
+	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return o.finish(&Result{
+			Host: s.Host, DBName: s.DBName, Reason: ReasonMkdirFailed,
+			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
+			ServerVersion: major, Duration: o.now().Sub(start),
+		}, nil)
+	}
+
+	res := stageAndReplace(dumpCtx, o.pg, dir, dumpFileName(s.DBName, o.keep, start), conn)
 	res.Host = s.Host
 	res.DBName = s.DBName
 	res.ServerVersion = major
 	res.Duration = o.now().Sub(start)
 
 	if res.Reason == ReasonOK && o.keep > 1 {
-		if removed, err := pruneOldDumps(o.dumpDir, s.DBName, o.keep); err != nil {
+		if removed, err := pruneOldDumps(dir, s.DBName, o.keep); err != nil {
 			o.log.Warn("dump retention prune failed", "db", s.DBName, "keep", o.keep, "err", err)
 		} else if removed > 0 {
 			o.log.Info("pruned old dumps", "db", s.DBName, "keep", o.keep, "removed", removed)
 		}
 	}
-	return o.finish(&res)
+	return o.finish(&res, nil)
 }
 
-// finish logs a result, then returns it (by value) so callers can
-// `return o.finish(&res)`.
-func (o *Orchestrator) finish(r *Result) Result {
-	o.log.Log(context.Background(), levelFor(r.Reason), "dump "+string(r.Reason),
+// finish logs a result and returns it (by value) so callers can
+// `return o.finish(&res, nil)`. diagErr is an optional probe diagnostic (the dial error or
+// psql stderr behind a connect_error/auth_error); it is recorded in the log line only,
+// never in r.Detail, so the HTTP response body is unchanged while operators keep the root
+// cause in Loki.
+func (o *Orchestrator) finish(r *Result, diagErr error) Result {
+	attrs := []any{
 		"host", r.Host, "db", r.DBName, "reason", string(r.Reason),
-		"bytes", r.Bytes, "duration_s", r.Duration.Seconds())
+		"bytes", r.Bytes, "duration_s", r.Duration.Seconds(),
+	}
+	if r.ServerVersion > 0 {
+		attrs = append(attrs, "server_version", r.ServerVersion)
+	}
+	if r.Reason != ReasonOK && r.Detail != "" {
+		attrs = append(attrs, "detail", r.Detail)
+	}
+	if diagErr != nil && diagErr.Error() != r.Detail {
+		attrs = append(attrs, "err", diagErr)
+	}
+	o.log.Log(context.Background(), levelFor(r.Reason), "dump "+string(r.Reason), attrs...)
 	return *r
 }
 
@@ -155,7 +185,7 @@ func (o *Orchestrator) finish(r *Result) Result {
 // raw token as the database label when the parsed name is empty.
 func invalidResult(s *spec.DBSpec) Result {
 	reason := ReasonInvalid
-	if strings.Contains(s.Invalid, "duplicate") {
+	if s.Duplicate {
 		reason = ReasonDuplicate
 	}
 	db := s.DBName
@@ -170,7 +200,13 @@ func levelFor(r Reason) slog.Level {
 	switch r {
 	case ReasonOK:
 		return slog.LevelInfo
-	case ReasonInvalid, ReasonDuplicate, ReasonSkipped:
+	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
+		// ReasonKilled (context.Canceled) is only produced by a graceful
+		// shutdown cancelling an in-flight dump (Guard.CancelInFlight on the
+		// SIGTERM drain path), so it is an expected operator action, not a
+		// dump failure. Logging it at Error would false-fire the Loki
+		// dump-failure alert on every clean shutdown; Warn records the
+		// cut-off without tripping the error-rate alert.
 		return slog.LevelWarn
 	default:
 		return slog.LevelError

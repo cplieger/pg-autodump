@@ -35,6 +35,7 @@ A database pg-autodump can reach is uniquely identified by `(host, port, dbname)
 not part of which database it is (and the duplicate key already excludes it).
 
 We deliberately do **not** use a database-side id:
+
 - `pg_database.oid` is unique only within one cluster (two servers can both have OID
   16384) and changes on drop/recreate — it would orphan backups. Rejected.
 - The cluster `system_identifier` is globally unique and stable but requires an extra
@@ -97,6 +98,7 @@ if res.Reason == ReasonOK && o.keep > 1 {
 ```
 
 Notes:
+
 - `os.MkdirAll` is idempotent and safe to call concurrently for the same or different
   subdirectories, satisfying the worker-pool concurrency requirement (two workers dumping
   two databases on the same server both create/observe the same subdir).
@@ -276,6 +278,7 @@ Example: `[2001:db8::1]:5432:authentik:ro` → `/dumps/@2001-db8--1_5432/authent
 ### Connectivity (no `pg` boundary change)
 
 Verified against `internal/pg/pg.go`:
+
 - `Probe` dials with `net.JoinHostPort(c.Host, strconv.Itoa(c.Port))`, which brackets an
   IPv6 `c.Host` automatically (`[2001:db8::1]:5432`). Already correct.
 - `Dump` and `Probe` pass the **bare** address to `--host=`/`-h` — the form libpq expects

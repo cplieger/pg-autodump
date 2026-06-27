@@ -34,6 +34,7 @@ dump to land at a path unique to that database, so that no backup is ever silent
 overwritten by another database that happens to share its name.
 
 **Acceptance criteria:**
+
 1. WHEN two valid specs share a `dbname` but differ in `host` and/or `port`, THEN the
    system SHALL write their dumps to two distinct paths.
 2. WHEN two valid specs share `dbname` and `port` but differ in `host`, THEN the system
@@ -50,6 +51,7 @@ overwritten by another database that happens to share its name.
 self-evident folder, so I can see at a glance which server a backup came from.
 
 **Acceptance criteria:**
+
 1. The system SHALL place each database's artifact under a per-server subdirectory of
    `DUMP_DIR` named `<host>_<port>`.
 2. WITHIN that subdirectory the artifact SHALL keep the existing filename shape:
@@ -60,6 +62,7 @@ self-evident folder, so I can see at a glance which server a backup came from.
    a backup's identity (consistent with the existing duplicate key, which excludes it).
 
 Example layout:
+
 ```
 /dumps/
   db1.example.com_5432/authentik.dump
@@ -74,6 +77,7 @@ Example layout:
 path to be well-formed and consistent with the explicit-port form.
 
 **Acceptance criteria:**
+
 1. WHEN a spec omits the port (3-field `host:dbname:user`), THEN the system SHALL use the
    resolved default port (5432) in the subdirectory name.
 2. A spec written `host:dbname:user` and the same spec written `host:5432:dbname:user`
@@ -86,6 +90,7 @@ path to be well-formed and consistent with the explicit-port form.
 database" to mean per actual database, not per database-name-across-all-servers.
 
 **Acceptance criteria:**
+
 1. WHEN `DUMP_KEEP>1`, THEN retention SHALL consider only the timestamped dumps within a
    single server's subdirectory when deciding what to prune.
 2. Pruning one server's dumps SHALL NOT remove or count any other server's dumps, even
@@ -99,6 +104,7 @@ database" to mean per actual database, not per database-name-across-all-servers.
 target directory cannot be created, never silently or by corrupting another path.
 
 **Acceptance criteria:**
+
 1. BEFORE staging a dump, the system SHALL ensure the server subdirectory exists.
 2. WHEN the subdirectory cannot be created, THEN the system SHALL return a per-database
    failure Result with a dedicated `mkdir_failed` reason and a detail naming the directory
@@ -116,6 +122,7 @@ target directory cannot be created, never silently or by corrupting another path
 values to remain unable to write outside `DUMP_DIR`.
 
 **Acceptance criteria:**
+
 1. The system SHALL construct artifact paths only from validated `host`/`dbname` values
    (existing grammar: host `[a-zA-Z0-9_.-]` no `..`; dbname `[a-zA-Z0-9_-]` no `..`; no
    `/` in either), so a constructed path can never escape `DUMP_DIR`.
@@ -131,6 +138,7 @@ values to remain unable to write outside `DUMP_DIR`.
 documented migration for the changed layout.
 
 **Acceptance criteria:**
+
 1. The README and the `pg-autodump` steering doc SHALL document the new layout and that
    it changes the on-disk path of every artifact.
 2. The documentation SHALL describe the migration for versioned collectors (e.g. Kopia):
@@ -145,6 +153,7 @@ documented migration for the changed layout.
 behave predictably rather than fail obscurely on filesystem name limits.
 
 **Acceptance criteria:**
+
 1. WHEN a `<host>_<port>` subdirectory name would exceed the filesystem per-component
    limit (255 bytes on common Linux filesystems), THEN the system SHALL surface a clear,
    per-database failure (not a generic OS error mid-run) — see Design for the chosen
@@ -154,6 +163,7 @@ behave predictably rather than fail obscurely on filesystem name limits.
 ### Requirement 9 — Existing safety invariants are retained
 
 **Acceptance criteria:**
+
 1. Verify-before-replace SHALL still apply within the server subdirectory: a
    partial/truncated/empty dump SHALL never overwrite a known-good file at the new path.
 2. The exact-duplicate behavior SHALL be unchanged: a repeated `host:port:dbname` spec is
@@ -172,6 +182,7 @@ pg-autodump at a database by its IPv6 literal address, so backups work regardles
 network stack.
 
 **Acceptance criteria:**
+
 1. The system SHALL accept a bracketed IPv6 host in `DB_SPECS`:
    `[<ipv6>]:<port>:<dbname>:<user>` and the port-omitted `[<ipv6>]:<dbname>:<user>`
    (port defaults to 5432). The brackets disambiguate the address colons from the

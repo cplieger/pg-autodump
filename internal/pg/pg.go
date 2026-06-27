@@ -49,13 +49,18 @@ type Tool struct {
 	clientMajor int // resolved lazily from `pg_dump --version`; 0 if unknown
 }
 
+// requiredBins are the PostgreSQL client binaries the image must ship and the
+// health preflight verifies; New() and BinariesPresent share this single list so
+// the two can never drift.
+var requiredBins = []string{"pg_dump", "pg_restore", "psql"}
+
 // New builds a Tool. pgPassFile is exported into each child as PGPASSFILE;
 // stmtTimeout becomes the server-side statement_timeout (via PGOPTIONS).
 func New(pgPassFile string, stmtTimeout time.Duration) *Tool {
 	return &Tool{
-		dumpBin:     "pg_dump",
-		restoreBin:  "pg_restore",
-		psqlBin:     "psql",
+		dumpBin:     requiredBins[0],
+		restoreBin:  requiredBins[1],
+		psqlBin:     requiredBins[2],
 		pgPassFile:  pgPassFile,
 		stmtTimeout: stmtTimeout,
 		dialTimeout: 5 * time.Second,
@@ -67,7 +72,7 @@ var _ dump.PGTool = (*Tool)(nil)
 // BinariesPresent reports whether pg_dump, pg_restore, and psql resolve on
 // PATH. The health probe calls it; a missing binary is an image/build error.
 func BinariesPresent() error {
-	for _, bin := range []string{"pg_dump", "pg_restore", "psql"} {
+	for _, bin := range requiredBins {
 		if _, err := exec.LookPath(bin); err != nil {
 			return errors.New("required binary not found on PATH: " + bin)
 		}
@@ -105,8 +110,13 @@ func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int
 }
 
 // VerifyTOC runs a local `pg_restore --list` against the custom-format file at
-// path: no network, no daemon. A readable table-of-contents proves the file is
-// structurally intact (not truncated mid-stream). Returns nil iff readable.
+// path: no network, no daemon. It reads the archive header and table of
+// contents at the front of the archive, confirming the file is a well-formed
+// custom-format archive; it does NOT re-read the trailing data section, so it
+// is a structural check, not a full-restore validation. Data-stream
+// completeness is guaranteed by pg_dump's exit code (gated before this check
+// in stageAndReplace); VerifyTOC is the secondary guard that rejects a
+// non-archive or header-truncated file. Returns nil iff the TOC is readable.
 func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return ErrNoDeadline
@@ -117,8 +127,16 @@ func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	var errBuf boundedBuffer
 	errBuf.max = 512
 	cmd.Stderr = &errBuf
-	if _, err := run(cmd); err != nil {
+	code, err := run(cmd)
+	if err != nil {
 		return err
+	}
+	if code != 0 {
+		detail := strings.TrimSpace(errBuf.String())
+		if detail == "" {
+			detail = "pg_restore --list exited " + strconv.Itoa(code)
+		}
+		return errors.New(detail)
 	}
 	return nil
 }
@@ -158,16 +176,34 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 	errBuf.max = stderrCap
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
-	if _, err := run(cmd); err != nil {
-		// Dial succeeded, so the host is up: the failure is authentication or
-		// a missing/invalid database, not reachability.
-		return 0, dump.FailAuth, err
+	code, rerr := run(cmd)
+	if rerr != nil || code != 0 {
+		// A ctx timeout/cancel killed psql: report it as a context error so
+		// classify() maps it to timeout/killed, never a spurious auth_error.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return 0, dump.FailNone, ctxErr
+		}
+		// psql could not be started (fork failure, vanished binary): an
+		// environment fault, not auth. Surface the exec error so classify()
+		// maps it to ReasonOther, mirroring the Dump path's exit-0-with-error branch.
+		if rerr != nil {
+			return 0, dump.FailNone, rerr
+		}
+		// Dial succeeded => host is up; a non-zero psql exit is auth / missing
+		// database, not reachability. Surface the bounded psql stderr.
+		detail := strings.TrimSpace(errBuf.String())
+		if detail == "" {
+			detail = "psql probe exited " + strconv.Itoa(code)
+		}
+		return 0, dump.FailAuth, errors.New(detail)
 	}
 
 	serverNum, _ := strconv.Atoi(strings.TrimSpace(outBuf.String()))
 	serverMajor := serverNum / 10000 // correct for PostgreSQL 10+ (all modern servers)
 	if cm := t.clientMajorCached(ctx); cm > 0 && serverMajor > cm {
-		return serverMajor, dump.FailVersion, nil
+		return serverMajor, dump.FailVersion,
+			errors.New("client major " + strconv.Itoa(cm) + " older than server major " +
+				strconv.Itoa(serverMajor) + " (bump the pg-autodump image)")
 	}
 	return serverMajor, dump.FailNone, nil
 }

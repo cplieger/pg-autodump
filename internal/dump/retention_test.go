@@ -117,3 +117,102 @@ func TestPruneOldDumpsNoopWhenUnderLimit(t *testing.T) {
 		t.Fatalf("removed = %d, want 0 (under limit)", removed)
 	}
 }
+
+func TestPruneOldDumpsSkipsDirectories(t *testing.T) {
+	dir := t.TempDir()
+	// A directory whose name matches the "<dbname>.<ts>.dump" pattern and sorts
+	// oldest. The IsDir guard must skip it, so prune never counts or removes a
+	// directory as a dump artifact.
+	matchingDir := filepath.Join(dir, "app.20260101T000000Z.dump")
+	if err := os.Mkdir(matchingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{"app.20260104T000000Z.dump", "app.20260105T000000Z.dump"} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := pruneOldDumps(dir, "app", 1)
+	if err != nil {
+		t.Fatalf("pruneOldDumps: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1 (only the oldest file is pruned; the matching directory is skipped)", removed)
+	}
+	if _, statErr := os.Stat(matchingDir); statErr != nil {
+		t.Fatalf("a directory matching the dump pattern was removed by prune: %v", statErr)
+	}
+}
+
+// The matcher requires a name strictly longer than "<dbname>." + ".dump", so
+// the degenerate "app..dump" (empty timestamp) is NOT counted as a retained
+// copy. With two real copies at keep=2 the correct behaviour removes nothing.
+func TestPruneOldDumpsIgnoresEmptyTimestampName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	files := []string{
+		"app..dump", // degenerate: len == len("app.")+len(".dump"), must be ignored
+		"app.20260103T000000Z.dump",
+		"app.20260104T000000Z.dump",
+	}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	removed, err := pruneOldDumps(dir, "app", 2)
+	if err != nil {
+		t.Fatalf("pruneOldDumps: %v", err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0 (the two real copies are within keep=2; the degenerate name must not count)", removed)
+	}
+	for _, f := range files {
+		if _, statErr := os.Stat(filepath.Join(dir, f)); statErr != nil {
+			t.Errorf("expected %q to survive prune: %v", f, statErr)
+		}
+	}
+}
+
+func TestPruneOldDumpsReadDirError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+	removed, err := pruneOldDumps(missing, "app", 2)
+	if err == nil {
+		t.Fatal("pruneOldDumps(missing dir) err = nil, want a ReadDir error")
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0 when the directory cannot be read", removed)
+	}
+}
+
+func TestPruneOldDumpsRemoveError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses directory write-permission bits, so os.Remove never returns EACCES")
+	}
+	dir := t.TempDir()
+	for _, f := range []string{
+		"app.20260101T000000Z.dump",
+		"app.20260102T000000Z.dump",
+		"app.20260103T000000Z.dump",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, f), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A read-only dir makes os.Remove of its entries fail (EACCES) for a non-root
+	// process, exercising removeDumps's error arm and pruneOldDumps's error return.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // so t.TempDir cleanup can recurse
+
+	removed, err := pruneOldDumps(dir, "app", 1)
+	if err == nil {
+		t.Fatal("pruneOldDumps on a read-only dir err = nil, want a remove error")
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0 when every remove fails", removed)
+	}
+}

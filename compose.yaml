@@ -8,6 +8,9 @@ services:
     image: ghcr.io/cplieger/pg-autodump:latest
     container_name: pg-autodump
     restart: unless-stopped
+    # Let in-flight dumps finish/cancel on SIGTERM. Must be >= SHUTDOWN_GRACE
+    # (default DUMP_TIMEOUT+15s = 315s); Docker's 10s default SIGKILLs mid-dump.
+    stop_grace_period: 315s
     environment:
       # Space-separated host[:port]:dbname:user tuples (port defaults to 5432).
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"

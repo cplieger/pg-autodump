@@ -35,16 +35,10 @@ func DueForStartupDump(dumpDir string, interval time.Duration, now time.Time) bo
 func newestDumpModTime(dumpDir string) (time.Time, bool) {
 	var newest time.Time
 	found := false
-	scan := func(entries []os.DirEntry) {
+	consider := func(entries []os.DirEntry) {
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".dump") {
-				continue
-			}
-			info, err := e.Info()
-			if err != nil {
-				continue
-			}
-			if mt := info.ModTime(); !found || mt.After(newest) {
+			mt, ok := dumpEntryModTime(e)
+			if ok && (!found || mt.After(newest)) {
 				newest, found = mt, true
 			}
 		}
@@ -54,14 +48,29 @@ func newestDumpModTime(dumpDir string) (time.Time, bool) {
 	if err != nil {
 		return newest, found
 	}
-	scan(top) // legacy flat artifacts at the DUMP_DIR root
+	consider(top) // legacy flat artifacts at the DUMP_DIR root
 	for _, e := range top {
 		if !e.IsDir() {
 			continue
 		}
 		if entries, err := os.ReadDir(filepath.Join(dumpDir, e.Name())); err == nil {
-			scan(entries)
+			consider(entries)
 		}
 	}
 	return newest, found
+}
+
+// dumpEntryModTime returns the modification time of a directory entry when it is
+// a regular "*.dump" file, and false otherwise (a directory, a non-".dump"
+// name, or an entry whose info cannot be read — all skipped, since the caller
+// only needs a recency signal, not a complete inventory).
+func dumpEntryModTime(e os.DirEntry) (time.Time, bool) {
+	if e.IsDir() || !strings.HasSuffix(e.Name(), ".dump") {
+		return time.Time{}, false
+	}
+	info, err := e.Info()
+	if err != nil {
+		return time.Time{}, false
+	}
+	return info.ModTime(), true
 }

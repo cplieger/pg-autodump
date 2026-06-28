@@ -74,16 +74,7 @@ func runServer(getenv func(string) string) int {
 			"listen_addr", cfg.ListenAddr)
 	}
 
-	// At startup nothing is in flight, so every leftover temp is a crash
-	// orphan. Reclaim them regardless of age: CleanupStaleTemps removes temps
-	// older than maxAge and no-ops on a non-positive maxAge, so the smallest
-	// positive age ("older than ~now") reaps them all.
-	const reclaimAllOrphans = time.Nanosecond
-	if removed, err := atomicfile.CleanupStaleTemps(cfg.DumpDir, reclaimAllOrphans); err != nil {
-		log.Warn("stale temp cleanup failed", "dir", cfg.DumpDir, "err", err)
-	} else if removed > 0 {
-		log.Info("reclaimed stale temp files", "count", removed)
-	}
+	reclaimStartupOrphans(cfg.DumpDir, log)
 
 	marker := health.NewMarker(health.DefaultPath)
 	defer marker.Cleanup()
@@ -144,28 +135,47 @@ func runServer(getenv func(string) string) int {
 		marker.Set(false)
 	}
 
-	drainCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
-	defer cancel()
-	// Stop accepting new requests; let an HTTP-triggered dump drain within budget.
-	if err := srv.Shutdown(drainCtx); err != nil {
-		log.Warn("HTTP drain budget exceeded", "grace", cfg.ShutdownGrace, "err", err)
+	gracefulShutdown(srv, guard, cfg.ShutdownGrace, log)
+	return 0
+}
+
+// reclaimStartupOrphans removes crash-orphaned temp dumps left in dumpDir. At
+// startup nothing is in flight, so every leftover temp is a crash orphan:
+// CleanupStaleTemps removes temps older than maxAge and no-ops on a
+// non-positive maxAge, so the smallest positive age ("older than ~now") reaps
+// them all.
+func reclaimStartupOrphans(dumpDir string, log *slog.Logger) {
+	const reclaimAllOrphans = time.Nanosecond
+	if removed, err := atomicfile.CleanupStaleTemps(dumpDir, reclaimAllOrphans); err != nil {
+		log.Warn("stale temp cleanup failed", "dir", dumpDir, "err", err)
+	} else if removed > 0 {
+		log.Info("reclaimed stale temp files", "count", removed)
 	}
-	// A built-in-ticker dump holds no HTTP connection, so srv.Shutdown cannot
-	// see it. Wait for any in-flight run to finish within the remaining budget;
-	// if it does not, cancel it and let it unwind so pg_dump is killed cleanly
-	// and the staged temp is removed.
+}
+
+// gracefulShutdown drains the HTTP server and any in-flight ticker dump within
+// grace. It stops accepting new requests (srv.Shutdown); because a
+// built-in-ticker dump holds no HTTP connection that Shutdown can see, it then
+// waits for any in-flight run to finish within the remaining budget and, if it
+// does not, cancels the run and lets it unwind so pg_dump is killed cleanly and
+// the staged temp is removed.
+func gracefulShutdown(srv *http.Server, guard *dump.Guard, grace time.Duration, log *slog.Logger) {
+	drainCtx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	if err := srv.Shutdown(drainCtx); err != nil {
+		log.Warn("HTTP drain budget exceeded", "grace", grace, "err", err)
+	}
 	if !guard.WaitIdle(drainCtx) {
-		log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", cfg.ShutdownGrace)
+		log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", grace)
 		guard.CancelInFlight()
 		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer unwindCancel()
 		if !guard.WaitIdle(unwindCtx) {
-			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", cfg.ShutdownGrace)
-			return 0
+			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
+			return
 		}
 	}
-	log.Info("shutdown complete", "grace", cfg.ShutdownGrace)
-	return 0
+	log.Info("shutdown complete", "grace", grace)
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL). The homelab

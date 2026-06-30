@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -328,4 +329,118 @@ func TestLevelFor(t *testing.T) {
 			t.Errorf("levelFor(%q).String() = %q, want %q", tt.reason, got, tt.want)
 		}
 	}
+}
+
+// attrCapture is an in-memory slog.Handler that records the structured
+// attributes of the most recent log record, so the finish() log-attribute tests
+// assert on typed key/value pairs instead of parsing rendered text.
+type attrCapture struct {
+	attrs map[string]slog.Value
+	mu    sync.Mutex
+}
+
+func (h *attrCapture) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *attrCapture) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.attrs = make(map[string]slog.Value, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		h.attrs[a.Key] = a.Value
+		return true
+	})
+	return nil
+}
+
+func (h *attrCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *attrCapture) WithGroup(string) slog.Handler      { return h }
+
+func (h *attrCapture) has(key string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	_, ok := h.attrs[key]
+	return ok
+}
+
+func (h *attrCapture) value(key string) slog.Value {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.attrs[key]
+}
+
+// finishOrchestrator builds an Orchestrator whose only configured behavior is
+// the capture logger, for exercising finish()'s log-attribute gates in isolation.
+func finishOrchestrator(h slog.Handler) *Orchestrator {
+	return New(&Params{PG: &fakePG{}, Logger: slog.New(h)})
+}
+
+// finish logs the server_version attribute only when the probe resolved a
+// positive major; a zero (unknown) version is omitted from the log line.
+func TestFinishServerVersionAttr(t *testing.T) {
+	t.Run("logged when the major is positive", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(&Result{Host: "h", DBName: "db", Reason: ReasonOK, ServerVersion: 18}, nil)
+		if !h.has("server_version") {
+			t.Fatal("finish omitted server_version for a positive major; want it logged")
+		}
+		if got := h.value("server_version").Int64(); got != 18 {
+			t.Fatalf("server_version = %d, want 18", got)
+		}
+	})
+
+	t.Run("omitted when the major is zero", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, ServerVersion: 0, Detail: "connect_error"}, nil)
+		if h.has("server_version") {
+			t.Fatalf("finish logged server_version for an unknown (zero) major; want it omitted")
+		}
+	})
+}
+
+// finish logs the detail attribute only for a failure that carries one; a
+// successful result keeps its "ok (N bytes)" detail in the body, not the log line.
+func TestFinishDetailAttr(t *testing.T) {
+	t.Run("logged for a failure carrying a detail", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(&Result{Host: "h", DBName: "db", Reason: ReasonPGError, Detail: "dump failed: boom"}, nil)
+		if !h.has("detail") {
+			t.Fatal("finish omitted detail for a failure carrying one; want it logged")
+		}
+		if got := h.value("detail").String(); got != "dump failed: boom" {
+			t.Fatalf("detail = %q, want %q", got, "dump failed: boom")
+		}
+	})
+
+	t.Run("omitted on success", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(&Result{Host: "h", DBName: "db", Reason: ReasonOK, Detail: "ok (5 bytes)"}, nil)
+		if h.has("detail") {
+			t.Fatalf("finish logged detail on success; want it omitted (the ok detail belongs in the body, not the log)")
+		}
+	})
+}
+
+// finish logs the diagnostic error (the dial error / psql stderr behind a
+// failure) only when it differs from the result Detail, so the same text is
+// never recorded twice on one line.
+func TestFinishDiagErrAttr(t *testing.T) {
+	t.Run("logged when the diagnostic differs from detail", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(
+			&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, Detail: "connect_error"},
+			errors.New("dial tcp 10.0.0.1:5432: connect: connection refused"))
+		if !h.has("err") {
+			t.Fatal("finish omitted err when the probe diagnostic differs from detail; want it logged for the operator")
+		}
+	})
+
+	t.Run("omitted when the diagnostic equals detail", func(t *testing.T) {
+		h := &attrCapture{}
+		finishOrchestrator(h).finish(
+			&Result{Host: "h", DBName: "db", Reason: ReasonOther, Detail: "boom"},
+			errors.New("boom"))
+		if h.has("err") {
+			t.Fatalf("finish logged err when the diagnostic equals detail; want it omitted (no duplicate of the same text)")
+		}
+	})
 }

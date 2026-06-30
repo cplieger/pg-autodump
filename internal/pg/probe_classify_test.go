@@ -352,3 +352,35 @@ func TestDumpStreamsAndClassifiesExit(t *testing.T) {
 		}
 	})
 }
+
+// A non-positive dial timeout disables the per-dial sub-timeout: the dial must
+// fall back to the parent context, not a zero-length one. The guard is
+// `if t.dialTimeout > 0`, so with dialTimeout == 0 the dial uses ctx directly
+// and reaches a reachable server (FailNone). Were the guard to admit zero, the
+// dial would run under context.WithTimeout(ctx, 0) -- expiring immediately and
+// misreporting an open, healthy listener as connect_error.
+func TestProbeNonPositiveDialTimeoutUsesParentContext(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+
+	tool := New("/secrets/.pgpass", 5*time.Second)
+	tool.dialTimeout = 0                                         // disable the dial sub-timeout
+	tool.dumpBin = filepath.Join(t.TempDir(), "no-such-pg_dump") // --version fails -> clientMajor 0 -> skip version check
+	tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\necho 150000\n")    // reachable server, major 15
+
+	major, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
+	if kind != dump.FailNone {
+		t.Fatalf("Probe kind = %v, want FailNone (a zero dial timeout must dial the open listener via the parent ctx, not expire instantly)", kind)
+	}
+	if perr != nil {
+		t.Errorf("Probe err = %v, want nil", perr)
+	}
+	if major != 15 {
+		t.Errorf("Probe serverMajor = %d, want 15", major)
+	}
+}

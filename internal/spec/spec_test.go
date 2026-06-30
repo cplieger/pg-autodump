@@ -1,6 +1,9 @@
 package spec
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSpecs(t *testing.T) {
 	tests := []struct {
@@ -107,5 +110,30 @@ func TestParseSpecsPortBoundaries(t *testing.T) {
 	}
 	if high[0].Port != 65535 {
 		t.Errorf("port = %d, want 65535 (upper boundary)", high[0].Port)
+	}
+}
+
+// The per-server subdirectory name (ServerDir, "<host>_<port>") must fit one
+// filesystem path component, capped at maxServerDirLen (255). The guard is
+// `len(ServerDir) > 255` (strict), so a host whose ServerDir is exactly 255
+// bytes is the largest still accepted and must parse VALID; one byte over is
+// rejected. With the default port 5432 (4 digits) and the "_" separator, a
+// 250-char host yields a 255-byte ServerDir and a 251-char host a 256-byte one.
+func TestParseSpecsServerDirLengthBoundary(t *testing.T) {
+	atLimit := ParseSpecs(strings.Repeat("a", 250) + ":db:user")
+	if len(atLimit) != 1 {
+		t.Fatalf("count = %d, want 1", len(atLimit))
+	}
+	if got := len(ServerDir(atLimit[0].Host, atLimit[0].Port)); got != maxServerDirLen {
+		t.Fatalf("ServerDir length = %d, want exactly %d (test fixture must sit on the boundary)", got, maxServerDirLen)
+	}
+	if atLimit[0].Invalid != "" {
+		t.Errorf("a ServerDir of exactly %d bytes was rejected (%q); the limit is inclusive",
+			maxServerDirLen, atLimit[0].Invalid)
+	}
+
+	over := ParseSpecs(strings.Repeat("a", 251) + ":db:user")
+	if len(over) != 1 || over[0].Invalid == "" {
+		t.Errorf("a ServerDir of %d bytes (one over the limit) must be rejected, got %+v", maxServerDirLen+1, over)
 	}
 }

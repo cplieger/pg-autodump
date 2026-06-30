@@ -23,6 +23,9 @@ func TestParseMajor(t *testing.T) {
 		{name: "no digit token", in: "no version here", want: 0},
 		{name: "leading v prefix has no digit run", in: "v18.1", want: 0},
 		{name: "whitespace padded", in: "   18.3   ", want: 18},
+		{name: "all-digit token reaches end of token", in: "18", want: 18},
+		{name: "leading run includes an internal zero (major 10)", in: "pg_dump (PostgreSQL) 10.4", want: 10},
+		{name: "leading run includes a nine (major 9)", in: "9.6", want: 9},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,5 +125,14 @@ func TestPGToolRejectsDeadlinelessContext(t *testing.T) {
 	}
 	if _, _, err := tool.Probe(context.Background(), conn); err != ErrNoDeadline {
 		t.Errorf("Probe(no-deadline ctx) err = %v, want ErrNoDeadline", err)
+	}
+}
+
+// New configures a positive TCP dial timeout (5s). The dial is what separates a
+// definitive connect_error from a slow host, so a dropped or zeroed dial timeout
+// would change how an unreachable host is bounded relative to the dump budget.
+func TestNewConfiguresDialTimeout(t *testing.T) {
+	if got := New("/secrets/.pgpass", 5*time.Second).dialTimeout; got != 5*time.Second {
+		t.Errorf("New(...).dialTimeout = %v, want 5s", got)
 	}
 }

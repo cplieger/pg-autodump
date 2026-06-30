@@ -171,3 +171,31 @@ func TestCheckDiskSpaceLogsAccurateFreeKB(t *testing.T) {
 		t.Fatalf("checkDiskSpace logged free_kb = %d, want within [%d, %d]", h.freeKB, lo, hi)
 	}
 }
+
+// The low-space guard is `freeKB < freeKBWarn` (strict): free space exactly
+// equal to the threshold is NOT low and must stay silent. Setting the threshold
+// to the directory's current free space puts the comparison on its boundary, so
+// a relaxed guard (free space <= threshold) would warn spuriously here. Both
+// reads target the same temp dir back to back, so the value is stable.
+func TestCheckDiskSpaceNoWarnAtExactThreshold(t *testing.T) {
+	dir := t.TempDir()
+	free := statfsFreeKB(t, dir)
+	if free <= 0 {
+		t.Skipf("temp dir reports %d KB free; cannot exercise the exact-threshold boundary", free)
+	}
+
+	h := &lowSpaceCapture{}
+	o := New(&Params{
+		PG:         &fakePG{},
+		Logger:     slog.New(h),
+		DumpDir:    dir,
+		FreeKBWarn: free, // threshold == current free space: on the boundary
+	})
+
+	o.checkDiskSpace()
+
+	if h.lowSpaceHit {
+		t.Fatalf("checkDiskSpace warned with free space (free_kb=%d) exactly at the threshold (%d); "+
+			"the guard is strict (`<`), so equal free space must not warn", h.freeKB, free)
+	}
+}

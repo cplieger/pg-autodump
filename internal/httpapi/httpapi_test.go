@@ -273,3 +273,24 @@ func TestNewTriggerLoggerDefaulting(t *testing.T) {
 		t.Fatalf("NewTrigger(.., custom) did not retain the supplied logger; want it stored as-is")
 	}
 }
+
+// NewServer wires the server's timeout budget. IdleTimeout is 60s and both the
+// header and full read timeouts are readHeaderTimeout; there is deliberately no
+// WriteTimeout (a dump run holds the response open for minutes). A miscomputed
+// IdleTimeout (e.g. 60/time.Second collapsing to 0) would silently remove the
+// keep-alive idle bound.
+func TestServerTimeoutsConfigured(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "")
+	if srv.IdleTimeout != 60*time.Second {
+		t.Errorf("IdleTimeout = %v, want 60s", srv.IdleTimeout)
+	}
+	if srv.ReadHeaderTimeout != readHeaderTimeout {
+		t.Errorf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, readHeaderTimeout)
+	}
+	if srv.ReadTimeout != readHeaderTimeout {
+		t.Errorf("ReadTimeout = %v, want %v", srv.ReadTimeout, readHeaderTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (a dump run holds the response open by design)", srv.WriteTimeout)
+	}
+}

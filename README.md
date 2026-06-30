@@ -1,6 +1,6 @@
 # pg-autodump
 
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/pg-autodump/size)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump)
+[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/size.json)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/pg-autodump)](https://goreportcard.com/report/github.com/cplieger/pg-autodump)

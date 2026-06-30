@@ -64,6 +64,7 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
        image: ghcr.io/cplieger/pg-autodump:latest
        container_name: pg-autodump
        restart: unless-stopped
+       user: "1000:1000"  # match your host user
        read_only: true
        cap_drop: ["ALL"]
        security_opt: ["no-new-privileges:true"]
@@ -76,6 +77,15 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
          - "./dumps:/dumps"
        tmpfs:
          - "/tmp:size=16m,mode=1777"   # 1777 so the non-root user can write the health marker
+   ```
+
+   The container runs as the UID set in `user:` (1000 here), so the host
+   `./secrets/.pgpass` (mode **0600**) and the host `./dumps` directory must be
+   owned by that UID: libpq ignores a `.pgpass` not owned by the running UID,
+   and dumps can't be written otherwise.
+
+   ```sh
+   chown 1000:1000 ./secrets/.pgpass ./dumps
    ```
 
 4. Trigger a backup:
@@ -193,7 +203,7 @@ The PostgreSQL client tools `pg_dump`, `pg_restore`, and `psql` are part of [Pos
 
 ## Migrating from db-dumper 1.x
 
-pg-autodump is the successor to `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket. pg-autodump is a network client instead: no socket, no root. To migrate: remove the socket mount and `user: "0:0"`; rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`; provide credentials via a read-only `.pgpass` and a least-privilege role (above); triggers move from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`) and health to `GET /healthz`; the healthcheck becomes `["CMD", "pg-autodump", "health"]`; set `stop_grace_period` >= `SHUTDOWN_GRACE`. `CGI_DIR` and `TZ` are gone.
+pg-autodump is the successor to `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket. pg-autodump is a network client instead: no socket, no root. To migrate: remove the socket mount and `user: "0:0"`; rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`; provide credentials via a read-only `.pgpass` and a least-privilege role (above); triggers move from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`) and health to `GET /healthz`; the healthcheck becomes `["CMD", "pg-autodump", "health"]`; set `stop_grace_period` >= `SHUTDOWN_GRACE`. `CGI_DIR` is gone; the standard `TZ` env still sets the log-timestamp timezone (dump filenames are always UTC).
 
 ## Contributing
 

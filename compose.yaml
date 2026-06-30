@@ -1,21 +1,19 @@
----
-# Minimal pg-autodump example. The image runs unprivileged and ships its own
-# HEALTHCHECK. See the README for the full config reference, the .pgpass /
-# backup-role setup, triggering, and hardened deployment (read_only, cap_drop,
-# AUTH_TOKEN, tmpfs).
+# Example compose for pg-autodump. See the README for all configuration options and hardening.
 services:
   pg-autodump:
     image: ghcr.io/cplieger/pg-autodump:latest
     container_name: pg-autodump
     restart: unless-stopped
-    # Let in-flight dumps finish/cancel on SIGTERM. Must be >= SHUTDOWN_GRACE
-    # (default DUMP_TIMEOUT+15s = 315s); Docker's 10s default SIGKILLs mid-dump.
-    stop_grace_period: 315s
+    user: "1000:1000"  # match your host user
+    stop_grace_period: 315s  # >= SHUTDOWN_GRACE so an in-flight dump finishes on stop; see README
+
     environment:
-      # Space-separated host[:port]:dbname:user tuples (port defaults to 5432).
-      DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"
+      TZ: "Europe/Paris"
+      DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # space-separated host[:port]:dbname:user tuples
+
     ports:
       - "127.0.0.1:9847:9847"
+
     volumes:
-      - ./secrets/.pgpass:/secrets/.pgpass:ro   # mode 0600
-      - ./dumps:/dumps
+      - "./secrets/.pgpass:/secrets/.pgpass:ro"  # mode 0600
+      - "./dumps:/dumps"

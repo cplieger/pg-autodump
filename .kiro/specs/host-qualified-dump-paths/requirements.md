@@ -206,4 +206,4 @@ network stack.
    (no regression to the existing grammar or path layout).
 8. Documentation SHALL show the bracketed IPv6 syntax and note the `.pgpass` caveat (libpq
    `.pgpass` is `:`-delimited, so an IPv6 host's colons must be backslash-escaped there, or
-   `PGPASSWORD` used instead — the homelab uses `PGPASSWORD`).
+   `PGPASSWORD` used instead — a typical deployment uses `PGPASSWORD`).

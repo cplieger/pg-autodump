@@ -182,8 +182,8 @@ func gracefulShutdown(srv *http.Server, guard *dump.Guard, grace time.Duration, 
 	log.Info("shutdown complete", "grace", grace)
 }
 
-// runTicker drives the optional built-in scheduler (DUMP_INTERVAL). The homelab
-// leaves this off and triggers externally via Ofelia.
+// runTicker drives the optional built-in scheduler (DUMP_INTERVAL). A deployment
+// can leave this off and trigger externally via a scheduler (e.g. Ofelia).
 func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
 	// The ticker's first fire is one full interval after start and its clock
 	// resets on every restart, so a deployment that restarts more often than

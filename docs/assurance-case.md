@@ -1,6 +1,6 @@
 # Security assurance case — pg-autodump
 
-This extends the fleet-wide
+This extends the shared
 [default assurance case](https://github.com/cplieger/.github/blob/main/assurance-case.md)
 with the threat model specific to `pg-autodump`. Read that first.
 
@@ -31,8 +31,8 @@ unauthenticated path to arbitrary command execution.
 
 ## Residual risks
 
-- Network exposure of the trigger endpoint is a deployment concern; in the
-  homelab it is reachable only on the internal network, and the dump set is
+- Network exposure of the trigger endpoint is a deployment concern; in a
+  self-hosted deployment it is reachable only on the internal network, and the dump set is
   fixed by configuration so a caller cannot redirect it.
 - Backup confidentiality depends on the permissions of the volume the `.dump`
   files land on (a deployment concern).

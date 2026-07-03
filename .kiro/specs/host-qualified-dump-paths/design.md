@@ -160,7 +160,7 @@ The `DUMP_KEEP=1` stable file exclusion and the best-effort error handling are u
 The on-disk path of every artifact changes (e.g. `/dumps/authentik.dump` →
 `/dumps/authentik-pg_5432/authentik.dump`). Consequences and guidance:
 
-- **Versioned collectors (Kopia — the homelab default):** Kopia snapshots the whole
+- **Versioned collectors (Kopia — a common self-hosted default):** Kopia snapshots the whole
   `/dumps` tree, so the new paths simply begin a fresh version chain; the old flat files
   retain their last version until the operator removes them. No data is lost.
 - **The tool does not touch existing flat files.** It neither reads, moves, nor deletes
@@ -298,7 +298,7 @@ always port and dbname and the IPv6 colons remain within the host segment. No ch
 libpq resolves passwords from a `:`-delimited `.pgpass` keyed on `host:port:db:user`. An
 IPv6 host's colons must be backslash-escaped in `.pgpass` (`2001\:db8\:\:1:5432:db:user:pw`),
 or `PGPASSWORD` used instead. This is an operator/.pgpass concern, not pg-autodump code; it
-is documented in the README. (The homelab uses `PGPASSWORD`, so it is unaffected.)
+is documented in the README. (A typical deployment uses `PGPASSWORD`, so it is unaffected.)
 
 ### Testing (IPv6)
 

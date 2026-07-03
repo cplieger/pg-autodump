@@ -152,7 +152,7 @@ func loadInterval(v string, w *warnings) time.Duration {
 	// Matches the sibling schedulers (SYNC_INTERVAL / FCLONES_INTERVAL /
 	// SCHED_INTERVAL): the built-in timer runs by default; "off", "disabled",
 	// or a zero duration ("0"/"0s") hands scheduling to an external trigger
-	// (the homelab uses Ofelia). Unparseable values fall back to the default.
+	// (e.g. Ofelia). Unparseable values fall back to the default.
 	v = strings.TrimSpace(v)
 	if v == "" {
 		return DefaultDumpInterval

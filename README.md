@@ -3,7 +3,6 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/size.json)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/pg-autodump)](https://goreportcard.com/report/github.com/cplieger/pg-autodump)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/coverage.json)](https://github.com/cplieger/pg-autodump/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/mutation.json)](https://github.com/cplieger/pg-autodump/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13215/badge)](https://www.bestpractices.dev/projects/13215)
@@ -24,10 +23,8 @@ already does those, and points at the `/dumps` volume. If the collector also
 versions your backups, set `DUMP_KEEP=1` to keep a single stable `<dbname>.dump`
 and hand retention to it.
 
-It runs as an ordinary **unprivileged** user, connects to Postgres **over the
-network** (the PostgreSQL wire protocol, not HTTP), and never touches the Docker
-socket or runs as root. A truncated or failed dump can never overwrite a
-known-good backup.
+It connects to Postgres **over the network** (the PostgreSQL wire protocol, not
+HTTP) and runs as an ordinary **unprivileged** user.
 
 ### Why this design
 
@@ -174,7 +171,7 @@ with a clear message rather than a cryptic pg_dump abort.
 
 ## Security
 
-- **No Docker socket, no root.** The container needs only network reach to the databases, a read-only `.pgpass`, and a writable `/dumps`. Runs as a non-root user with `cap_drop: [ALL]` and `read_only`.
+- **No Docker socket, no root.** The container needs only network reach to the databases, a read-only `.pgpass`, and a writable `/dumps`.
 - **Credentials never on a command line or in logs.** They live in `.pgpass` (or `PGPASSWORD`); `pg_dump` is invoked with `--no-password` so it never prompts.
 - **No shell, explicit argv.** `DB_SPECS` is validated once, and identifiers are passed as long options (`--dbname=`, `--username=`) so a value can never be read as a flag. No shell is ever invoked.
 - **Keep it private or set `AUTH_TOKEN`.** A stray trigger can at most write a read-only-role dump to the volume. When the endpoint is open (`AUTH_TOKEN` empty) on a non-loopback `LISTEN_ADDR`, pg-autodump logs a startup warning; and `POST /dump` returns only the reason word for execution-tool failures (never the raw `pg_dump`/`pg_restore` stderr), so an open endpoint discloses no schema or object names.
@@ -195,7 +192,7 @@ Updated automatically via [Renovate](https://github.com/renovatebot/renovate) an
 | github.com/cplieger/health     | [GitHub](https://github.com/cplieger/health)        |
 | pgregory.net/rapid             | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 
-A logical backup is far more than one query — `pg_dump` reconstructs the full schema from the system catalogs, dependency-orders it, streams every table via `COPY`, and emits the custom archive format `pg_restore` reads and verifies. So the `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless.
+The `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless. See the [PostgreSQL documentation](https://www.postgresql.org/docs/current/app-pgdump.html) for what a logical dump entails.
 
 ## Credits
 
@@ -203,7 +200,13 @@ The PostgreSQL client tools `pg_dump`, `pg_restore`, and `psql` are part of [Pos
 
 ## Migrating from db-dumper 1.x
 
-pg-autodump is the successor to `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket. pg-autodump is a network client instead: no socket, no root. To migrate: remove the socket mount and `user: "0:0"`; rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`; provide credentials via a read-only `.pgpass` and a least-privilege role (above); triggers move from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`) and health to `GET /healthz`; the healthcheck becomes `["CMD", "pg-autodump", "health"]`; set `stop_grace_period` >= `SHUTDOWN_GRACE`. `CGI_DIR` is gone; the standard `TZ` env still sets the log-timestamp timezone (dump filenames are always UTC).
+pg-autodump succeeds `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket; pg-autodump is an unprivileged network client instead (no socket, no root). To migrate:
+
+- Remove the Docker socket mount and `user: "0:0"`.
+- Rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`.
+- Provide credentials via a read-only `.pgpass` and a least-privilege role (see above).
+- Move triggers from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`), and health to `GET /healthz`.
+- Set the healthcheck to `["CMD", "pg-autodump", "health"]` and `stop_grace_period` >= `SHUTDOWN_GRACE`.
 
 ## Contributing
 
@@ -214,7 +217,7 @@ invariants, and local checks.
 
 ## Disclaimer
 
-These images are built with care and follow security best practices, but they are intended for **homelab use**. No guarantees of fitness for production environments. Use at your own risk.
+This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
 
 This project was built with AI-assisted tooling using [Claude Opus](https://www.anthropic.com/claude) and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 

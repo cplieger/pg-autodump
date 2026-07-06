@@ -16,6 +16,7 @@ import (
 
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/dump"
+	"github.com/cplieger/webhttp"
 )
 
 // readHeaderTimeout guards against slow-header (slowloris) clients. There is no
@@ -88,16 +89,25 @@ func NewServer(d *Deps) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
-	return &http.Server{
-		Addr:              d.ListenAddr,
-		Handler:           mux,
-		ReadHeaderTimeout: readHeaderTimeout,
-		// No WriteTimeout: a dump run holds the response open for minutes by
-		// design. ReadTimeout/IdleTimeout are safe to bound (they cover the
-		// request-read and idle-keepalive phases, not the long dump response).
-		ReadTimeout: readHeaderTimeout,
-		IdleTimeout: 60 * time.Second,
-	}
+
+	// Access logging (with request-id) + panic recovery come from webhttp; the
+	// /healthz probe is skipped so routine liveness checks do not flood the log.
+	// Recoverer sits inside Logging so a recovered panic is logged as its 500.
+	handler := webhttp.Chain(mux,
+		webhttp.Logging(webhttp.WithLogger(log), webhttp.WithSkipPaths("/healthz")),
+		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
+	)
+
+	// webhttp.NewServer supplies the streaming-safe defaults (ReadHeaderTimeout
+	// 10s, MaxHeaderBytes 1 MiB, WriteTimeout unset). WriteTimeout stays unset
+	// on purpose: a dump run holds the response open for minutes. ReadTimeout
+	// and the 60s IdleTimeout are re-supplied to preserve the previous bounds.
+	srv := webhttp.NewServer(handler,
+		webhttp.WithReadTimeout(readHeaderTimeout),
+		webhttp.WithIdleTimeout(60*time.Second),
+	)
+	srv.Addr = d.ListenAddr
+	return srv
 }
 
 // dumpHandler runs one dump and writes one text line per database. Status is

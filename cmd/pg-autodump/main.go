@@ -8,7 +8,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,6 +25,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
+	"github.com/cplieger/webhttp"
 )
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }
@@ -108,35 +108,62 @@ func runServer(getenv func(string) string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// Bind the listener up front so a port-in-use error surfaces synchronously
+	// here rather than asynchronously after serving has started.
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", cfg.ListenAddr)
+	if err != nil {
+		log.Error("bind failed", "addr", cfg.ListenAddr, "err", err)
+		return 1
+	}
+
 	if cfg.DumpInterval > 0 {
 		go runTicker(ctx, cfg.DumpDir, cfg.DumpInterval, trigger, log)
 	}
 
-	serveErr := make(chan error, 1)
+	// Flip the health marker red the moment shutdown is signalled, before the
+	// HTTP drain begins, so a probe reports unready during the drain window
+	// (webhttp.Run's teardown callback runs only after the drain completes).
 	go func() {
-		log.Info("pg-autodump listening",
-			"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
-		err := srv.ListenAndServe()
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-		}
-		close(serveErr)
-	}()
-
-	select {
-	case err := <-serveErr:
-		if err != nil {
-			log.Error("server failed", "err", err)
-			return 1
-		}
-		return 0
-	case <-ctx.Done():
+		<-ctx.Done()
 		log.Info("shutting down", "cause", context.Cause(ctx))
 		marker.Set(false)
-	}
+	}()
 
-	gracefulShutdown(srv, guard, cfg.ShutdownGrace, log)
+	log.Info("pg-autodump listening",
+		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
+
+	// webhttp.Run drains the HTTP server within ShutdownGrace, then invokes the
+	// teardown below with a context bounded by the same deadline. A built-in
+	// ticker dump holds no HTTP connection Shutdown can see, so drainGuard waits
+	// for the single-flight guard to go idle within the remaining budget; if it
+	// does not, it cancels the in-flight run and lets pg_dump unwind cleanly.
+	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownGrace, log),
+		webhttp.WithShutdownGrace(cfg.ShutdownGrace)); err != nil {
+		log.Error("server failed", "err", err)
+		return 1
+	}
 	return 0
+}
+
+// drainInFlightDump returns a webhttp.Run teardown callback that waits for any
+// in-flight ticker dump to finish within the remaining drain budget and, if it
+// does not, cancels it and lets it unwind so pg_dump is killed cleanly and the
+// staged temp is removed. HTTP requests are already drained by the time it runs.
+func drainInFlightDump(guard *dump.Guard, grace time.Duration, log *slog.Logger) func(context.Context) {
+	return func(drainCtx context.Context) {
+		if !guard.WaitIdle(drainCtx) {
+			log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", grace)
+			guard.CancelInFlight()
+			unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer unwindCancel()
+			if !guard.WaitIdle(unwindCtx) {
+				log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
+				return
+			}
+		}
+		log.Info("shutdown complete", "grace", grace)
+	}
 }
 
 // reclaimStartupOrphans removes crash-orphaned temp dumps left in dumpDir. At
@@ -151,31 +178,6 @@ func reclaimStartupOrphans(dumpDir string, log *slog.Logger) {
 	} else if removed > 0 {
 		log.Info("reclaimed stale temp files", "count", removed)
 	}
-}
-
-// gracefulShutdown drains the HTTP server and any in-flight ticker dump within
-// grace. It stops accepting new requests (srv.Shutdown); because a
-// built-in-ticker dump holds no HTTP connection that Shutdown can see, it then
-// waits for any in-flight run to finish within the remaining budget and, if it
-// does not, cancels the run and lets it unwind so pg_dump is killed cleanly and
-// the staged temp is removed.
-func gracefulShutdown(srv *http.Server, guard *dump.Guard, grace time.Duration, log *slog.Logger) {
-	drainCtx, cancel := context.WithTimeout(context.Background(), grace)
-	defer cancel()
-	if err := srv.Shutdown(drainCtx); err != nil {
-		log.Warn("HTTP drain budget exceeded", "grace", grace, "err", err)
-	}
-	if !guard.WaitIdle(drainCtx) {
-		log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", grace)
-		guard.CancelInFlight()
-		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer unwindCancel()
-		if !guard.WaitIdle(unwindCtx) {
-			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
-			return
-		}
-	}
-	log.Info("shutdown complete", "grace", grace)
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL). A deployment

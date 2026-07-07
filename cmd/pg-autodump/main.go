@@ -78,8 +78,8 @@ func runServer(getenv func(string) string) int {
 
 	marker := health.NewMarker(health.DefaultPath)
 	defer marker.Cleanup()
-	if err := obs.Preflight(cfg.DumpDir, cfg.Specs); err != nil {
-		log.Error("health preconditions not met; serving but unhealthy", "err", err)
+	if preErr := obs.Preflight(cfg.DumpDir, cfg.Specs); preErr != nil {
+		log.Error("health preconditions not met; serving but unhealthy", "err", preErr)
 		marker.Set(false)
 	} else {
 		marker.Set(true)
@@ -98,11 +98,10 @@ func runServer(getenv func(string) string) int {
 	})
 	trigger := httpapi.NewTrigger(guard, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{
-		ListenAddr: cfg.ListenAddr,
-		AuthToken:  cfg.AuthToken,
-		Trigger:    trigger,
-		Health:     marker,
-		Log:        log,
+		AuthToken: cfg.AuthToken,
+		Trigger:   trigger,
+		Health:    marker,
+		Log:       log,
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

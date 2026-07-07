@@ -73,11 +73,10 @@ func (t *Trigger) Run() (results []dump.Result, ok bool) {
 
 // Deps are the wiring NewServer needs.
 type Deps struct {
-	Trigger    *Trigger
-	Health     health.Signal
-	Log        *slog.Logger
-	ListenAddr string
-	AuthToken  string
+	Trigger   *Trigger
+	Health    health.Signal
+	Log       *slog.Logger
+	AuthToken string
 }
 
 // NewServer wires the routes and returns a configured *http.Server.
@@ -90,24 +89,33 @@ func NewServer(d *Deps) *http.Server {
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
 
-	// Access logging (with request-id) + panic recovery come from webhttp; the
-	// /healthz probe is skipped so routine liveness checks do not flood the log.
-	// Recoverer sits inside Logging so a recovered panic is logged as its 500.
+	// Access logging (with request-id) + panic recovery + baseline security
+	// headers all come from webhttp; the /healthz probe is skipped so routine
+	// liveness checks do not flood the log. Chain is outermost-first, so this is
+	// webhttp's canonical order: Logging outermost (its access line records the
+	// final status), Recoverer inside it (a recovered panic is logged as its
+	// 500), and SecurityHeaders innermost — its nosniff / X-Frame-Options: DENY /
+	// Referrer-Policy baseline is set before the handler runs, so it survives
+	// even onto a recovered 500. No CSP or HSTS: this is a plain-HTTP,
+	// non-browser, text/plain control endpoint, so nosniff is the header that
+	// earns its keep (the framing/referrer defaults are harmless standardization).
 	handler := webhttp.Chain(mux,
 		webhttp.Logging(webhttp.WithLogger(log), webhttp.WithSkipPaths("/healthz")),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
+		webhttp.SecurityHeaders(),
 	)
 
-	// webhttp.NewServer supplies the streaming-safe defaults (ReadHeaderTimeout
-	// 10s, MaxHeaderBytes 1 MiB, WriteTimeout unset). WriteTimeout stays unset
-	// on purpose: a dump run holds the response open for minutes. ReadTimeout
-	// and the 60s IdleTimeout are re-supplied to preserve the previous bounds.
-	srv := webhttp.NewServer(handler,
+	// webhttp.NewServer supplies the streaming-safe defaults (MaxHeaderBytes
+	// 1 MiB, WriteTimeout unset). WriteTimeout stays unset on purpose: a dump
+	// run holds the response open for minutes. ReadHeaderTimeout (the slowloris
+	// guard), ReadTimeout, and the 60s IdleTimeout are supplied explicitly to
+	// pin the previous bounds. No Addr is set: webhttp.Run serves the listener
+	// main binds, and http.Server.Serve ignores http.Server.Addr.
+	return webhttp.NewServer(handler,
+		webhttp.WithReadHeaderTimeout(readHeaderTimeout),
 		webhttp.WithReadTimeout(readHeaderTimeout),
 		webhttp.WithIdleTimeout(60*time.Second),
 	)
-	srv.Addr = d.ListenAddr
-	return srv
 }
 
 // dumpHandler runs one dump and writes one text line per database. Status is

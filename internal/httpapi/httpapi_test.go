@@ -59,11 +59,10 @@ func newTestServer(t *testing.T, pg dump.PGTool, token string) *http.Server {
 	})
 	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return NewServer(&Deps{
-		ListenAddr: ":0",
-		AuthToken:  token,
-		Trigger:    trigger,
-		Health:     okSignal{ok: true},
-		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		AuthToken: token,
+		Trigger:   trigger,
+		Health:    okSignal{ok: true},
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 }
 
@@ -181,10 +180,9 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	})
 	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return NewServer(&Deps{
-		ListenAddr: ":0",
-		Trigger:    trigger,
-		Health:     okSignal{ok: true},
-		Log:        logger,
+		Trigger: trigger,
+		Health:  okSignal{ok: true},
+		Log:     logger,
 	})
 }
 
@@ -292,5 +290,35 @@ func TestServerTimeoutsConfigured(t *testing.T) {
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %v, want 0 (a dump run holds the response open by design)", srv.WriteTimeout)
+	}
+}
+
+// SecurityHeaders is wired into the middleware chain, so every response carries
+// webhttp's baseline hardening headers. nosniff is the one that matters for a
+// text/plain dump listing (it stops a browser MIME-sniffing the body); the
+// X-Frame-Options and Referrer-Policy defaults ride along as standardization.
+// There is deliberately no CSP or HSTS: this is a plain-HTTP, non-browser
+// control endpoint, and HSTS would make a browser refuse plain HTTP to the host.
+func TestSecurityHeadersPresent(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "")
+	rec := post(t, srv, "")
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	if got := rec.Header().Get("Referrer-Policy"); got != "strict-origin-when-cross-origin" {
+		t.Errorf("Referrer-Policy = %q, want strict-origin-when-cross-origin", got)
+	}
+	if got := rec.Header().Get("Content-Security-Policy"); got != "" {
+		t.Errorf("Content-Security-Policy = %q, want unset (non-browser endpoint)", got)
+	}
+	if got := rec.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("Strict-Transport-Security = %q, want unset (plain-HTTP endpoint)", got)
 	}
 }

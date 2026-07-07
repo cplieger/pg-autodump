@@ -7,4 +7,4 @@ require (
 	github.com/cplieger/health v1.1.4
 )
 
-require github.com/cplieger/webhttp v1.1.1
+require github.com/cplieger/webhttp v1.2.0

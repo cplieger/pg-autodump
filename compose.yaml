@@ -8,7 +8,6 @@ services:
     stop_grace_period: 315s  # >= SHUTDOWN_GRACE so an in-flight dump finishes on stop; see README
 
     environment:
-      TZ: "Europe/Paris"
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # space-separated host[:port]:dbname:user tuples
 
     ports:

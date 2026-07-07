@@ -18,10 +18,6 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
-	// Embed the IANA tz database so TZ (default Europe/Paris) is honored regardless
-	// of the base image's zoneinfo; without it, on a base that ships no
-	// /usr/share/zoneinfo, time.Local silently falls back to UTC.
-	_ "time/tzdata"
 
 	"github.com/cplieger/atomicfile/v2"
 	"github.com/cplieger/health"
@@ -61,7 +57,7 @@ func run(args []string, getenv func(string) string) int {
 // optionally starts the built-in ticker, then serves until a signal and drains any
 // in-flight dump within ShutdownGrace. It returns the process exit code.
 func runServer(getenv func(string) string) int {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo, ReplaceAttr: utcTimeAttr}))
 	slog.SetDefault(log)
 
 	cfg, warns, err := config.Load(getenv)
@@ -314,4 +310,16 @@ func localAddr(listen string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
+}
+
+// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
+// key in UTC, so log-line timestamps are zone-stable regardless of the
+// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
+// top-level time attribute; a user attribute that happens to share the "time"
+// key inside a group is left untouched.
+func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
+		a.Value = slog.TimeValue(a.Value.Time().UTC())
+	}
+	return a
 }

@@ -40,6 +40,7 @@ type Orchestrator struct {
 	pg          PGTool
 	log         *slog.Logger
 	now         func() time.Time
+	freeSpace   func(string) (int64, error) // injectable disk-space probe; defaults to statfsFreeKB
 	dumpDir     string
 	specs       []spec.DBSpec
 	dumpTimeout time.Duration
@@ -62,6 +63,7 @@ func New(p *Params) *Orchestrator {
 		pg:          p.PG,
 		log:         log,
 		now:         now,
+		freeSpace:   statfsFreeKB,
 		dumpDir:     p.DumpDir,
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,

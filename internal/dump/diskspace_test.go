@@ -3,21 +3,24 @@ package dump
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 )
 
 // lowSpaceCapture is an in-memory slog.Handler that records whether the "low
-// free disk space for dumps" warning fired and the free_kb value it carried, so
-// disk-space assertions read structured attributes instead of parsing text.
+// free disk space for dumps" warning fired and the free_kb / warn_below_kb
+// values it carried, so disk-space assertions read structured attributes
+// instead of parsing text.
 type lowSpaceCapture struct {
 	mu          sync.Mutex
 	freeKB      int64
+	warnBelowKB int64
 	lowSpaceHit bool
 }
 
@@ -31,9 +34,11 @@ func (h *lowSpaceCapture) Handle(_ context.Context, r slog.Record) error {
 	defer h.mu.Unlock()
 	h.lowSpaceHit = true
 	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == "free_kb" {
+		switch a.Key {
+		case "free_kb":
 			h.freeKB = a.Value.Int64()
-			return false
+		case "warn_below_kb":
+			h.warnBelowKB = a.Value.Int64()
 		}
 		return true
 	})
@@ -43,86 +48,150 @@ func (h *lowSpaceCapture) Handle(_ context.Context, r slog.Record) error {
 func (h *lowSpaceCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
 func (h *lowSpaceCapture) WithGroup(string) slog.Handler      { return h }
 
-// statfsFreeKB recomputes checkDiskSpace's free-KB formula independently in test
-// code, so it is a stable oracle for the magnitude of the production value.
-func statfsFreeKB(t *testing.T, dir string) int64 {
-	t.Helper()
-	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
-		t.Fatalf("statfs(%q) = %v", dir, err)
-	}
-	return int64(st.Bavail) * st.Bsize / 1024
+// fixedFreeSpace is an o.freeSpace stub that reports a controlled free-KB value,
+// so the low-space decision is exercised at an exact threshold without the live
+// filesystem's free space drifting between the probe and the assertion.
+func fixedFreeSpace(freeKB int64) func(string) (int64, error) {
+	return func(string) (int64, error) { return freeKB, nil }
 }
 
-// A zero/negative threshold disables the check entirely: checkDiskSpace returns
-// before any syscall and logs nothing at all, even when pointed at a missing
-// directory (where an enabled check would log a statfs error).
-func TestCheckDiskSpaceDisabledLogsNothing(t *testing.T) {
+// The strict guard `freeKB < freeKBWarn` is the whole point of the check, and
+// its boundary was previously untestable without racing the live filesystem.
+// With the disk-space probe injected, the reading is exact, so below / equal /
+// above the threshold are all deterministic.
+func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
-	o := New(&Params{
-		PG:         &fakePG{},
-		Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
-		DumpDir:    filepath.Join(t.TempDir(), "does-not-exist"),
-		FreeKBWarn: 0, // disabled
-	})
+	const warn = 1_000_000 // 1 GB threshold, in KB
 
-	o.checkDiskSpace()
+	tests := []struct {
+		name     string
+		freeKB   int64
+		wantWarn bool
+	}{
+		{"one KB below threshold warns", warn - 1, true},
+		{"exactly at threshold stays silent", warn, false},
+		{"one KB above threshold stays silent", warn + 1, false},
+		{"far below threshold warns", warn / 4, true},
+		{"far above threshold stays silent", warn * 4, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := &lowSpaceCapture{}
+			o := New(&Params{
+				PG:         &fakePG{},
+				Logger:     slog.New(h),
+				DumpDir:    t.TempDir(),
+				FreeKBWarn: warn,
+			})
+			o.freeSpace = fixedFreeSpace(tc.freeKB)
 
-	if buf.Len() != 0 {
-		t.Fatalf("disabled disk-space check logged %q, want no output", buf.String())
+			o.checkDiskSpace()
+
+			if h.lowSpaceHit != tc.wantWarn {
+				t.Fatalf("free_kb=%d, threshold=%d: warned=%v, want warned=%v",
+					tc.freeKB, warn, h.lowSpaceHit, tc.wantWarn)
+			}
+			if tc.wantWarn {
+				if h.freeKB != tc.freeKB {
+					t.Errorf("logged free_kb = %d, want %d", h.freeKB, tc.freeKB)
+				}
+				if h.warnBelowKB != warn {
+					t.Errorf("logged warn_below_kb = %d, want %d", h.warnBelowKB, warn)
+				}
+			}
+		})
 	}
 }
 
-// With a threshold above any real free space, the advisory warning fires.
-func TestCheckDiskSpaceWarnsBelowThreshold(t *testing.T) {
+// A zero or negative threshold disables the check: checkDiskSpace must return
+// before probing the filesystem at all (no statfs, no log). The injected probe
+// records whether it was called so the "no probe" contract is asserted directly.
+func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
+	t.Parallel()
+	for _, warn := range []int64{0, -1} {
+		t.Run("threshold="+strconv.FormatInt(warn, 10), func(t *testing.T) {
+			t.Parallel()
+			var buf bytes.Buffer
+			probed := false
+			o := New(&Params{
+				PG:         &fakePG{},
+				Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+				DumpDir:    t.TempDir(),
+				FreeKBWarn: warn,
+			})
+			o.freeSpace = func(string) (int64, error) {
+				probed = true
+				return 0, nil
+			}
+
+			o.checkDiskSpace()
+
+			if probed {
+				t.Errorf("disabled check (threshold=%d) probed the filesystem; it must return first", warn)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("disabled check logged %q, want no output", buf.String())
+			}
+		})
+	}
+}
+
+// When the probe fails, checkDiskSpace logs the probe-error warning and does NOT
+// also emit the low-space warning (a failed reading is unknown, not low).
+func TestCheckDiskSpaceProbeError(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
 	o := New(&Params{
 		PG:         &fakePG{},
 		Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
 		DumpDir:    t.TempDir(),
-		FreeKBWarn: math.MaxInt64, // every real volume is below this
+		FreeKBWarn: 1000,
 	})
-
-	o.checkDiskSpace()
-
-	if !strings.Contains(buf.String(), "low free disk space for dumps") {
-		t.Fatalf("expected a low-space warning, got %q", buf.String())
-	}
-}
-
-// When statfs fails (a missing directory) the check logs the statfs-error
-// warning and does NOT also emit the low-space warning.
-func TestCheckDiskSpaceStatfsError(t *testing.T) {
-	missing := filepath.Join(t.TempDir(), "no-such-dir")
-	var buf bytes.Buffer
-	o := New(&Params{
-		PG:         &fakePG{},
-		Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
-		DumpDir:    missing,
-		FreeKBWarn: 1, // enabled, so statfs runs and then fails on the missing dir
-	})
+	o.freeSpace = func(string) (int64, error) { return 0, errors.New("statfs boom") }
 
 	o.checkDiskSpace()
 
 	out := buf.String()
 	if !strings.Contains(out, "cannot check free disk space") {
-		t.Fatalf("expected a statfs-error warning, got %q", out)
+		t.Errorf("expected a probe-error warning, got %q", out)
 	}
 	if strings.Contains(out, "low free disk space for dumps") {
-		t.Fatalf("statfs failed; must not also emit the low-space warning, got %q", out)
+		t.Errorf("probe failed; must not also emit the low-space warning, got %q", out)
 	}
 }
 
-// checkDiskSpace scales raw filesystem blocks UP by the block size, so any usable
-// temp dir reports far more than 1 MB of free KB and the advisory warning stays
-// silent at a 1 MB threshold. A miscomputed (un-scaled) free-KB value would trip
-// the threshold and warn spuriously.
-func TestCheckDiskSpaceNoWarnWhenSpaceAmple(t *testing.T) {
+// The default probe (statfsFreeKB) returns positive free space for a usable temp
+// dir and errors for a missing path. This exercises the real syscall the
+// Orchestrator wires in by default, which the injected tests above stub out.
+func TestStatfsFreeKB(t *testing.T) {
+	t.Parallel()
+
+	free, err := statfsFreeKB(t.TempDir())
+	if err != nil {
+		t.Fatalf("statfsFreeKB(tempdir) unexpected error: %v", err)
+	}
+	if free <= 0 {
+		t.Errorf("statfsFreeKB(tempdir) = %d, want > 0", free)
+	}
+
+	missing := filepath.Join(t.TempDir(), "no-such-dir")
+	if _, err := statfsFreeKB(missing); err == nil {
+		t.Errorf("statfsFreeKB(%q) = nil error, want statfs failure", missing)
+	}
+}
+
+// End-to-end through the DEFAULT probe: with the warning forced on (threshold
+// MaxInt64) checkDiskSpace warns and logs the real free_kb. The oracle is the
+// same production statfsFreeKB, compared within a generous band that absorbs
+// benign drift between the two reads; an arithmetic error (e.g. dropping the
+// block-size scaling) would move the value by orders of magnitude and fail.
+func TestCheckDiskSpaceLogsRealFreeKB(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
-	if free := statfsFreeKB(t, dir); free < 2000 {
-		t.Skipf("temp dir has only %d KB free; need >1 MB to assert the no-warn baseline", free)
+	want, err := statfsFreeKB(dir)
+	if err != nil || want <= 0 {
+		t.Skipf("temp dir statfs = (%d, %v); cannot exercise freeKB magnitude", want, err)
 	}
 
 	h := &lowSpaceCapture{}
@@ -130,72 +199,15 @@ func TestCheckDiskSpaceNoWarnWhenSpaceAmple(t *testing.T) {
 		PG:         &fakePG{},
 		Logger:     slog.New(h),
 		DumpDir:    dir,
-		FreeKBWarn: 1000, // 1 MB: far below any real temp dir's true free space
-	})
-
-	o.checkDiskSpace()
-
-	if h.lowSpaceHit {
-		t.Fatalf("checkDiskSpace warned at a 1 MB threshold (free_kb=%d); real free space is far above 1 MB, "+
-			"so freeKB must scale up by the block size", h.freeKB)
-	}
-}
-
-// With the warning forced on (threshold MaxInt64) checkDiskSpace logs free_kb.
-// The oracle recomputes the same formula in test code, so the logged value must
-// match the real free space within a generous band that absorbs benign drift
-// between the two statfs calls; an arithmetic error in the formula would move it
-// by orders of magnitude.
-func TestCheckDiskSpaceLogsAccurateFreeKB(t *testing.T) {
-	dir := t.TempDir()
-	want := statfsFreeKB(t, dir)
-	if want <= 0 {
-		t.Skipf("temp dir reports %d KB free; cannot exercise freeKB magnitude", want)
-	}
-
-	h := &lowSpaceCapture{}
-	o := New(&Params{
-		PG:         &fakePG{},
-		Logger:     slog.New(h),
-		DumpDir:    dir,
-		FreeKBWarn: math.MaxInt64, // force the advisory warning so free_kb is logged
+		FreeKBWarn: math.MaxInt64, // every real volume is below this, so it warns
 	})
 
 	o.checkDiskSpace()
 
 	if !h.lowSpaceHit {
-		t.Fatalf("checkDiskSpace did not warn at threshold MaxInt64; expected a low-space warning with free_kb")
+		t.Fatalf("checkDiskSpace did not warn at threshold MaxInt64; expected a low-space warning")
 	}
-	lo, hi := want/2, want*2
-	if h.freeKB < lo || h.freeKB > hi {
-		t.Fatalf("checkDiskSpace logged free_kb = %d, want within [%d, %d]", h.freeKB, lo, hi)
-	}
-}
-
-// The low-space guard is `freeKB < freeKBWarn` (strict): free space exactly
-// equal to the threshold is NOT low and must stay silent. Setting the threshold
-// to the directory's current free space puts the comparison on its boundary, so
-// a relaxed guard (free space <= threshold) would warn spuriously here. Both
-// reads target the same temp dir back to back, so the value is stable.
-func TestCheckDiskSpaceNoWarnAtExactThreshold(t *testing.T) {
-	dir := t.TempDir()
-	free := statfsFreeKB(t, dir)
-	if free <= 0 {
-		t.Skipf("temp dir reports %d KB free; cannot exercise the exact-threshold boundary", free)
-	}
-
-	h := &lowSpaceCapture{}
-	o := New(&Params{
-		PG:         &fakePG{},
-		Logger:     slog.New(h),
-		DumpDir:    dir,
-		FreeKBWarn: free, // threshold == current free space: on the boundary
-	})
-
-	o.checkDiskSpace()
-
-	if h.lowSpaceHit {
-		t.Fatalf("checkDiskSpace warned with free space (free_kb=%d) exactly at the threshold (%d); "+
-			"the guard is strict (`<`), so equal free space must not warn", h.freeKB, free)
+	if lo, hi := want/2, want*2; h.freeKB < lo || h.freeKB > hi {
+		t.Errorf("logged free_kb = %d, want within [%d, %d]", h.freeKB, lo, hi)
 	}
 }

@@ -69,6 +69,9 @@ If you add a new `internal/<pkg>/`, the `Dockerfile` builder must
 - **No per-host serialization in the pool.** The cap
   (`DUMP_CONCURRENCY`) is the only knob; serializing per host would force
   the common one-server case serial.
+- **Logs are UTC.** A `utcTimeAttr` slog `ReplaceAttr` forces every
+  record's timestamp to UTC, so the container needs no `TZ` and the binary
+  embeds no `time/tzdata`.
 
 ## Running checks locally
 

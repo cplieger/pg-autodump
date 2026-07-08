@@ -1,8 +1,8 @@
-github.com/cplieger/atomicfile/v2 v2.1.1 h1:P7dDVSMfADOgi2LzVn/r9UX0uKOw8bgxVULfENWqvBY=
-github.com/cplieger/atomicfile/v2 v2.1.1/go.mod h1:KBWqpUfvJAbxQxoJNEje4oRe78iLGIjYZkbPYGjzxV4=
-github.com/cplieger/health v1.1.4 h1:q/6QEffGp+TdJ3tBet5cfIIQH1mDHcyCVBxXkKbDDwg=
-github.com/cplieger/health v1.1.4/go.mod h1:INjkN9qJnR14X5AFqX6ymFaHvx51djYgk2oQb/gJ9u8=
-github.com/cplieger/webhttp v1.2.0 h1:eYOvBubDVcWTOiPPfJlLErxweCi99h6aqd7xfyZzN+Y=
-github.com/cplieger/webhttp v1.2.0/go.mod h1:LQLE9eJNI6RztoQoXsRGUpa+RlaWXE3HnL7q3rdWPsE=
+github.com/cplieger/atomicfile/v2 v2.1.2 h1:WPU8rXB4/Ziq3JNiqBfOhHxTgBr7I+B/VzkkcM2WWkY=
+github.com/cplieger/atomicfile/v2 v2.1.2/go.mod h1:jgwJ7oU3qahL4NwiF+1iBIzPRpR8LwXnicSalGoJeVA=
+github.com/cplieger/health v1.1.5 h1:xavp2d3k9N6/Kwz3N1BCFzziRGsL8bXgDGlUuJbIKmM=
+github.com/cplieger/health v1.1.5/go.mod h1:15Lm3XhPMU3nCEDfIH2hVAz6TXH06Wwiz9tgBi71vEE=
+github.com/cplieger/webhttp v1.2.1 h1:00i9InjHiFN60YiBsljghwh4x1HdrfmuciyrpcCL1Fw=
+github.com/cplieger/webhttp v1.2.1/go.mod h1:Nb8A8w/9MzFxB90Vbt6vQ/odRPd+hPedWekRkvIFnjg=
 pgregory.net/rapid v1.3.0 h1:vBvO0VSqti75J1jjYqpgPNBLKMd1+gxa9fYo7vk/Exc=
 pgregory.net/rapid v1.3.0/go.mod h1:dPlE4OBBxgXPqkP79flB6sJL1dx5azpI7HQ9MY9Z7uk=

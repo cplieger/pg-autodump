@@ -7,4 +7,8 @@ require (
 	github.com/cplieger/health v1.1.6
 )
 
-require github.com/cplieger/webhttp v1.3.0
+require (
+	github.com/cplieger/scheduler v1.0.0
+	github.com/cplieger/slogx v1.1.0
+	github.com/cplieger/webhttp v1.3.0
+)

@@ -25,6 +25,8 @@ import (
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
+	"github.com/cplieger/scheduler"
+	"github.com/cplieger/slogx"
 	"github.com/cplieger/webhttp"
 )
 
@@ -57,8 +59,8 @@ func run(args []string, getenv func(string) string) int {
 // optionally starts the built-in ticker, then serves until a signal and drains any
 // in-flight dump within ShutdownGrace. It returns the process exit code.
 func runServer(getenv func(string) string) int {
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo, ReplaceAttr: utcTimeAttr}))
-	slog.SetDefault(log)
+	slogx.Setup(slogx.Options{})
+	log := slog.Default()
 
 	cfg, warns, err := config.Load(getenv)
 	for _, w := range warns {
@@ -198,27 +200,16 @@ func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trig
 		}
 	}
 
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			// A tick that fired (or sat buffered in t.C) while a run was in
-			// flight can be selected in the SAME iteration ctx is cancelled:
-			// select chooses among ready cases at random, so a pending tick
-			// and a fresh ctx.Done() are a coin flip. Re-check the stop
-			// request first so SIGTERM never lets the ticker launch a new run
-			// that races the drain and is then abandoned by os.Exit.
-			if ctx.Err() != nil {
-				return
-			}
-			if _, ok := trigger.Run(); !ok {
-				log.Warn("scheduled dump skipped; a run is already in progress")
-			}
+	// scheduler.RunLoop drives the recurring ticks. No FireOnStart: the startup
+	// dump above is conditional (DueForStartupDump), unlike an unconditional
+	// fire-on-start. RunLoop re-checks ctx before each tick — so a pending tick
+	// racing a fresh SIGTERM never launches a run the drain then abandons — and
+	// returns when ctx is cancelled.
+	scheduler.RunLoop(ctx, func(context.Context) {
+		if _, ok := trigger.Run(); !ok {
+			log.Warn("scheduled dump skipped; a run is already in progress")
 		}
-	}
+	}, scheduler.LoopOptions{Interval: interval})
 }
 
 // runTrigger POSTs to the local server's /dump and mirrors its body to stdout,
@@ -311,16 +302,4 @@ func localAddr(listen string) string {
 		host = "127.0.0.1"
 	}
 	return net.JoinHostPort(host, port)
-}
-
-// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
-// key in UTC, so log-line timestamps are zone-stable regardless of the
-// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
-// top-level time attribute; a user attribute that happens to share the "time"
-// key inside a group is left untouched.
-func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
-		a.Value = slog.TimeValue(a.Value.Time().UTC())
-	}
-	return a
 }

@@ -146,6 +146,43 @@ dumps appear under `<host>_<port>/`. A versioning collector (Kopia, etc.) simply
 begins a fresh chain at the new paths — pg-autodump never reads, moves, or
 deletes the old flat files, so remove them once at your convenience.
 
+## Alerting
+
+pg-autodump has no metrics endpoint; its operational state is in its logs
+(structured `slog` written to stderr). Ship the container's logs to Loki
+(Grafana Alloy's Docker log discovery does this with no configuration) and
+evaluate this rule with
+[Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
+deliver through your Alertmanager exactly like Prometheus metric alerts.
+
+```yaml
+groups:
+  - name: pg-autodump
+    rules:
+      - alert: PgAutodumpDumpFailed
+        expr: |
+          sum by (container) (count_over_time(
+            {container="pg-autodump"} |= `level=ERROR` |= `reason=` [15m]
+          )) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pg-autodump: database dump failed"
+          description: >
+            A pg-autodump database dump failed (level=ERROR with a reason=
+            field). Verify-before-replace keeps the last good .dump, so the
+            affected database's backup is now stale. reasons:
+            connect_error/auth_error/pg_error = misconfig or database down;
+            timeout = exceeded the DUMP_TIMEOUT budget; truncated/empty =
+            bad/partial dump. (A graceful-shutdown cancel logs reason=killed
+            at level=WARN and does not trip this alert.)
+```
+
+Thresholds and the `severity` label are starting points; adjust the `[15m]`
+window and the `container` selector to your deployment, and route by whatever
+labels your Alertmanager uses.
+
 ## Healthcheck
 
 The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand — a file-marker probe, so no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (the client binaries resolve, `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump`, not liveness.

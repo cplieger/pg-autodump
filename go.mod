@@ -8,7 +8,7 @@ require (
 )
 
 require (
-	github.com/cplieger/scheduler v1.1.0
+	github.com/cplieger/scheduler v1.1.1
 	github.com/cplieger/slogx v1.1.1
 	github.com/cplieger/webhttp v1.3.0
 )

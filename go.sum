@@ -2,8 +2,8 @@ github.com/cplieger/atomicfile/v2 v2.1.3 h1:EAg+ZFO1+kgS7/eOfM/Kgk+QHvuz66mnX4LU
 github.com/cplieger/atomicfile/v2 v2.1.3/go.mod h1:jgwJ7oU3qahL4NwiF+1iBIzPRpR8LwXnicSalGoJeVA=
 github.com/cplieger/health v1.2.0 h1:QQzQuvZ1IjBlH+foq7CqXBN7ClD7WLq62D6MFmA7joA=
 github.com/cplieger/health v1.2.0/go.mod h1:15Lm3XhPMU3nCEDfIH2hVAz6TXH06Wwiz9tgBi71vEE=
-github.com/cplieger/scheduler v1.1.1 h1:fchpN5JeXpjrusX9mrdEyhdF/tXzAZBzJXCO6E5Lvvk=
-github.com/cplieger/scheduler v1.1.1/go.mod h1:OT/FkHZsRcL7I4oFfeFT6PM9ZhafBfcZWBfakQmBV5I=
+github.com/cplieger/scheduler v1.2.0 h1:f3iOT8KXvakAWvwWkgrlg/cVBXweLgImIBrpoqgOM2o=
+github.com/cplieger/scheduler v1.2.0/go.mod h1:OT/FkHZsRcL7I4oFfeFT6PM9ZhafBfcZWBfakQmBV5I=
 github.com/cplieger/slogx v1.2.0 h1:z9+DdEsg0JHMv9LJK5pz82Iw1Q/Qfjrrc0dVFH5gmKg=
 github.com/cplieger/slogx v1.2.0/go.mod h1:15KA2NVx725imQe/PYXUmd3oM2oMpYpqwU+hdHtz7Fc=
 github.com/cplieger/webhttp v1.7.0 h1:6IX8F72urpw/+NvJXmO9Eqjehp7MzPqnWUnosN5LdW8=

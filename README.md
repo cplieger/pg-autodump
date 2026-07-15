@@ -229,7 +229,9 @@ Updated automatically via [Renovate](https://github.com/renovatebot/renovate) an
 | github.com/cplieger/health     | [GitHub](https://github.com/cplieger/health)        |
 | pgregory.net/rapid             | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 
-The `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless. See the [PostgreSQL documentation](https://www.postgresql.org/docs/current/app-pgdump.html) for what a logical dump entails.
+`tini` (PID 1) is fetched as the pinned upstream static binary (`TINI_VERSION`, SHA256-verified per arch, fail-closed) and Renovate-tracked via GitHub releases.
+
+The `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required, irreducible dependency, and the reason the image is Alpine (libc) rather than distroless. It deliberately stays the Alpine package rather than a pinned upstream build: the client major must track the newest PostgreSQL server major you dump (see [Versioning](#versioning)), and the digest-pinned base fixes the Alpine release line and starting filesystem while `postgresql18-client` and its libraries deliberately float to the current package revisions in that line at each rebuild (`apk add` resolves against the live index at build time). See the [PostgreSQL documentation](https://www.postgresql.org/docs/current/app-pgdump.html) for what a logical dump entails.
 
 ## Credits
 

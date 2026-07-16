@@ -1,52 +1,38 @@
 package dump
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"log/slog"
 	"math"
 	"path/filepath"
 	"strconv"
-	"strings"
-	"sync"
 	"testing"
+
+	"github.com/cplieger/slogx/capture"
 )
 
-// lowSpaceCapture is an in-memory slog.Handler that records whether the "low
-// free disk space for dumps" warning fired and the free_kb / warn_below_kb
-// values it carried, so disk-space assertions read structured attributes
-// instead of parsing text.
-type lowSpaceCapture struct {
-	mu          sync.Mutex
-	freeKB      int64
-	warnBelowKB int64
-	lowSpaceHit bool
-}
-
-func (h *lowSpaceCapture) Enabled(context.Context, slog.Level) bool { return true }
-
-func (h *lowSpaceCapture) Handle(_ context.Context, r slog.Record) error {
-	if r.Message != "low free disk space for dumps" {
-		return nil
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.lowSpaceHit = true
-	r.Attrs(func(a slog.Attr) bool {
-		switch a.Key {
-		case "free_kb":
-			h.freeKB = a.Value.Int64()
-		case "warn_below_kb":
-			h.warnBelowKB = a.Value.Int64()
+// lowSpaceWarning extracts the "low free disk space for dumps" warning from a
+// capture.Recorder: whether it fired and the free_kb / warn_below_kb values it
+// carried, so disk-space assertions read structured attributes instead of
+// parsing text.
+func lowSpaceWarning(rec *capture.Recorder) (hit bool, freeKB, warnBelowKB int64) {
+	for _, r := range rec.Records() {
+		if r.Message != "low free disk space for dumps" {
+			continue
 		}
-		return true
-	})
-	return nil
+		hit = true
+		r.Attrs(func(a slog.Attr) bool {
+			switch a.Key {
+			case "free_kb":
+				freeKB = a.Value.Int64()
+			case "warn_below_kb":
+				warnBelowKB = a.Value.Int64()
+			}
+			return true
+		})
+	}
+	return hit, freeKB, warnBelowKB
 }
-
-func (h *lowSpaceCapture) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *lowSpaceCapture) WithGroup(string) slog.Handler      { return h }
 
 // fixedFreeSpace is an o.freeSpace stub that reports a controlled free-KB value,
 // so the low-space decision is exercised at an exact threshold without the live
@@ -77,10 +63,10 @@ func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			h := &lowSpaceCapture{}
+			logger, rec := capture.New()
 			o := New(&Params{
 				PG:         &fakePG{},
-				Logger:     slog.New(h),
+				Logger:     logger,
 				DumpDir:    t.TempDir(),
 				FreeKBWarn: warn,
 			})
@@ -88,16 +74,17 @@ func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 
 			o.checkDiskSpace()
 
-			if h.lowSpaceHit != tc.wantWarn {
+			hit, freeKB, warnBelowKB := lowSpaceWarning(rec)
+			if hit != tc.wantWarn {
 				t.Fatalf("free_kb=%d, threshold=%d: warned=%v, want warned=%v",
-					tc.freeKB, warn, h.lowSpaceHit, tc.wantWarn)
+					tc.freeKB, warn, hit, tc.wantWarn)
 			}
 			if tc.wantWarn {
-				if h.freeKB != tc.freeKB {
-					t.Errorf("logged free_kb = %d, want %d", h.freeKB, tc.freeKB)
+				if freeKB != tc.freeKB {
+					t.Errorf("logged free_kb = %d, want %d", freeKB, tc.freeKB)
 				}
-				if h.warnBelowKB != warn {
-					t.Errorf("logged warn_below_kb = %d, want %d", h.warnBelowKB, warn)
+				if warnBelowKB != warn {
+					t.Errorf("logged warn_below_kb = %d, want %d", warnBelowKB, warn)
 				}
 			}
 		})
@@ -112,11 +99,11 @@ func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
 	for _, warn := range []int64{0, -1} {
 		t.Run("threshold="+strconv.FormatInt(warn, 10), func(t *testing.T) {
 			t.Parallel()
-			var buf bytes.Buffer
+			logger, rec := capture.New()
 			probed := false
 			o := New(&Params{
 				PG:         &fakePG{},
-				Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+				Logger:     logger,
 				DumpDir:    t.TempDir(),
 				FreeKBWarn: warn,
 			})
@@ -130,8 +117,8 @@ func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
 			if probed {
 				t.Errorf("disabled check (threshold=%d) probed the filesystem; it must return first", warn)
 			}
-			if buf.Len() != 0 {
-				t.Errorf("disabled check logged %q, want no output", buf.String())
+			if rec.Len() != 0 {
+				t.Errorf("disabled check logged %v, want no output", rec.Messages())
 			}
 		})
 	}
@@ -141,10 +128,10 @@ func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
 // also emit the low-space warning (a failed reading is unknown, not low).
 func TestCheckDiskSpaceProbeError(t *testing.T) {
 	t.Parallel()
-	var buf bytes.Buffer
+	logger, rec := capture.New()
 	o := New(&Params{
 		PG:         &fakePG{},
-		Logger:     slog.New(slog.NewTextHandler(&buf, nil)),
+		Logger:     logger,
 		DumpDir:    t.TempDir(),
 		FreeKBWarn: 1000,
 	})
@@ -152,12 +139,11 @@ func TestCheckDiskSpaceProbeError(t *testing.T) {
 
 	o.checkDiskSpace()
 
-	out := buf.String()
-	if !strings.Contains(out, "cannot check free disk space") {
-		t.Errorf("expected a probe-error warning, got %q", out)
+	if !rec.Contains("cannot check free disk space") {
+		t.Errorf("expected a probe-error warning, got %v", rec.Messages())
 	}
-	if strings.Contains(out, "low free disk space for dumps") {
-		t.Errorf("probe failed; must not also emit the low-space warning, got %q", out)
+	if rec.Contains("low free disk space for dumps") {
+		t.Errorf("probe failed; must not also emit the low-space warning, got %v", rec.Messages())
 	}
 }
 
@@ -194,20 +180,21 @@ func TestCheckDiskSpaceLogsRealFreeKB(t *testing.T) {
 		t.Skipf("temp dir statfs = (%d, %v); cannot exercise freeKB magnitude", want, err)
 	}
 
-	h := &lowSpaceCapture{}
+	logger, rec := capture.New()
 	o := New(&Params{
 		PG:         &fakePG{},
-		Logger:     slog.New(h),
+		Logger:     logger,
 		DumpDir:    dir,
 		FreeKBWarn: math.MaxInt64, // every real volume is below this, so it warns
 	})
 
 	o.checkDiskSpace()
 
-	if !h.lowSpaceHit {
+	hit, freeKB, _ := lowSpaceWarning(rec)
+	if !hit {
 		t.Fatalf("checkDiskSpace did not warn at threshold MaxInt64; expected a low-space warning")
 	}
-	if lo, hi := want/2, want*2; h.freeKB < lo || h.freeKB > hi {
-		t.Errorf("logged free_kb = %d, want within [%d, %d]", h.freeKB, lo, hi)
+	if lo, hi := want/2, want*2; freeKB < lo || freeKB > hi {
+		t.Errorf("logged free_kb = %d, want within [%d, %d]", freeKB, lo, hi)
 	}
 }

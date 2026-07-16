@@ -25,7 +25,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
-	"github.com/cplieger/scheduler"
+	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/slogx"
 	"github.com/cplieger/webhttp"
 )

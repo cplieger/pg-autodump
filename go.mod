@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/cplieger/atomicfile/v2 v2.2.0
-	github.com/cplieger/health v1.3.0
+	github.com/cplieger/health v1.4.0
 )
 
 require (

@@ -10,5 +10,5 @@ require (
 require (
 	github.com/cplieger/scheduler/v2 v2.0.0
 	github.com/cplieger/slogx v1.3.0
-	github.com/cplieger/webhttp v1.8.0
+	github.com/cplieger/webhttp v1.9.0
 )

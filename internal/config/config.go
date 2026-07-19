@@ -11,6 +11,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -99,20 +100,29 @@ func (w *warnings) addf(format string, args ...any) {
 	*w = append(*w, Warning(fmt.Sprintf(format, args...)))
 }
 
-// loadDumpDir resolves DUMP_DIR. An unset value uses the default. A value
-// containing ".." is fatal (returns an error): a path-traversal component could
-// let dumps escape the intended volume, and silently relocating backups to the
-// default would hide that the operator's chosen directory was ignored — for a
-// backup tool, failing to start is safer than backing up to the wrong place.
-// main surfaces the error and aborts startup.
+// loadDumpDir resolves DUMP_DIR. An unset value uses the default. A value with
+// a ".." path component is fatal (returns an error): a traversal component
+// could let dumps escape the intended volume, and silently relocating backups
+// to the default would hide that the operator's chosen directory was ignored —
+// for a backup tool, failing to start is safer than backing up to the wrong
+// place. main surfaces the error and aborts startup. The check is per path
+// component, so a legal name that merely contains consecutive dots (e.g.
+// "/dumps/a..b") is accepted.
 func loadDumpDir(v string) (string, error) {
 	if v == "" {
 		return DefaultDumpDir, nil
 	}
-	if strings.Contains(v, "..") {
-		return "", fmt.Errorf("DUMP_DIR %q must not contain %q (refusing to start; set a directory without path traversal)", v, "..")
+	if hasDotDotComponent(v) {
+		return "", fmt.Errorf("DUMP_DIR %q must not contain a %q path component (refusing to start; set a directory without path traversal)", v, "..")
 	}
 	return v, nil
+}
+
+// hasDotDotComponent reports whether p contains ".." as a full path component
+// (the traversal form), as opposed to ".." merely appearing inside a longer
+// name. Paths here are Linux container paths, so '/' is the only separator.
+func hasDotDotComponent(p string) bool {
+	return slices.Contains(strings.Split(p, "/"), "..")
 }
 
 func loadDumpTimeout(v string, w *warnings) time.Duration {

@@ -21,9 +21,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/dump"
+	scheduler "github.com/cplieger/scheduler/v2"
 )
 
 // ErrNoDeadline is returned by every boundary method when handed a context
@@ -34,6 +36,33 @@ var ErrNoDeadline = errors.New("pg: context has no deadline")
 // stderrCap bounds captured pg_dump/psql stderr so a chatty tool cannot flood
 // logs or the HTTP body.
 const stderrCap = 2048
+
+// newCommand builds every child process this package spawns (pg_dump,
+// pg_restore, psql). It is the fleet-standard child shape shared with
+// docker-renovate-scheduler: the scheduler library supplies graceful
+// cancellation (SIGTERM on context cancellation, then a DefaultGrace 5s
+// window before os/exec escalates to SIGKILL), and Setpgid puts the child in
+// its OWN process group.
+//
+// Setpgid is the load-bearing half. PID 1 here is tini, which in its default
+// mode signals only its immediate child — but a group-forwarding init
+// (dumb-init, `tini -g`) would forward a docker-stop SIGTERM to the daemon's
+// entire process group, TERMing an in-flight pg_dump out-of-band in the same
+// instant as the daemon and silently defeating the shutdown drain
+// (Guard.WaitIdle would just observe the corpse). That exact failure shipped
+// to prod in docker-renovate-scheduler. With its own group the child only
+// ever receives signals the daemon sends it (ctx cancellation on timeout or
+// drain-budget expiry), so the drain semantics hold under ANY init above the
+// daemon instead of depending on tini's forwarding default. The caller wires
+// Stdout/Stderr/Env on the returned command.
+var newCommand scheduler.CommandRunner = func() scheduler.CommandRunner {
+	base := scheduler.NewCommandRunner(scheduler.DefaultGrace)
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		cmd := base(ctx, name, args...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		return cmd
+	}
+}()
 
 // Tool runs the PostgreSQL client binaries as a network client. Credentials
 // flow only through the child environment (PGPASSFILE), never argv.
@@ -80,10 +109,11 @@ func BinariesPresent() error {
 	return nil
 }
 
-// Dump streams a network custom-format pg_dump for c into w. pg_dump is a local
-// child process, so ctx cancellation (cmd.Cancel via CommandContext) kills it
-// directly and Postgres tears down the server backend when the client TCP
-// connection drops. Returns the process exit code and a bounded stderr tail.
+// Dump streams a network custom-format pg_dump for c into w. pg_dump is a
+// local child process, so ctx cancellation reaches it directly (SIGTERM, then
+// the runner's grace window — see newCommand) and Postgres tears down the
+// server backend when the client TCP connection drops. Returns the process
+// exit code and a bounded stderr tail.
 func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int, stderrTail string, err error) {
 	if _, ok := ctx.Deadline(); !ok {
 		return 0, "", ErrNoDeadline
@@ -96,14 +126,12 @@ func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int
 		"--no-password",
 		"--dbname=" + c.DBName,
 	}
-	//nolint:gosec // G204: explicit argv (no shell); host/port/user/db are validated in internal/spec.
-	cmd := exec.CommandContext(ctx, t.dumpBin, args...)
+	cmd := newCommand(ctx, t.dumpBin, args...)
 	cmd.Stdout = w
 	var errBuf boundedBuffer
 	errBuf.max = stderrCap
 	cmd.Stderr = &errBuf
 	cmd.Env = t.childEnv()
-	cmd.WaitDelay = 5 * time.Second
 
 	code, runErr := run(cmd)
 	return code, strings.TrimSpace(errBuf.String()), runErr
@@ -121,8 +149,7 @@ func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return ErrNoDeadline
 	}
-	//nolint:gosec // G204: explicit argv (no shell); path is an internally-created temp file.
-	cmd := exec.CommandContext(ctx, t.restoreBin, "--list", path)
+	cmd := newCommand(ctx, t.restoreBin, "--list", path)
 	cmd.Stdout = io.Discard
 	var errBuf boundedBuffer
 	errBuf.max = 512
@@ -165,8 +192,7 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 	}
 	_ = conn.Close()
 
-	//nolint:gosec // G204: explicit argv (no shell); host/port/user/db are validated in internal/spec.
-	cmd := exec.CommandContext(ctx, t.psqlBin,
+	cmd := newCommand(ctx, t.psqlBin,
 		"--no-password", "-tAX", "-q",
 		"-h", c.Host, "-p", strconv.Itoa(c.Port), "-U", c.User, "-d", c.DBName,
 		"-c", "SELECT current_setting('server_version_num')")
@@ -223,17 +249,11 @@ func (t *Tool) childEnv() []string {
 
 // clientMajorCached resolves the shipped pg_dump major version once, caching
 // the result. On any failure it caches 0 so the version comparison is skipped
-// (never a false version_mismatch).
+// (never a false version_mismatch). Its sole caller (Probe) has already
+// enforced that ctx carries a deadline, so the version exec is bounded by it.
 func (t *Tool) clientMajorCached(ctx context.Context) int {
 	t.clientOnce.Do(func() {
-		vctx := ctx
-		if _, ok := ctx.Deadline(); !ok {
-			var cancel context.CancelFunc
-			vctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-		}
-		//nolint:gosec // G204: static command `pg_dump --version`, no user input.
-		out, err := exec.CommandContext(vctx, t.dumpBin, "--version").Output()
+		out, err := newCommand(ctx, t.dumpBin, "--version").Output()
 		if err != nil {
 			return
 		}

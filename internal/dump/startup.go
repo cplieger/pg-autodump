@@ -27,34 +27,33 @@ func DueForStartupDump(dumpDir string, interval time.Duration, now time.Time) bo
 }
 
 // newestDumpModTime returns the modification time of the most recently modified
-// "*.dump" file under dumpDir and whether any was found. It scans the DUMP_DIR
-// root (tolerating legacy flat artifacts) and one level of per-server
-// subdirectories (the current <host>_<port>/ layout). It is best-effort:
-// unreadable directories and entries are skipped rather than failing the scan,
-// because the caller only needs a recency signal, not a complete inventory.
+// "*.dump" file under dumpDir and whether any was found. It scans one level of
+// per-server subdirectories — the only place dumps are written
+// (<host>_<port>/); files at the DUMP_DIR root are not dump artifacts and are
+// ignored. It is best-effort: unreadable directories and entries are skipped
+// rather than failing the scan, because the caller only needs a recency
+// signal, not a complete inventory.
 func newestDumpModTime(dumpDir string) (time.Time, bool) {
 	var newest time.Time
 	found := false
-	consider := func(entries []os.DirEntry) {
-		for _, e := range entries {
-			mt, ok := dumpEntryModTime(e)
-			if ok && (!found || mt.After(newest)) {
-				newest, found = mt, true
-			}
-		}
-	}
 
 	top, err := os.ReadDir(dumpDir)
 	if err != nil {
 		return newest, found
 	}
-	consider(top) // legacy flat artifacts at the DUMP_DIR root
 	for _, e := range top {
 		if !e.IsDir() {
 			continue
 		}
-		if entries, err := os.ReadDir(filepath.Join(dumpDir, e.Name())); err == nil {
-			consider(entries)
+		entries, err := os.ReadDir(filepath.Join(dumpDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			mt, ok := dumpEntryModTime(entry)
+			if ok && (!found || mt.After(newest)) {
+				newest, found = mt, true
+			}
 		}
 	}
 	return newest, found

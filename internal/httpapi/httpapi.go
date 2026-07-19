@@ -6,7 +6,6 @@ package httpapi
 
 import (
 	"context"
-	"crypto/subtle"
 	"fmt"
 	"io"
 	"log/slog"
@@ -16,6 +15,7 @@ import (
 
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/dump"
+	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/webhttp"
 )
 
@@ -23,52 +23,69 @@ import (
 // write timeout: a dump run holds the response open for minutes by design.
 const readHeaderTimeout = 10 * time.Second
 
-// Trigger runs one dump under the single-flight guard. The run context is
-// derived from context.Background(), NOT the HTTP request, so a trigger client
-// that disconnects (a short wget firing a long backup) never cancels the dump;
-// only shutdown cancels it, via the guard.
+// Trigger runs one dump under the in-process single-flight guard and the
+// cross-process cycle lock (scheduler.Exclusive). The run context is derived
+// from context.Background(), NOT the HTTP request, so a trigger client that
+// disconnects (a short wget firing a long backup) never cancels the dump; only
+// shutdown cancels it, via the guard. The cycle lock extends single-flight
+// across processes: an exec'd `pg-autodump run` can never dump concurrently
+// with the server, and a rerun request it queues while the server's cycle runs
+// is executed by the server before Run returns (depth-1 coalescing — queued
+// demand is owed a run that starts after it arrived).
 type Trigger struct {
 	guard *dump.Guard
+	cycle *scheduler.Exclusive
 	orch  *dump.Orchestrator
 	log   *slog.Logger
 }
 
 // NewTrigger builds a Trigger.
-func NewTrigger(guard *dump.Guard, orch *dump.Orchestrator, log *slog.Logger) *Trigger {
+func NewTrigger(guard *dump.Guard, cycle *scheduler.Exclusive, orch *dump.Orchestrator, log *slog.Logger) *Trigger {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Trigger{guard: guard, orch: orch, log: log}
+	return &Trigger{guard: guard, cycle: cycle, orch: orch, log: log}
 }
 
 // Run executes one dump run if none is in flight. It returns the per-database
-// results and ok=true, or (nil, false) when a run is already in progress. On
-// completion it emits a single "dump cycle complete" heartbeat (total/ok/failed
-// tallied from the results) so a Loki absence alert can catch a silent non-run
-// of this backup-critical sidecar, not just a loud per-DB failure.
-func (t *Trigger) Run() (results []dump.Result, ok bool) {
+// results of the caller's own run and ok=true. ok=false (with a nil error)
+// means a run is already in progress: the in-process guard is held, or an
+// exec'd `pg-autodump run` in another process holds the cycle lock. A non-nil
+// error means the cross-process cycle coordination itself failed and nothing
+// ran. Rerun demand queued by exec'd runs during the cycle is consumed before
+// Run returns; the reported results are always the first (the caller's own)
+// run.
+func (t *Trigger) Run() (results []dump.Result, ok bool, err error) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	release, acquired := t.guard.TryAcquire(cancel)
 	if !acquired {
 		cancel()
-		return nil, false
+		return nil, false, nil
 	}
 	defer release()
 	defer cancel()
 
-	results = t.orch.Run(runCtx)
-
-	var okN, failedN int
-	for _, r := range results {
-		if r.OK() {
-			okN++
-		} else {
-			failedN++
+	var out []dump.Result
+	got := false
+	_, exErr := t.cycle.RunOrSkip(func() error {
+		r := t.orch.Run(runCtx)
+		if !got {
+			out, got = r, true
 		}
+		return nil
+	})
+	if !got {
+		// Nothing ran: the cycle lock is held by another process (skip), the
+		// shutdown gate closed first, or the lock could not be used (exErr).
+		return nil, false, exErr
 	}
-	t.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
-
-	return results, true
+	if exErr != nil {
+		// The run itself completed; a queue-file error only degrades the
+		// demand-coalescing bookkeeping, so it is logged rather than failing
+		// the run the caller paid for.
+		t.log.Warn("cycle coordination error after run", "err", exErr)
+	}
+	return out, true, nil
 }
 
 // Deps are the wiring NewServer needs.
@@ -120,10 +137,17 @@ func NewServer(d *Deps) *http.Server {
 
 // dumpHandler runs one dump and writes one text line per database. Status is
 // 200 when every database produced "ok", else 500; a run already in progress
-// is 429. The method-aware mux pattern returns 405 for non-POST.
+// (in this process or an exec'd `pg-autodump run`) is 429, and a cycle-lock
+// infrastructure failure is a 500 with a generic body (the detail is logged).
+// The method-aware mux pattern returns 405 for non-POST.
 func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		results, ok := tr.Run()
+		results, ok, err := tr.Run()
+		if err != nil {
+			log.Error("cycle coordination failed", "err", err)
+			http.Error(w, "cycle coordination failed", http.StatusInternalServerError)
+			return
+		}
 		if !ok {
 			http.Error(w, "dump already in progress", http.StatusTooManyRequests)
 			return
@@ -151,18 +175,26 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 }
 
 // authMiddleware enforces a bearer token when one is configured; it is a no-op
-// when the token is empty (documented open mode). The comparison is
-// constant-time to avoid leaking the token via timing.
+// when the token is empty (documented open mode). Verification is delegated to
+// webhttp's static-token verifier, built ONCE here so the configured token is
+// pre-hashed: each request hashes only the presented value and compares
+// fixed-length SHA-256 digests in constant time, so neither the compare's
+// short-circuit nor the per-call hashing leaks anything about the configured
+// token (a raw ConstantTimeCompare short-circuits on length mismatch, making
+// the token's LENGTH timing-observable even though its content is not). The
+// verifier also fails closed on an empty configured secret, so if the open-mode
+// bypass above it were ever removed, an unset token would reject every request
+// rather than matching an empty presented credential.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
 	const prefix = "Bearer "
-	want := []byte(token)
+	verify := webhttp.NewStaticTokenVerifier(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := r.Header.Get("Authorization")
 		if !strings.HasPrefix(h, prefix) ||
-			subtle.ConstantTimeCompare([]byte(strings.TrimPrefix(h, prefix)), want) != 1 {
+			!verify.Verify(strings.TrimPrefix(h, prefix)) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

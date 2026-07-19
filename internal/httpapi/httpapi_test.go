@@ -7,20 +7,26 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
+	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/webhttp"
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
-// release after signalling entered, so single-flight (429) can be exercised.
+// release after signalling entered, so single-flight (429) can be exercised;
+// dumpCalls counts Dump invocations so rerun coalescing can be asserted.
 type stubPG struct {
-	entered chan struct{}
-	release chan struct{}
-	exit    int
+	entered   chan struct{}
+	release   chan struct{}
+	exit      int
+	dumpCalls atomic.Int32
 }
 
 func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
@@ -28,6 +34,7 @@ func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 }
 
 func (p *stubPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, string, error) {
+	p.dumpCalls.Add(1)
 	if p.entered != nil {
 		p.entered <- struct{}{}
 	}
@@ -47,23 +54,35 @@ type okSignal struct{ ok bool }
 
 func (s okSignal) Healthy() bool { return s.ok }
 
-func newTestServer(t *testing.T, pg dump.PGTool, token string) *http.Server {
+// discard is a throwaway logger for wiring the pieces under test.
+func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// newTestServerInDir builds a server whose cross-process cycle lock lives in
+// cycleDir, so tests can contend on the lock the way an exec'd `pg-autodump
+// run` process would.
+func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
 	t.Helper()
 	orch := dump.New(&dump.Params{
 		PG:          pg,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:      discard(),
 		DumpDir:     t.TempDir(),
 		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cycle := scheduler.NewExclusive(cycleDir, discard())
+	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		AuthToken: token,
 		Trigger:   trigger,
 		Health:    okSignal{ok: true},
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Log:       discard(),
 	})
+}
+
+func newTestServer(t *testing.T, pg dump.PGTool, token string) *http.Server {
+	t.Helper()
+	return newTestServerInDir(t, pg, token, t.TempDir())
 }
 
 func post(t *testing.T, srv *http.Server, header string) *httptest.ResponseRecorder {
@@ -115,11 +134,42 @@ func TestAuthRequired(t *testing.T) {
 	if rec := post(t, srv, ""); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token: status = %d, want 401", rec.Code)
 	}
-	if rec := post(t, srv, "Bearer wrong"); rec.Code != http.StatusUnauthorized {
+	if rec := post(t, srv, "Basic sekret"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("non-bearer scheme: status = %d, want 401", rec.Code)
+	}
+	if rec := post(t, srv, "Bearer "); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("empty presented token: status = %d, want 401", rec.Code)
+	}
+	if rec := post(t, srv, "Bearer sekret-with-suffix"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("prefix-matching token: status = %d, want 401", rec.Code)
+	}
+	rec := post(t, srv, "Bearer wrong")
+	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong token: status = %d, want 401", rec.Code)
+	}
+	// The rejection is http.Error's plain "unauthorized" — the same body,
+	// status, and Content-Type as before the webhttp verifier switch.
+	if got := rec.Body.String(); got != "unauthorized\n" {
+		t.Fatalf("401 body = %q, want %q", got, "unauthorized\n")
 	}
 	if rec := post(t, srv, "Bearer sekret"); rec.Code == http.StatusUnauthorized {
 		t.Fatalf("correct token rejected: status = %d", rec.Code)
+	}
+}
+
+// TestVerifierFailsClosedOnEmptyConfigured pins the contract the auth gate
+// relies on: the wired verifier (webhttp.NewStaticTokenVerifier) never
+// authorizes when the configured secret is empty — not even for an empty
+// presented credential, where a bare hash-then-compare would match.
+// pg-autodump's documented open mode (empty AUTH_TOKEN serves unauthenticated,
+// TestDumpOKReturns200) is a bypass ABOVE this gate; the gate itself failing
+// closed means removing that bypass could never fail open.
+func TestVerifierFailsClosedOnEmptyConfigured(t *testing.T) {
+	verify := webhttp.NewStaticTokenVerifier("")
+	for _, presented := range []string{"", "sekret", "Bearer "} {
+		if verify.Verify(presented) {
+			t.Errorf("NewStaticTokenVerifier(\"\").Verify(%q) = true, want false (empty configured must never authorize)", presented)
+		}
 	}
 }
 
@@ -172,13 +222,14 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	logger := slog.New(slog.NewTextHandler(buf, nil))
 	orch := dump.New(&dump.Params{
 		PG:          pg,
-		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:      discard(),
 		DumpDir:     t.TempDir(),
 		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, orch, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	cycle := scheduler.NewExclusive(t.TempDir(), discard())
+	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
 		Health:  okSignal{ok: true},
@@ -257,18 +308,81 @@ func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 // (retained) and assert the stored logger in each.
 func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	guard := &dump.Guard{}
+	cycle := scheduler.NewExclusive(t.TempDir(), nil)
 
 	// nil logger is replaced with a non-nil default.
-	trNil := NewTrigger(guard, nil, nil)
+	trNil := NewTrigger(guard, cycle, nil, nil)
 	if trNil.log == nil {
 		t.Fatalf("NewTrigger(.., nil) left log nil; want it defaulted to a non-nil logger")
 	}
 
 	// a supplied logger is retained unchanged.
 	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
-	trCustom := NewTrigger(guard, nil, custom)
+	trCustom := NewTrigger(guard, cycle, nil, custom)
 	if trCustom.log != custom {
 		t.Fatalf("NewTrigger(.., custom) did not retain the supplied logger; want it stored as-is")
+	}
+}
+
+// A cycle lock held by ANOTHER process (an exec'd `pg-autodump run`) makes
+// POST /dump respond 429 exactly like an in-process contention: the server
+// must never dump concurrently with a one-shot run. The test holds the flock
+// through a second file description, which is what a separate process would do.
+func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
+	cycleDir := t.TempDir()
+	srv := newTestServerInDir(t, &stubPG{}, "", cycleDir)
+
+	lock, ok, err := scheduler.TryLock(filepath.Join(cycleDir, scheduler.ExclusiveLockName))
+	if err != nil || !ok {
+		t.Fatalf("TryLock(cycle.lock) = ok=%v err=%v, want held", ok, err)
+	}
+	defer lock.Unlock()
+
+	if rec := post(t, srv, ""); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("dump with foreign cycle lock held: status = %d, want 429", rec.Code)
+	}
+}
+
+// Depth-1 rerun coalescing end to end: demand queued (by what would be an
+// exec'd `pg-autodump run`) while the server's cycle is in flight is executed
+// by the server before the HTTP response is written. The requester never
+// blocks (OutcomeQueued returns immediately), the handler's body reports only
+// the caller's own first run, and the orchestrator runs exactly twice (one
+// spec, two cycles).
+func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
+	cycleDir := t.TempDir()
+	pg := &stubPG{entered: make(chan struct{}), release: make(chan struct{})}
+	srv := newTestServerInDir(t, pg, "", cycleDir)
+
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- post(t, srv, "") }()
+
+	<-pg.entered // server cycle now in flight, cycle lock held
+
+	// A second Exclusive on the same dir is the requester side of another
+	// process. Its job must never run here: the lock is busy, so the demand
+	// queues for the active runner.
+	requester := scheduler.NewExclusive(cycleDir, discard())
+	outcome, err := requester.Run(func() error {
+		t.Error("requester executed the job; want it queued behind the in-flight cycle")
+		return nil
+	})
+	if err != nil || outcome != scheduler.OutcomeQueued {
+		t.Fatalf("requester.Run = (%v, %v), want (queued, nil)", outcome, err)
+	}
+
+	close(pg.release) // let the first cycle finish; the consume loop reruns
+	<-pg.entered      // the queued rerun entered Dump: demand was consumed
+
+	rec := <-done
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Body.String(); got != "h/db: ok (5 bytes)\n" {
+		t.Fatalf("body = %q, want the caller's own single-run report", got)
+	}
+	if got := pg.dumpCalls.Load(); got != 2 {
+		t.Fatalf("Dump calls = %d, want 2 (own cycle + one coalesced rerun)", got)
 	}
 }
 

@@ -16,9 +16,12 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// probeTimeoutCap bounds the per-database reachability probe so a dead host
+// ProbeTimeoutCap bounds the per-database reachability probe so a dead host
 // classifies as connect_error quickly instead of consuming the dump budget.
-const probeTimeoutCap = 10 * time.Second
+// Exported so the trigger client's worst-case wait model (cmd/pg-autodump
+// triggerTimeout) consumes the same constant the orchestrator enforces and the
+// two can never drift.
+const ProbeTimeoutCap = 10 * time.Second
 
 // Params configures an Orchestrator. The pg boundary is injected; the rest are
 // validated config values.
@@ -76,7 +79,16 @@ func New(p *Params) *Orchestrator {
 // Run executes every spec and returns one Result per database in spec order.
 // Invalid and duplicate specs yield a Result without being dispatched; valid
 // specs run through the bounded worker pool. It never returns a partial slice.
+//
+// Run assumes it is the only dump run in flight (its production callers hold
+// the in-process guard and the cross-process cycle lock), so it first reclaims
+// crash-orphaned temp files under DumpDir — every temp visible at cycle start
+// is an orphan. On completion it emits a single "dump cycle complete"
+// heartbeat (total/ok/failed tallied from the results); the README's alerting
+// section documents the Loki absence rule that keys on it to catch a silent
+// non-run of this backup-critical sidecar, not just a loud per-DB failure.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
+	ReclaimOrphans(o.dumpDir, o.log)
 	o.checkDiskSpace()
 
 	results := make([]Result, len(o.specs))
@@ -99,6 +111,17 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 			results[validPos[j]] = r
 		}
 	}
+
+	var okN, failedN int
+	for i := range results {
+		if results[i].OK() {
+			okN++
+		} else {
+			failedN++
+		}
+	}
+	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
+
 	return results
 }
 
@@ -109,7 +132,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	conn := Conn{Host: s.Host, Port: s.Port, DBName: s.DBName, User: s.User}
 	start := o.now()
 
-	probeCtx, cancelProbe := context.WithTimeout(ctx, min(probeTimeoutCap, o.dumpTimeout))
+	probeCtx, cancelProbe := context.WithTimeout(ctx, min(ProbeTimeoutCap, o.dumpTimeout))
 	major, kind, perr := o.pg.Probe(probeCtx, conn)
 	probeErr := probeCtx.Err()
 	cancelProbe()

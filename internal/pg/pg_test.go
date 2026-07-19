@@ -3,12 +3,65 @@ package pg
 import (
 	"context"
 	"io"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/dump"
 )
+
+// TestNewCommand pins the fleet-standard child shape shared with
+// docker-renovate-scheduler: graceful cancellation (Cancel set, WaitDelay
+// grace) and the child leading its own process group.
+func TestNewCommand(t *testing.T) {
+	t.Parallel()
+	cmd := newCommand(context.Background(), "sleep", "1")
+	if cmd.Cancel == nil {
+		t.Error("Cancel not set (graceful SIGTERM on ctx cancellation expected)")
+	}
+	if cmd.WaitDelay <= 0 {
+		t.Errorf("WaitDelay = %v, want a positive grace window before SIGKILL escalation", cmd.WaitDelay)
+	}
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Error("Setpgid not set: the child must run in its own process group, or " +
+			"a group-forwarding init above the daemon (dumb-init, tini -g) forwards the " +
+			"docker-stop SIGTERM to the whole group and kills the in-flight dump, " +
+			"defeating the shutdown drain")
+	}
+}
+
+// TestNewCommand_ChildRunsInOwnProcessGroup proves the OS honors Setpgid: a
+// spawned child's process group must differ from the daemon's (here: the test
+// process's), so a group-directed SIGTERM at PID 1 cannot reach it. This is
+// the behavioral half of the Setpgid pin in TestNewCommand.
+func TestNewCommand_ChildRunsInOwnProcessGroup(t *testing.T) {
+	t.Parallel()
+	cmd := newCommand(context.Background(), "sleep", "2")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() failed: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	childPgid, err := syscall.Getpgid(cmd.Process.Pid)
+	if err != nil {
+		t.Fatalf("Getpgid(child) failed: %v", err)
+	}
+	ownPgid, err := syscall.Getpgid(os.Getpid())
+	if err != nil {
+		t.Fatalf("Getpgid(self) failed: %v", err)
+	}
+	if childPgid == ownPgid {
+		t.Errorf("child pgid = %d equals parent pgid; child must lead its own process group", childPgid)
+	}
+	if childPgid != cmd.Process.Pid {
+		t.Errorf("child pgid = %d, want %d (the child should lead its own group)", childPgid, cmd.Process.Pid)
+	}
+}
 
 func TestParseMajor(t *testing.T) {
 	tests := []struct {

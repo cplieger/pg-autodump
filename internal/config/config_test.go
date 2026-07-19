@@ -77,16 +77,37 @@ func TestLoadNoSecretFields(t *testing.T) {
 	}
 }
 
-// A DUMP_DIR with ".." is fatal: Load returns an error so startup aborts rather
-// than silently relocating backups to the default directory (a backup tool must
-// not guess where the operator's chosen destination went).
+// A DUMP_DIR with a ".." path component is fatal: Load returns an error so
+// startup aborts rather than silently relocating backups to the default
+// directory (a backup tool must not guess where the operator's chosen
+// destination went).
 func TestLoadDumpDirTraversalIsFatal(t *testing.T) {
-	cfg, warns, err := Load(envFunc(map[string]string{"DUMP_DIR": "/dumps/../etc"}))
-	if err == nil {
-		t.Fatalf("DUMP_DIR with \"..\" must return a fatal error; got nil (cfg %+v, warns %v)", cfg, warns)
+	for _, dir := range []string{"/dumps/../etc", "..", "/dumps/..", "../dumps"} {
+		cfg, warns, err := Load(envFunc(map[string]string{"DUMP_DIR": dir}))
+		if err == nil {
+			t.Fatalf("DUMP_DIR=%q must return a fatal error; got nil (cfg %+v, warns %v)", dir, cfg, warns)
+		}
+		if !strings.Contains(err.Error(), "DUMP_DIR") {
+			t.Fatalf("error %q should name DUMP_DIR", err)
+		}
 	}
-	if !strings.Contains(err.Error(), "DUMP_DIR") {
-		t.Fatalf("error %q should name DUMP_DIR", err)
+}
+
+// The traversal check matches ".." as a full path COMPONENT, not a substring:
+// a legal directory name that merely contains consecutive dots must load
+// unchanged (pre-fix behavior rejected "/dumps/a..b").
+func TestLoadDumpDirDotsInsideNameIsLegal(t *testing.T) {
+	for _, dir := range []string{"/dumps/a..b", "/du..mps", "/dumps/v1..2/pg"} {
+		cfg, warns, err := Load(envFunc(map[string]string{"DUMP_DIR": dir}))
+		if err != nil {
+			t.Fatalf("DUMP_DIR=%q should be legal, got fatal error %v", dir, err)
+		}
+		if cfg.DumpDir != dir {
+			t.Errorf("DUMP_DIR=%q: DumpDir = %q, want it passed through", dir, cfg.DumpDir)
+		}
+		if len(warns) != 0 {
+			t.Errorf("DUMP_DIR=%q: want no warnings, got %v", dir, warns)
+		}
 	}
 }
 

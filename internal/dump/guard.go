@@ -5,12 +5,13 @@ import (
 	"sync/atomic"
 )
 
-// Guard enforces one dump run at a time in-process. The resident HTTP server
-// owns a single Guard; the trigger subcommand routes through the server, so
-// there is exactly one coordination point and no lock file (the 1.x flock and
-// its "crashed child holds the lock" failure mode are gone). The Guard also
-// holds the in-flight run's cancel func so the shutdown path can reach and
-// cancel it.
+// Guard enforces one dump run at a time in-process: the resident HTTP server
+// owns a single Guard shared by its HTTP, exec-trigger, and ticker paths, and
+// it holds the in-flight run's cancel func so the shutdown path can reach and
+// cancel it. Cross-process coordination (the server vs an exec'd `pg-autodump
+// run`) is layered on top via scheduler.Exclusive's kernel-released flock —
+// unlike the 1.x lock file, a crashed holder can never wedge it, and the Guard
+// remains the only place that owns cancellation and drain.
 type Guard struct {
 	cancel  atomic.Pointer[context.CancelFunc]
 	done    atomic.Pointer[chan struct{}]

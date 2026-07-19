@@ -73,6 +73,13 @@ RUN apk upgrade --no-cache \
 # tini (PID 1 for clean signal handling and zombie reaping): pinned upstream
 # static binary, SHA256-verified in the fetch stage above. /sbin/tini matches
 # the path the apk package used, so the ENTRYPOINT is unchanged.
+#
+# tini runs in its default child-only forwarding mode (no -g): a docker-stop
+# SIGTERM reaches the daemon, never the pg_dump children, so the shutdown
+# drain can finish an in-flight dump. The app does not depend on that default,
+# though: every child it spawns leads its own process group (Setpgid in
+# internal/pg), so even a group-forwarding init cannot TERM a dump out-of-band
+# — the hardening docker-renovate-scheduler needed under its dumb-init PID 1.
 COPY --chmod=755 --from=tini-fetcher /tini /sbin/tini
 
 COPY --chmod=755 --from=builder /pg-autodump /usr/local/bin/pg-autodump

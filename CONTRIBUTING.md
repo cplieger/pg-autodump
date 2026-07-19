@@ -20,8 +20,10 @@ The repo, image, Go module, and binary are all `pg-autodump`
 ## Package layout
 
 `cmd/pg-autodump/main.go` is the composition root — the only place that
-reads config, builds the slog handler, wires dependencies, and decides
-fatal-vs-recover. It dispatches `serve` (default) / `health` / `trigger`.
+reads config, builds the slog handler, wires dependencies (including the
+cross-process cycle lock, a `scheduler.Exclusive` under `/tmp/pg-autodump`
+shared by the server and one-shot runs), and decides fatal-vs-recover. It
+dispatches `serve` (default) / `run` / `health` / `trigger`.
 The real work lives under `internal/`:
 
 - `internal/config` — the single `os.Getenv` site. Every tunable is a
@@ -34,9 +36,9 @@ The real work lives under `internal/`:
   `psql`. Implements `dump.PGTool`. Every call is context-bounded and
   returns `ErrNoDeadline` for a deadline-less context.
 - `internal/dump` — the core: orchestrator, bounded worker pool,
-  single-flight guard, verify-before-replace, the result/reason taxonomy.
-  It defines the narrow interface it consumes (`PGTool`) so
-  it is testable against fakes with no network/daemon.
+  single-flight guard, verify-before-replace, crash-orphan temp reclaim,
+  the result/reason taxonomy. It defines the narrow interface it consumes
+  (`PGTool`) so it is testable against fakes with no network/daemon.
 - `internal/httpapi` — routes, handlers, bearer auth, the shared `Trigger`.
 - `internal/obs` — the startup preflight (binaries/dir/specs) that
   decides the health-marker state.

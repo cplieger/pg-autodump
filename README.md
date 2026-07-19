@@ -32,7 +32,7 @@ HTTP) and runs as an ordinary **unprivileged** user.
 - **Verify before replace** — each dump stages to a temp file, passes a non-empty and `pg_restore --list` (TOC) check, then atomically renames into place. The last known-good dump survives any failure (`atomicfile` adds the dir-fsync a plain `mv` lacks).
 - **Bounded parallelism** — `DUMP_CONCURRENCY` dumps databases concurrently with no per-host serialization, so the common one-server-many-DBs case is not forced serial. One knob, safe default.
 - **Built-in retention** — keeps the newest `DUMP_KEEP` timestamped dumps per database (7 by default), pruning older ones after each successful run, so it works as a self-contained incremental backup out of the box. Set `DUMP_KEEP=1` to instead keep a single stable `<dbname>.dump` and delegate versioning to your backup tool.
-- **Standard surface** — `POST /dump`, `GET /healthz`. Trigger by the built-in daily timer (default), over HTTP, or `docker exec ... pg-autodump trigger`.
+- **Standard surface** — `POST /dump`, `GET /healthz`. Trigger by the built-in daily timer (default), over HTTP, `docker exec ... pg-autodump trigger`, or run one cycle as a batch job with `pg-autodump run` (see [One-shot mode](#one-shot-mode)).
 
 ## Quick start
 
@@ -92,23 +92,58 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
    # or: docker exec pg-autodump pg-autodump trigger
    ```
 
+## One-shot mode
+
+`pg-autodump run` performs exactly one dump cycle and exits — for deployments
+where an external scheduler (cron, a systemd timer, a Kubernetes CronJob,
+Ofelia) owns the cadence and consumes the exit code as the result:
+
+```sh
+docker run --rm \
+  -e DB_SPECS="mydb-host:5432:myapp:dbdumper_ro" \
+  -v ./secrets/.pgpass:/secrets/.pgpass:ro \
+  -v ./dumps:/dumps \
+  ghcr.io/cplieger/pg-autodump:latest run
+```
+
+- **Exit code is the result.** `0` when every configured database dumped ok,
+  non-zero when any failed or the preconditions (client binaries, writable
+  `/dumps`, non-empty `DB_SPECS`) weren't met. SIGTERM mid-run cancels the
+  in-flight `pg_dump` cleanly (reported as `killed`, non-zero exit).
+- **No listener, no timer.** `run` binds no HTTP port and ignores
+  `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL`, and `SHUTDOWN_GRACE` —
+  transport, scheduling, and drain belong to the invoking scheduler. The
+  image's `HEALTHCHECK` is aimed at the resident server and reports nothing
+  useful for a run-and-exit container.
+- **Runs never overlap, and contended runs are never lost.** The server and
+  one-shot runs in the same container coordinate through a cycle lock (a
+  kernel-released `flock` under `/tmp`, so a crashed run can never wedge it).
+  A `run` arriving while a cycle is already in flight queues its demand
+  (depth 1) and exits `0` immediately; the active runner executes the queued
+  cycle as soon as the current one finishes, and that cycle's per-database
+  results land in the active runner's log stream. Further requests behind an
+  already-queued one are discarded — the queued cycle already starts after
+  they arrived. Pick one scheduling mode per deployment (resident server or
+  one-shot); the coordination exists so a stray manual `run` is safe, not to
+  run both on a schedule.
+
 ## Configuration reference
 
 ### Environment variables
 
-| Variable            | Description                                                                                                                                                                                                                                                                                         | Default            | Required |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------- |
-| `DB_SPECS`          | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped. | -                  | Yes      |
-| `PGPASSFILE`        | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user).                                                                                                                                                             | `/secrets/.pgpass` | No       |
-| `DUMP_DIR`          | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value containing `..` is **fatal** — startup aborts rather than silently relocate backups to the default.                                                  | `/dumps`           | No       |
-| `DUMP_TIMEOUT`      | Per-dump seconds (min 10).                                                                                                                                                                                                                                                                          | `300`              | No       |
-| `DUMP_CONCURRENCY`  | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume.                                                                                                                                                                                                       | `2`                | No       |
-| `DUMP_INTERVAL`     | Built-in timer cadence (Go duration). On startup it runs one dump only when no existing dump is newer than one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger.                       | `24h`              | No       |
-| `DUMP_KEEP`         | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool).                                                                | `7`                | No       |
-| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables.                                                                                                                                                                                                                  | `1048576`          | No       |
-| `AUTH_TOKEN`        | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback.                                                                                         | `""`               | No       |
-| `LISTEN_ADDR`       | HTTP listen address.                                                                                                                                                                                                                                                                                | `:9847`            | No       |
-| `SHUTDOWN_GRACE`    | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp).                                                                                                                            | `DUMP_TIMEOUT+15s` | No       |
+| Variable            | Description                                                                                                                                                                                                                                                                                                            | Default            | Required |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | -------- |
+| `DB_SPECS`          | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped.                    | -                  | Yes      |
+| `PGPASSFILE`        | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user).                                                                                                                                                                                | `/secrets/.pgpass` | No       |
+| `DUMP_DIR`          | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value with a `..` path component is **fatal** — startup aborts rather than silently relocate backups to the default. Names that merely contain dots (`/dumps/a..b`) are fine. | `/dumps`           | No       |
+| `DUMP_TIMEOUT`      | Per-dump seconds (min 10).                                                                                                                                                                                                                                                                                             | `300`              | No       |
+| `DUMP_CONCURRENCY`  | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume.                                                                                                                                                                                                                          | `2`                | No       |
+| `DUMP_INTERVAL`     | Built-in timer cadence (Go duration). On startup it runs one dump only when no existing dump is newer than one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger.                                          | `24h`              | No       |
+| `DUMP_KEEP`         | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool).                                                                                   | `7`                | No       |
+| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables.                                                                                                                                                                                                                                     | `1048576`          | No       |
+| `AUTH_TOKEN`        | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback.                                                                                                            | `""`               | No       |
+| `LISTEN_ADDR`       | HTTP listen address.                                                                                                                                                                                                                                                                                                   | `:9847`            | No       |
+| `SHUTDOWN_GRACE`    | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp).                                                                                                                                               | `DUMP_TIMEOUT+15s` | No       |
 
 > **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port may be omitted). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`) — or use `PGPASSWORD` instead.
 
@@ -142,9 +177,11 @@ With `DUMP_KEEP>1` the timestamped `<dbname>.<UTC>.dump` files live inside that
 subdirectory and are pruned per server, so retention never counts one server's
 dumps against another's. **Upgrading from a flat layout:** dumps previously
 written as `<dbname>.dump` at the `DUMP_DIR` root are no longer updated; new
-dumps appear under `<host>_<port>/`. A versioning collector (Kopia, etc.) simply
-begins a fresh chain at the new paths — pg-autodump never reads, moves, or
-deletes the old flat files, so remove them once at your convenience.
+dumps appear under `<host>_<port>/`. Root-level files are invisible to the app
+— never read, moved, or deleted, and they don't count for the startup recency
+check, so the first start after upgrading runs a dump immediately (timer on) —
+remove the old flat files once at your convenience. A versioning collector
+(Kopia, etc.) simply begins a fresh chain at the new paths.
 
 ## Alerting
 
@@ -154,6 +191,17 @@ pg-autodump has no metrics endpoint; its operational state is in its logs
 evaluate this rule with
 [Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
 deliver through your Alertmanager exactly like Prometheus metric alerts.
+
+Two rules cover the two failure shapes: a **loud failure** (a dump ran and
+reported an error) and a **silent non-run** (no cycle completed at all —
+container down, timer disabled, or every trigger dying before the dump
+starts). Every completed cycle, whatever triggered it, emits one
+`dump cycle complete` heartbeat line; the absence rule keys on it. One
+visibility caveat: the rules match the container's main log stream, which
+covers the resident server (timer, HTTP, and `trigger` all dump in that
+process) and a one-shot container running `run` as its command — but a `run`
+invoked through `docker exec` logs to the exec session instead, so alert on
+your scheduler's job result in that shape.
 
 ```yaml
 groups:
@@ -177,11 +225,30 @@ groups:
             timeout = exceeded the DUMP_TIMEOUT budget; truncated/empty =
             bad/partial dump. (A graceful-shutdown cancel logs reason=killed
             at level=WARN and does not trip this alert.)
+      - alert: PgAutodumpCycleMissing
+        expr: |
+          absent_over_time(
+            {container="pg-autodump"} |= `dump cycle complete` [26h]
+          )
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-autodump: no dump cycle completed in 26h"
+          description: >
+            No "dump cycle complete" heartbeat in 26h. With the default 24h
+            timer (or a daily external trigger) backups have silently
+            stopped: the container may be down, the timer disabled, or every
+            trigger failing before a dump starts. Size the window to ~2x your
+            dump cadence.
 ```
 
-Thresholds and the `severity` label are starting points; adjust the `[15m]`
-window and the `container` selector to your deployment, and route by whatever
-labels your Alertmanager uses.
+Thresholds and the `severity` label are starting points; adjust the `[15m]` /
+`[26h]` windows and the `container` selector to your deployment (the absence
+window tracks your cadence, not the failure window), and route by whatever
+labels your Alertmanager uses. If your scheduler already alerts on a missing
+scheduled run (as an exec-based scheduler like Ofelia can), the absence rule is
+redundant — keep whichever vantage point you trust more.
 
 ## Healthcheck
 

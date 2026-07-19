@@ -58,11 +58,14 @@ func TestDueForStartupDump(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy flat dump at root is considered", func(t *testing.T) {
+	t.Run("root-level dump file is ignored", func(t *testing.T) {
+		// Dumps only ever live under per-server subdirs; a file at the
+		// DUMP_DIR root (e.g. a pre-per-server-layout leftover) is not an
+		// artifact of this app and must not suppress the startup dump.
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(dir, "app.dump"), now.Add(-1*time.Hour))
-		if DueForStartupDump(dir, interval, now) {
-			t.Fatal("a fresh legacy flat dump: want NOT due")
+		if !DueForStartupDump(dir, interval, now) {
+			t.Fatal("only a root-level dump present: want due (root is not the layout)")
 		}
 	})
 
@@ -77,8 +80,10 @@ func TestDueForStartupDump(t *testing.T) {
 
 	t.Run("non-dump files are ignored", func(t *testing.T) {
 		dir := t.TempDir()
-		// A recent non-".dump" file must not count as a recent dump.
-		writeWithMtime(t, filepath.Join(dir, "notes.txt"), now.Add(-1*time.Hour))
+		// A recent non-".dump" file inside a server subdir must not count as
+		// a recent dump (in a subdir so the suffix filter, not the root
+		// ignore, is what this case pins).
+		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "notes.txt"), now.Add(-1*time.Hour))
 		if !DueForStartupDump(dir, interval, now) {
 			t.Fatal("only a non-dump file present: want due (no dump artifact)")
 		}
@@ -86,7 +91,7 @@ func TestDueForStartupDump(t *testing.T) {
 
 	t.Run("boundary: exactly one interval old is due", func(t *testing.T) {
 		dir := t.TempDir()
-		writeWithMtime(t, filepath.Join(dir, "app.dump"), now.Add(-interval))
+		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "app.dump"), now.Add(-interval))
 		if !DueForStartupDump(dir, interval, now) {
 			t.Fatal("a dump exactly one interval old: want due (>= boundary)")
 		}

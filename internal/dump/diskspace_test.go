@@ -2,7 +2,6 @@ package dump
 
 import (
 	"errors"
-	"log/slog"
 	"math"
 	"path/filepath"
 	"strconv"
@@ -11,28 +10,9 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// lowSpaceWarning extracts the "low free disk space for dumps" warning from a
-// capture.Recorder: whether it fired and the free_kb / warn_below_kb values it
-// carried, so disk-space assertions read structured attributes instead of
-// parsing text.
-func lowSpaceWarning(rec *capture.Recorder) (hit bool, freeKB, warnBelowKB int64) {
-	for _, r := range rec.Records() {
-		if r.Message != "low free disk space for dumps" {
-			continue
-		}
-		hit = true
-		r.Attrs(func(a slog.Attr) bool {
-			switch a.Key {
-			case "free_kb":
-				freeKB = a.Value.Int64()
-			case "warn_below_kb":
-				warnBelowKB = a.Value.Int64()
-			}
-			return true
-		})
-	}
-	return hit, freeKB, warnBelowKB
-}
+// lowSpaceMsg is the message of checkDiskSpace's low-space warning, the
+// scope for the capture attr assertions below.
+const lowSpaceMsg = "low free disk space for dumps"
 
 // fixedFreeSpace is an o.freeSpace stub that reports a controlled free-KB value,
 // so the low-space decision is exercised at an exact threshold without the live
@@ -74,17 +54,16 @@ func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 
 			o.checkDiskSpace()
 
-			hit, freeKB, warnBelowKB := lowSpaceWarning(rec)
-			if hit != tc.wantWarn {
+			if hit := rec.Contains(lowSpaceMsg); hit != tc.wantWarn {
 				t.Fatalf("free_kb=%d, threshold=%d: warned=%v, want warned=%v",
 					tc.freeKB, warn, hit, tc.wantWarn)
 			}
 			if tc.wantWarn {
-				if freeKB != tc.freeKB {
-					t.Errorf("logged free_kb = %d, want %d", freeKB, tc.freeKB)
+				if got, ok := rec.AttrValue(lowSpaceMsg, "free_kb"); !ok || got != strconv.FormatInt(tc.freeKB, 10) {
+					t.Errorf("logged free_kb = %q (found=%v), want %d", got, ok, tc.freeKB)
 				}
-				if warnBelowKB != warn {
-					t.Errorf("logged warn_below_kb = %d, want %d", warnBelowKB, warn)
+				if got, ok := rec.AttrValue(lowSpaceMsg, "warn_below_kb"); !ok || got != strconv.FormatInt(warn, 10) {
+					t.Errorf("logged warn_below_kb = %q (found=%v), want %d", got, ok, warn)
 				}
 			}
 		})
@@ -142,7 +121,7 @@ func TestCheckDiskSpaceProbeError(t *testing.T) {
 	if !rec.Contains("cannot check free disk space") {
 		t.Errorf("expected a probe-error warning, got %v", rec.Messages())
 	}
-	if rec.Contains("low free disk space for dumps") {
+	if rec.Contains(lowSpaceMsg) {
 		t.Errorf("probe failed; must not also emit the low-space warning, got %v", rec.Messages())
 	}
 }
@@ -190,9 +169,13 @@ func TestCheckDiskSpaceLogsRealFreeKB(t *testing.T) {
 
 	o.checkDiskSpace()
 
-	hit, freeKB, _ := lowSpaceWarning(rec)
-	if !hit {
+	rendered, ok := rec.AttrValue(lowSpaceMsg, "free_kb")
+	if !ok {
 		t.Fatalf("checkDiskSpace did not warn at threshold MaxInt64; expected a low-space warning")
+	}
+	freeKB, err := strconv.ParseInt(rendered, 10, 64)
+	if err != nil {
+		t.Fatalf("logged free_kb = %q, want an integer: %v", rendered, err)
 	}
 	if lo, hi := want/2, want*2; freeKB < lo || freeKB > hi {
 		t.Errorf("logged free_kb = %d, want within [%d, %d]", freeKB, lo, hi)

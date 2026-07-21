@@ -331,21 +331,15 @@ func TestLevelFor(t *testing.T) {
 	}
 }
 
-// lastAttrs returns the structured attributes of the most recent captured
-// record as a typed map, so the finish() log-attribute tests assert on
-// key/value pairs instead of parsing rendered text.
-func lastAttrs(t *testing.T, rec *capture.Recorder) map[string]slog.Value {
+// requireCompletionLine fails the test unless finish() logged its completion
+// line (message "dump <reason>"), so the attr-ABSENCE assertions below cannot
+// pass vacuously when nothing was logged at all. Each test uses a fresh
+// recorder and calls finish once, so the message scopes exactly one record.
+func requireCompletionLine(t *testing.T, rec *capture.Recorder, msg string) {
 	t.Helper()
-	records := rec.Records()
-	if len(records) == 0 {
-		t.Fatal("no log records captured; finish() must log its completion line")
+	if !rec.Contains(msg) {
+		t.Fatalf("no %q record captured; finish() must log its completion line", msg)
 	}
-	attrs := make(map[string]slog.Value)
-	records[len(records)-1].Attrs(func(a slog.Attr) bool {
-		attrs[a.Key] = a.Value
-		return true
-	})
-	return attrs
 }
 
 // finishOrchestrator builds an Orchestrator whose only configured behavior is
@@ -360,20 +354,20 @@ func TestFinishServerVersionAttr(t *testing.T) {
 	t.Run("logged when the major is positive", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: ReasonOK, ServerVersion: 18}, nil)
-		attrs := lastAttrs(t, rec)
-		v, ok := attrs["server_version"]
+		got, ok := rec.AttrValue("dump ok", "server_version")
 		if !ok {
 			t.Fatal("finish omitted server_version for a positive major; want it logged")
 		}
-		if got := v.Int64(); got != 18 {
-			t.Fatalf("server_version = %d, want 18", got)
+		if got != "18" {
+			t.Fatalf("server_version = %s, want 18", got)
 		}
 	})
 
 	t.Run("omitted when the major is zero", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, ServerVersion: 0, Detail: "connect_error"}, nil)
-		if _, ok := lastAttrs(t, rec)["server_version"]; ok {
+		requireCompletionLine(t, rec, "dump connect_error")
+		if _, ok := rec.AttrValue("dump connect_error", "server_version"); ok {
 			t.Fatalf("finish logged server_version for an unknown (zero) major; want it omitted")
 		}
 	})
@@ -385,12 +379,11 @@ func TestFinishDetailAttr(t *testing.T) {
 	t.Run("logged for a failure carrying a detail", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: ReasonPGError, Detail: "dump failed: boom"}, nil)
-		attrs := lastAttrs(t, rec)
-		v, ok := attrs["detail"]
+		got, ok := rec.AttrValue("dump pg_error", "detail")
 		if !ok {
 			t.Fatal("finish omitted detail for a failure carrying one; want it logged")
 		}
-		if got := v.String(); got != "dump failed: boom" {
+		if got != "dump failed: boom" {
 			t.Fatalf("detail = %q, want %q", got, "dump failed: boom")
 		}
 	})
@@ -398,7 +391,8 @@ func TestFinishDetailAttr(t *testing.T) {
 	t.Run("omitted on success", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: ReasonOK, Detail: "ok (5 bytes)"}, nil)
-		if _, ok := lastAttrs(t, rec)["detail"]; ok {
+		requireCompletionLine(t, rec, "dump ok")
+		if _, ok := rec.AttrValue("dump ok", "detail"); ok {
 			t.Fatalf("finish logged detail on success; want it omitted (the ok detail belongs in the body, not the log)")
 		}
 	})
@@ -413,7 +407,7 @@ func TestFinishDiagErrAttr(t *testing.T) {
 		finishOrchestrator(logger).finish(
 			&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, Detail: "connect_error"},
 			errors.New("dial tcp 10.0.0.1:5432: connect: connection refused"))
-		if _, ok := lastAttrs(t, rec)["err"]; !ok {
+		if _, ok := rec.AttrValue("dump connect_error", "err"); !ok {
 			t.Fatal("finish omitted err when the probe diagnostic differs from detail; want it logged for the operator")
 		}
 	})
@@ -423,7 +417,8 @@ func TestFinishDiagErrAttr(t *testing.T) {
 		finishOrchestrator(logger).finish(
 			&Result{Host: "h", DBName: "db", Reason: ReasonOther, Detail: "boom"},
 			errors.New("boom"))
-		if _, ok := lastAttrs(t, rec)["err"]; ok {
+		requireCompletionLine(t, rec, "dump other")
+		if _, ok := rec.AttrValue("dump other", "err"); ok {
 			t.Fatalf("finish logged err when the diagnostic equals detail; want it omitted (no duplicate of the same text)")
 		}
 	})

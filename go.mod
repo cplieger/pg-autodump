@@ -3,12 +3,12 @@ module github.com/cplieger/pg-autodump
 go 1.26.5
 
 require (
-	github.com/cplieger/atomicfile/v2 v2.2.0
+	github.com/cplieger/atomicfile/v2 v2.3.0
 	github.com/cplieger/health v1.4.0
 )
 
 require (
 	github.com/cplieger/scheduler/v2 v2.0.0
-	github.com/cplieger/slogx v1.3.1
+	github.com/cplieger/slogx v1.4.0
 	github.com/cplieger/webhttp v1.10.0
 )

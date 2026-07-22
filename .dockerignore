@@ -9,6 +9,9 @@
 .steering-maintenance
 docs
 tests
+# ...except the build-time smoke test, which the Dockerfile test stage runs
+# in-image (the runtime image-smoke harness files above it stay excluded).
+!tests/smoke.sh
 *_test.go
 *.md
 compose.yaml

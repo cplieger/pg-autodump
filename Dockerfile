@@ -55,13 +55,53 @@ RUN case "$(uname -m)" in \
     && chmod 755 /tini \
     && /tini --version
 
+# ---------------------------------------------------------------------------
+# Embedded SBOM fragment. Syft inventories the final image from Alpine's APK
+# database, Go-binary buildinfo, and known binary classifiers, so the
+# upstream-fetched tini static binary is invisible to the signed release SBOM
+# and to vulnerability scanners (the Go binary and the postgresql18-client
+# apk ARE visible — the Go module graph is pg-autodump's own supply chain and
+# needs no syft config beyond the defaults). Generate a CycloneDX fragment
+# from the same Renovate-tracked version ARG the fetch uses — a Renovate bump
+# keeps the SBOM correct with zero extra maintenance — and ship it in the
+# runtime image where Syft's sbom-cataloger picks it up. The cataloger is
+# enabled centrally by the release pipeline (cplieger/ci); no per-repo
+# .syft.yaml is needed.
+# The amd64/arm64 fetches share this ONE version (only the integrity pins are
+# per-arch), so a single component row covers both arches and the fragment is
+# byte-identical across the multi-arch manifest.
+# purl: pkg:github/krallin/tini@<tag> — the real provenance (the GitHub
+# release asset fetched above); the per-arch SHA256 pins stay out of the purl
+# because they differ per binary. CPE vendor:product is tini_project:tini per
+# the NVD CPE dictionary (its entries reference krallin/tini; there is no
+# krallin:tini vendor), e.g.
+# https://nvd.nist.gov/products/cpe/detail/084AA5DA-AE01-43E0-957F-78FC06932C08/
+# ---------------------------------------------------------------------------
+RUN cat > /tini.cdx.json <<EOF
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "bom-ref": "pkg:github/krallin/tini@${TINI_VERSION}",
+      "type": "application",
+      "name": "tini",
+      "version": "${TINI_VERSION#v}",
+      "purl": "pkg:github/krallin/tini@${TINI_VERSION}",
+      "cpe": "cpe:2.3:a:tini_project:tini:${TINI_VERSION#v}:*:*:*:*:*:*:*"
+    }
+  ]
+}
+EOF
+
 # Alpine for a libc base (the PostgreSQL client links libpq). pg-autodump is a
 # plain network client, so there is no Docker socket or docker CLI bundle.
 # postgresqlNN-client provides pg_dump/pg_restore/psql; pin the major to the
 # newest PostgreSQL SERVER major you dump (client must be >= server). Bump
 # together with your servers.
 # renovate: datasource=docker depName=alpine
-FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
+FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b AS base
 
 # apk upgrade: the pinned base ships some packages (e.g. libssl3) at a stale,
 # CVE-affected revision; upgrading floats them forward on each rebuild.
@@ -82,11 +122,42 @@ RUN apk upgrade --no-cache \
 # — the hardening docker-renovate-scheduler needed under its dumb-init PID 1.
 COPY --chmod=755 --from=tini-fetcher /tini /sbin/tini
 
+# CycloneDX SBOM fragment for the upstream-fetched tini (generated in the
+# fetch stage from the Renovate-tracked version ARG). Placed where the
+# release pipeline's Syft sbom-cataloger inventories it, so SBOMs and
+# scanners see tini alongside the APK packages and the Go binary.
+COPY --from=tini-fetcher /tini.cdx.json /usr/share/sbom/pg-autodump.cdx.json
+
 COPY --chmod=755 --from=builder /pg-autodump /usr/local/bin/pg-autodump
 
 # Unprivileged by default: no Docker socket, no root. The container needs only
 # network reach to the databases, a read-only .pgpass, and a writable /dumps.
 USER 65532:65532
+
+# ---------------------------------------------------------------------------
+# Test stage — runs the build-time smoke test (the shipped tini runs at the
+# pinned version + the embedded SBOM fragment is present and version-true).
+# A failure here fails the centralized `ci / validate` docker build gate,
+# because the final stage below depends on this stage's marker. Runs as the
+# runtime user (inherited from base); the marker lands in /tmp because / is
+# not writable at UID 65532.
+# ---------------------------------------------------------------------------
+FROM base AS test
+ARG TINI_VERSION
+COPY tests/ /tmp/tests/
+# ${TINI_VERSION:?} fails the build if the ARG wiring ever breaks, so the
+# smoke test's exact-version assertions can never be skipped in-image.
+RUN TINI_EXPECTED_VERSION="${TINI_VERSION:?}" sh /tmp/tests/smoke.sh \
+    && touch /tmp/tests-passed
+
+# ---------------------------------------------------------------------------
+# Final stage — the runtime image. Must remain last so the CI build gate
+# (which builds the default target) produces it; the marker COPY forces the
+# test stage to build and pass first (root-owned, zero-byte, shadowed by any
+# tmpfs mounted over /tmp at runtime).
+# ---------------------------------------------------------------------------
+FROM base AS final
+COPY --from=test /tmp/tests-passed /tmp/tests-passed
 
 # Liveness via the binary's own probe (file marker): no shell, no curl, no port.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \

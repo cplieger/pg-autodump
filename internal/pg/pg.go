@@ -41,8 +41,8 @@ const stderrCap = 2048
 // pg_restore, psql). It is the fleet-standard child shape shared with
 // docker-renovate-scheduler: the scheduler library supplies graceful
 // cancellation (SIGTERM on context cancellation, then a DefaultGrace 5s
-// window before os/exec escalates to SIGKILL), and Setpgid puts the child in
-// its OWN process group.
+// window before os/exec escalates to SIGKILL), Setpgid puts the child in its
+// OWN process group, and Cancel targets that whole group.
 //
 // Setpgid is the load-bearing half. PID 1 here is tini, which in its default
 // mode signals only its immediate child — but a group-forwarding init
@@ -55,11 +55,36 @@ const stderrCap = 2048
 // drain-budget expiry), so the drain semantics hold under ANY init above the
 // daemon instead of depending on tini's forwarding default. The caller wires
 // Stdout/Stderr/Env on the returned command.
+//
+// The group-targeted Cancel matters only if a child ever has group members:
+// pg_dump --format=custom is single-process today, so group-SIGTERM equals
+// child-SIGTERM — but a future parallel dump (--format=directory --jobs=N)
+// forks workers, and a direct-child Cancel would silently under-kill them.
+// Aligning with renovate's group Cancel now closes that latent divergence.
+//
+// Fleet alignment note (l-f3 audit, 2026-07): this own-process-group wrapper
+// stays deliberately app-side — the scheduler library gains a
+// WithProcessGroup() option only when a THIRD consumer of the shape appears
+// (scheduler.md, "Setpgid pairing rule"). Copies to keep line-aligned when
+// editing either: docker-renovate-scheduler runner.go defaultCommandRunner
+// (superset — adds stdio streaming and post-run group sweep/probe/drain,
+// because its child provably spawns package-manager descendants) and this
+// one. vibekit internal/auth login_proc_unix.go carries the group half only
+// (hard SIGKILL on timeout, no scheduler dep — a deliberate non-copy).
 var newCommand scheduler.CommandRunner = func() scheduler.CommandRunner {
 	base := scheduler.NewCommandRunner(scheduler.DefaultGrace)
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmd := base(ctx, name, args...)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Cancel = func() error {
+			// Signal the child's whole process group (Setpgid makes it the
+			// leader), so any forked worker stops with it.
+			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
+		}
 		return cmd
 	}
 }()

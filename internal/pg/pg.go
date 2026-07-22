@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/dump"
-	scheduler "github.com/cplieger/scheduler/v2"
+	scheduler "github.com/cplieger/scheduler/v3"
 )
 
 // ErrNoDeadline is returned by every boundary method when handed a context

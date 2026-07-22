@@ -10,7 +10,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 )
 
 func TestLocalAddr(t *testing.T) {

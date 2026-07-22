@@ -2,9 +2,14 @@
 // HTTP server; `pg-autodump run` performs exactly one dump cycle and exits
 // (for scheduler-owned deployments); `pg-autodump health` runs the file-marker
 // probe for the Docker HEALTHCHECK; `pg-autodump trigger` POSTs to the local
-// server's /dump (for exec-based schedulers such as Ofelia). It is the only
-// place that calls config.Load, builds the slog handler, wires dependencies,
-// and decides fatal-vs-recover.
+// server's /dump (for exec-based schedulers such as Ofelia). The two exec
+// trigger paths deliberately differ on a busy cycle: `trigger` requires the
+// resident server and inherits its skip-mode contract (429, the demand is
+// dropped — the next tick provides freshness), while `run` requires no server
+// and queues its demand (exit 0, the active runner owes it a cycle that
+// starts after the request arrived). Pick per deployment; they are not
+// interchangeable. main is the only place that calls config.Load, builds the
+// slog handler, wires dependencies, and decides fatal-vs-recover.
 package main
 
 import (

@@ -10,13 +10,13 @@ package config
 
 import (
 	"fmt"
-	"net"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/cplieger/pg-autodump/internal/spec"
+	"github.com/cplieger/webhttp"
 )
 
 // Defaults for every tunable. Exported so tests and docs share one source.
@@ -237,20 +237,11 @@ func ListenerOpenAndPublic(authToken, listenAddr string) bool {
 }
 
 // listenIsPublic reports whether a listen address binds a non-loopback
-// interface. A wildcard bind (":9847", "0.0.0.0:9847", "[::]:9847") is public;
-// an explicit loopback ("127.0.0.1", "::1", "localhost") is not. An address that
-// cannot be parsed is treated as public — a spurious warning is preferable to a
-// silently unflagged open endpoint.
+// interface, via webhttp's bind classifier under the fail-public recipe: a
+// wildcard bind (":9847", "0.0.0.0:9847", "[::]:9847") is public, an explicit
+// loopback ("127.0.0.1", "::1", "localhost") is not, and an address that
+// cannot be parsed is treated as public — a spurious warning is preferable to
+// a silently unflagged open endpoint.
 func listenIsPublic(addr string) bool {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return true
-	}
-	if host == "" {
-		return true // wildcard bind, e.g. ":9847"
-	}
-	if ip := net.ParseIP(host); ip != nil {
-		return !ip.IsLoopback() // 0.0.0.0 and :: are unspecified => not loopback => public
-	}
-	return !strings.EqualFold(host, "localhost")
+	return webhttp.ClassifyBind(addr) != webhttp.BindLoopback
 }

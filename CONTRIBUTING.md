@@ -8,9 +8,9 @@ easy to trip over.
 
 An on-demand PostgreSQL logical-backup sidecar. It connects to each
 database in `DB_SPECS` **over the network** as a least-privilege role,
-runs `pg_dump --format=custom`, verifies each dump, and atomically
-replaces the previous `<dbname>.dump` in a shared volume. There is no
-shell, no CGI, and no Docker socket — the runtime surfaces are the HTTP
+runs `pg_dump --format=custom`, verifies each dump, and writes it
+atomically under a per-server subdirectory of a shared volume. There is
+no shell, no CGI, and no Docker socket; the runtime surfaces are the HTTP
 server (`POST /dump`, `GET /healthz`), the `/dumps`
 volume, and a read-only `.pgpass`.
 
@@ -19,37 +19,37 @@ The repo, image, Go module, and binary are all `pg-autodump`
 
 ## Package layout
 
-`cmd/pg-autodump/main.go` is the composition root — the only place that
+`cmd/pg-autodump/main.go` is the composition root: the only place that
 reads config, builds the slog handler, wires dependencies (including the
 cross-process cycle lock, a `scheduler.Exclusive` under `/tmp/pg-autodump`
 shared by the server and one-shot runs), and decides fatal-vs-recover. It
 dispatches `serve` (default) / `run` / `health` / `trigger`.
 The real work lives under `internal/`:
 
-- `internal/config` — the single `os.Getenv` site. Every tunable is a
+- `internal/config`: the single `os.Getenv` site. Every tunable is a
   typed `Config` field. No database password is ever a field (libpq reads
   `.pgpass`); the lone secret it holds is the `AUTH_TOKEN` bearer
   (`AuthToken`), which is never logged.
-- `internal/spec` — the single `DB_SPECS` validation path
+- `internal/spec`: the single `DB_SPECS` validation path
   (`host[:port]:dbname:user`). Fuzzed. Nothing else validates specs.
-- `internal/pg` — the os/exec boundary over `pg_dump` / `pg_restore` /
+- `internal/pg`: the os/exec boundary over `pg_dump` / `pg_restore` /
   `psql`. Implements `dump.PGTool`. Every call is context-bounded and
   returns `ErrNoDeadline` for a deadline-less context.
-- `internal/dump` — the core: orchestrator, bounded worker pool,
+- `internal/dump`: the core (orchestrator, bounded worker pool,
   single-flight guard, verify-before-replace, crash-orphan temp reclaim,
-  the result/reason taxonomy. It defines the narrow interface it consumes
+  the result/reason taxonomy). It defines the narrow interface it consumes
   (`PGTool`) so it is testable against fakes with no network/daemon.
-- `internal/httpapi` — routes, handlers, bearer auth, the shared `Trigger`.
-- `internal/obs` — the startup preflight (binaries/dir/specs) that
+- `internal/httpapi`: routes, handlers, bearer auth, the shared `Trigger`.
+- `internal/obs`: the startup preflight (binaries/dir/specs) that
   decides the health-marker state.
 
 If you add a new `internal/<pkg>/`, the `Dockerfile` builder must
-`COPY internal/ internal/` — there is no per-repo path list.
+`COPY internal/ internal/`; there is no per-repo path list.
 
 ## Conventions and gotchas
 
 - **Verify-before-replace is the core safety property.** A dump
-  overwrites the previous `<dbname>.dump` only after it passes the
+  lands in its final path only after it passes the
   non-empty and `pg_restore --list` (TOC) checks, via an `atomicfile`
   pending file (same-filesystem atomic rename + dir fsync). Any failure
   discards the temp and leaves the prior dump byte-for-byte intact. Do
@@ -102,7 +102,7 @@ docker build -t pg-autodump .
 ```
 
 CI runs the same battery via the shared `cplieger/ci` reusable workflow
-(`.github/workflows/ci.yaml` — synced, do not edit). Fuzz targets run on
+(`.github/workflows/ci.yaml`; synced, do not edit). Fuzz targets run on
 the weekly schedule; a counterexample opens an issue, fixed by committing
 the minimized seed under `internal/spec/testdata/fuzz/FuzzParseSpecs/`.
 

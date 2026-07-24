@@ -125,7 +125,11 @@ func NewServer(d *Deps) *http.Server {
 	// standardization).
 	handler := webhttp.Chain(mux,
 		authFailureLimiter(d.AuthToken),
-		webhttp.Logging(webhttp.WithLogger(log), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP()),
+		// /healthz rides the fleet-standard ProbeLogLevel: healthy probes at
+		// Debug (out of the shipped stream), a failing probe at Warn/Error
+		// with its status and request id (the skip idiom hid the failure
+		// signal along with the noise).
+		webhttp.Logging(webhttp.WithLogger(log), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP()),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
 		webhttp.SecurityHeaders(),
 	)

@@ -169,15 +169,6 @@ func runServer(getenv func(string) string) int {
 		go runTicker(ctx, cfg.DumpDir, cfg.DumpInterval, trigger, log)
 	}
 
-	// Flip the health marker red the moment shutdown is signalled, before the
-	// HTTP drain begins, so a probe reports unready during the drain window
-	// (webhttp.Run's teardown callback runs only after the drain completes).
-	go func() {
-		<-ctx.Done()
-		log.Info("shutting down", "cause", context.Cause(ctx))
-		marker.Set(false)
-	}()
-
 	log.Info("pg-autodump listening",
 		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
 
@@ -186,8 +177,15 @@ func runServer(getenv func(string) string) int {
 	// ticker dump holds no HTTP connection Shutdown can see, so drainGuard waits
 	// for the single-flight guard to go idle within the remaining budget; if it
 	// does not, it cancels the in-flight run and lets pg_dump unwind cleanly.
+	// The pre-drain phase flips the health marker red strictly BEFORE the drain
+	// begins, so a probe reports unready during the drain window (the marker is
+	// a FILE read by the healthcheck CLI, which listener closure does not cover).
 	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownGrace, log),
-		webhttp.WithShutdownGrace(cfg.ShutdownGrace)); err != nil {
+		webhttp.WithShutdownGrace(cfg.ShutdownGrace),
+		webhttp.WithPreDrain(func(context.Context) {
+			log.Info("shutting down", "cause", context.Cause(ctx))
+			marker.Set(false)
+		})); err != nil {
 		log.Error("server failed", "err", err)
 		return 1
 	}

@@ -106,18 +106,26 @@ func NewServer(d *Deps) *http.Server {
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
 
-	// Access logging (with request-id) + panic recovery + baseline security
-	// headers all come from webhttp; the /healthz probe is skipped so routine
-	// liveness checks do not flood the log. Chain is outermost-first, so this is
-	// webhttp's canonical order: Logging outermost (its access line records the
-	// final status), Recoverer inside it (a recovered panic is logged as its
-	// 500), and SecurityHeaders innermost — its nosniff / X-Frame-Options: DENY /
-	// Referrer-Policy baseline is set before the handler runs, so it survives
-	// even onto a recovered 500. No CSP or HSTS: this is a plain-HTTP,
-	// non-browser, text/plain control endpoint, so nosniff is the header that
-	// earns its keep (the framing/referrer defaults are harmless standardization).
+	// Access logging (with request-id and the spoof-proof client_ip) + panic
+	// recovery + baseline security headers all come from webhttp; the /healthz
+	// probe is skipped so routine liveness checks do not flood the log. Chain
+	// is outermost-first: the auth-failure throttle sits OUTSIDE Logging (the
+	// seadex-scout composition) so a flooding client burning bad bearer tokens
+	// is answered 429 without writing an access line per attempt — bounding
+	// the log-flood vector is the throttle's whole job; the first
+	// authFailBurst failures still log through the inner 401 path. Then
+	// webhttp's canonical order: Logging outermost (its access line records
+	// the final status; client_ip is the bare socket peer — no proxy fronts
+	// this sidecar), Recoverer inside it (a recovered panic is logged as its
+	// 500), and SecurityHeaders innermost — its nosniff / X-Frame-Options:
+	// DENY / Referrer-Policy baseline is set before the handler runs, so it
+	// survives even onto a recovered 500. No CSP or HSTS: this is a
+	// plain-HTTP, non-browser, text/plain control endpoint, so nosniff is the
+	// header that earns its keep (the framing/referrer defaults are harmless
+	// standardization).
 	handler := webhttp.Chain(mux,
-		webhttp.Logging(webhttp.WithLogger(log), webhttp.WithSkipPaths("/healthz")),
+		authFailureLimiter(d.AuthToken),
+		webhttp.Logging(webhttp.WithLogger(log), webhttp.WithSkipPaths("/healthz"), webhttp.WithClientIP()),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
 		webhttp.SecurityHeaders(),
 	)
@@ -174,6 +182,51 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 	})
 }
 
+// authFailBurst/authFailRefill tune the failed-auth throttle: a client may
+// burn authFailBurst bad bearer attempts back-to-back before the shared
+// bucket empties; each authFailRefill accrues one more. Verification cost per
+// rejected request is one SHA-256, so the bounded vector is the log flood,
+// not CPU (the seadex-scout tuning, kept aligned).
+const (
+	authFailBurst  = 10
+	authFailRefill = 6 * time.Second
+)
+
+// authFailureLimiter throttles repeated FAILED bearer attempts against
+// POST /dump through a shared webhttp.RateLimiter bucket — the seadex-scout
+// composition. Only requests that would fail auth draw a token (a valid
+// bearer is never throttled, even mid-flood; other routes and methods pass
+// untouched), and over-budget bad-bearer requests are answered 429 with a
+// Retry-After hint BEFORE reaching the access logger or the handler,
+// bounding the line-per-attempt log flood a network-exposed bind would
+// otherwise allow at wire speed. Open mode (no configured token) disables it
+// entirely, matching authMiddleware's documented no-op.
+func authFailureLimiter(token string) webhttp.Middleware {
+	if token == "" {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	verify := webhttp.NewStaticTokenVerifier(token)
+	return webhttp.RateLimiter(authFailBurst, authFailRefill,
+		webhttp.WithRateLimitWhen(func(r *http.Request) bool {
+			if r.Method != http.MethodPost || r.URL.Path != "/dump" {
+				return false
+			}
+			return !presentsValidBearer(verify, r)
+		}),
+		webhttp.WithRateLimitError("too_many_auth_failures", "too many failed bearer attempts"),
+	)
+}
+
+// presentsValidBearer reports whether r carries a well-formed Authorization
+// bearer that verifies against the configured token. Shared by the
+// auth-failure throttle's predicate and authMiddleware so the two can never
+// drift on what counts as a valid credential.
+func presentsValidBearer(verify webhttp.StaticTokenVerifier, r *http.Request) bool {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	return strings.HasPrefix(h, prefix) && verify.Verify(strings.TrimPrefix(h, prefix))
+}
+
 // authMiddleware enforces a bearer token when one is configured; it is a no-op
 // when the token is empty (documented open mode). Verification is delegated to
 // webhttp's static-token verifier, built ONCE here so the configured token is
@@ -189,12 +242,9 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
-	const prefix = "Bearer "
 	verify := webhttp.NewStaticTokenVerifier(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h := r.Header.Get("Authorization")
-		if !strings.HasPrefix(h, prefix) ||
-			!verify.Verify(strings.TrimPrefix(h, prefix)) {
+		if !presentsValidBearer(verify, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}

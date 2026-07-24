@@ -436,3 +436,77 @@ func TestSecurityHeadersPresent(t *testing.T) {
 		t.Errorf("Strict-Transport-Security = %q, want unset (plain-HTTP endpoint)", got)
 	}
 }
+
+// TestAuthFailureThrottle pins the failed-bearer throttle end to end through
+// the full middleware chain: authFailBurst bad attempts pass inward to their
+// 401s, the next is answered 429 with a Retry-After hint before reaching the
+// handler, a VALID bearer is never throttled even mid-flood, and requests the
+// predicate excludes (GET /dump, /healthz) draw no tokens.
+func TestAuthFailureThrottle(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "sekrit")
+
+	// Burn the whole burst with bad bearers: each is admitted by the limiter
+	// (consuming a token) and rejected 401 by authMiddleware.
+	for i := range authFailBurst {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/dump", nil)
+		req.Header.Set("Authorization", "Bearer wrong")
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("bad attempt %d: status = %d, want 401 (inside burst)", i+1, rec.Code)
+		}
+	}
+
+	// The bucket is empty: the next bad attempt is throttled before the
+	// handler, with a whole-second Retry-After hint.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/dump", nil)
+	req.Header.Set("Authorization", "Bearer wrong")
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-budget bad attempt: status = %d, want 429", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Error("throttled 429 carries no Retry-After hint")
+	}
+	if !strings.Contains(rec.Body.String(), "too_many_auth_failures") {
+		t.Errorf("throttled body = %q, want the too_many_auth_failures envelope", rec.Body.String())
+	}
+
+	// A valid bearer never draws from the bucket: it passes even mid-flood.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/dump", nil)
+	req.Header.Set("Authorization", "Bearer sekrit")
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("valid bearer mid-flood: status = %d, want 200 (never throttled)", rec.Code)
+	}
+
+	// Excluded surfaces are untouched by the empty bucket: GET /dump still
+	// answers the mux's 405, and the liveness probe stays 200.
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dump", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /dump with empty bucket: status = %d, want 405", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("/healthz with empty bucket: status = %d, want 200", rec.Code)
+	}
+}
+
+// TestAuthFailureThrottle_openModeDisabled pins the off contract: with no
+// configured token the limiter is the identity, so unauthenticated POSTs are
+// never 429'd no matter the volume (open mode is documented as unthrottled).
+func TestAuthFailureThrottle_openModeDisabled(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "")
+
+	for i := range authFailBurst + 5 {
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dump", nil))
+		if rec.Code == http.StatusTooManyRequests {
+			t.Fatalf("open-mode POST %d was throttled; the limiter must be disabled without a token", i+1)
+		}
+	}
+}

@@ -1,4 +1,4 @@
-# Security assurance case — pg-autodump
+# Security assurance case: pg-autodump
 
 This extends the shared
 [default assurance case](https://github.com/cplieger/.github/blob/main/assurance-case.md)
@@ -8,7 +8,7 @@ with the threat model specific to `pg-autodump`. Read that first.
 
 A non-root network backup sidecar: on `POST /dump` it runs `pg_dump` over TCP
 against each configured database, verifies each dump, and writes atomic `.dump`
-files. It exposes `/healthz` and Prometheus `/metrics`. It holds database
+files. It exposes `/healthz`. It holds database
 credentials and accepts an HTTP trigger, so trigger-surface and command-safety
 are the core concerns.
 
@@ -22,12 +22,12 @@ unauthenticated path to arbitrary command execution.
 
 | Threat                               | Mitigation                                                                                                  | Evidence                          |
 | ------------------------------------ | ----------------------------------------------------------------------------------------------------------- | --------------------------------- |
-| Command injection via DB name/params | `pg_dump` invoked with an argument vector (no shell); inputs validated                                      | `internal/httpapi`, source review |
+| Command injection via DB name/params | `pg_dump` invoked with an argument vector (no shell); `DB_SPECS` validated in `internal/spec`               | `internal/pg`, source review      |
 | Untrusted HTTP trigger abuse         | the trigger only runs the _configured_ dump set; it takes no arbitrary command/target from the request body | `httpapi.go`, handler tests       |
 | Silent backup corruption             | each dump is verified after creation; atomic write (temp→rename)                                            | dump + verify tests               |
 | Credential exposure                  | DB credentials come from config/env, never logged; redaction on error paths                                 | source review                     |
-| Privilege escalation at runtime      | runs as non-root; distroless; `/healthz` for the Docker probe                                               | Dockerfile, healthcheck           |
-| Resource exhaustion                  | bounded request handling; fuzz on the HTTP surface                                                          | fuzz target, `httpapi` tests      |
+| Privilege escalation at runtime      | runs as non-root (UID 65532); `cap_drop: [ALL]`; file-marker Docker healthcheck (`pg-autodump health`)      | Dockerfile, healthcheck           |
+| Resource exhaustion                  | single-flight guard bounds concurrent runs; `DB_SPECS` parsing is fuzzed                                    | `FuzzParseSpecs`, `httpapi` tests |
 
 ## Residual risks
 

@@ -59,7 +59,8 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
        image: ghcr.io/cplieger/pg-autodump:latest
        container_name: pg-autodump
        restart: unless-stopped
-       user: "1000:1000"  # match your host user
+       # Override with PUID/PGID in .env; defaults to 1000:1000.
+       user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
        read_only: true
        cap_drop: ["ALL"]
        security_opt: ["no-new-privileges:true"]

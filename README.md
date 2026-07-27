@@ -75,13 +75,13 @@ The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker 
          - "/tmp:size=16m,mode=1777"   # 1777 so the non-root user can write the health marker
    ```
 
-   The container runs as the UID set in `user:` (1000 here), so the host
-   `./secrets/.pgpass` (mode **0600**) and the host `./dumps` directory must be
-   owned by that UID: libpq ignores a `.pgpass` not owned by the running UID,
-   and dumps can't be written otherwise.
+   The container runs as the UID set in `user:` (1000 unless you set `PUID`/`PGID`),
+   so the host `./secrets/.pgpass` (mode **0600**) and the host `./dumps` directory
+   must be owned by that UID: libpq ignores a `.pgpass` not owned by the running
+   UID, and dumps can't be written otherwise.
 
    ```sh
-   chown 1000:1000 ./secrets/.pgpass ./dumps
+   chown "${PUID:-1000}:${PGID:-1000}" ./secrets/.pgpass ./dumps
    ```
 
 4. Trigger a backup:

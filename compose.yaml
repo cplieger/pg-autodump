@@ -4,7 +4,8 @@ services:
     image: ghcr.io/cplieger/pg-autodump:latest
     container_name: pg-autodump
     restart: unless-stopped
-    user: "1000:1000"  # match your host user
+    # Override with PUID/PGID in .env; defaults to 1000:1000.
+    user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
     stop_grace_period: 315s  # >= SHUTDOWN_GRACE so an in-flight dump finishes on stop; see README
 
     environment:

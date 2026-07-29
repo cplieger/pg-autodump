@@ -1,0 +1,12 @@
+# punused findings adjudicated as false positives. One literal substring per
+# line, matched against punused's output line; full-line `#` comments carry the
+# reason. Invalid-by-construction classes: `.kiro/steering/tools.md`.
+#
+# boundedBuffer is the bounded stderr sink documented at internal/pg/pg.go, and
+# Write exists to satisfy io.Writer. It is assigned to exec.Cmd.Stderr in
+# non-test code at three sites (the pg_dump run, the pg_restore --list verify,
+# and the psql version probe), so os/exec's copy goroutine calls it through the
+# interface value at runtime. punused resolves explicit call sites only, which
+# is why the sibling String() -- called directly -- is not flagged and this one
+# is. Upstream: bep/punused#3.
+method (*boundedBuffer).Write

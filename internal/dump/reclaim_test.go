@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/cplieger/atomicfile/v2"
 )
 
 // writeFile creates a file with marker content, failing the test on error.
@@ -17,9 +19,8 @@ func writeFile(t *testing.T, path string) {
 }
 
 // Crash-orphaned atomicfile temps are reclaimed from the per-server
-// subdirectories — the only place the app stages temps — while committed
-// dumps and files at the DUMP_DIR root (not the app's artifacts) are left
-// alone. The pre-fix behavior scanned only the root, so a temp orphaned
+// subdirectories — where the app stages dump temps — while committed dumps are
+// left alone. The pre-fix behavior scanned only the root, so a temp orphaned
 // inside <host>_<port>/ accumulated forever on the backup volume.
 func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 	dir := t.TempDir()
@@ -28,10 +29,8 @@ func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	rootFile := filepath.Join(dir, ".atomicfile-123.tmp")
 	subTemp := filepath.Join(sub, ".atomicfile-456.tmp")
 	keepDump := filepath.Join(sub, "myapp.dump")
-	writeFile(t, rootFile)
 	writeFile(t, subTemp)
 	writeFile(t, keepDump)
 
@@ -43,8 +42,36 @@ func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 	if _, err := os.Stat(keepDump); err != nil {
 		t.Errorf("committed dump %s was touched by reclaim: %v", keepDump, err)
 	}
-	if _, err := os.Stat(rootFile); err != nil {
-		t.Errorf("root-level file %s was touched by reclaim (the root is not the app's layout): %v", rootFile, err)
+}
+
+// The DUMP_DIR root is scanned too, because it is where obs.Preflight's
+// writability probe lands and the probe is now an atomicfile-shaped temp: a
+// directory that accepts a write but denies the unlink leaks one there, and
+// this sweep is the only thing that can reclaim it. This REPLACES the earlier
+// assertion that a root-level ".atomicfile-<digits>.tmp" is left alone — that
+// rested on "files at the DUMP_DIR root are never the app's", which the probe
+// made false. The narrowness the old assertion was really protecting is pinned
+// instead by the operator's own root files below, which must survive: only
+// atomicfile's exact shape is eligible, at the root as in a subdir.
+func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	leakedProbe := filepath.Join(dir, atomicfile.TempName())
+	operatorFile := filepath.Join(dir, "README-restore-steps.txt")
+	operatorLookalike := filepath.Join(dir, ".atomicfile-notes.tmp")
+	writeFile(t, leakedProbe)
+	writeFile(t, operatorFile)
+	writeFile(t, operatorLookalike)
+
+	ReclaimOrphans(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	if _, err := os.Stat(leakedProbe); !os.IsNotExist(err) {
+		t.Errorf("leaked preflight probe %s still exists; want it reclaimed", leakedProbe)
+	}
+	if _, err := os.Stat(operatorFile); err != nil {
+		t.Errorf("operator's own root file %s was reclaimed: %v", operatorFile, err)
+	}
+	if _, err := os.Stat(operatorLookalike); err != nil {
+		t.Errorf("prefix-alike root file %s was reclaimed: %v", operatorLookalike, err)
 	}
 }
 

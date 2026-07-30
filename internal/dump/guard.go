@@ -3,6 +3,8 @@ package dump
 import (
 	"context"
 	"sync/atomic"
+
+	"github.com/cplieger/webhttp"
 )
 
 // Guard enforces one dump run at a time in-process: the resident HTTP server
@@ -41,17 +43,22 @@ func (g *Guard) TryAcquire(cancel context.CancelFunc) (release func(), ok bool) 
 // true if no run was active or the run finished, false if ctx fired first. The
 // shutdown path uses it to drain a ticker-triggered run that holds no HTTP
 // connection for srv.Shutdown to see.
+//
+// The wait is webhttp.AwaitDone's, for the recheck a bare two-case select does
+// not do: webhttp.Run hands the teardown a context carrying whatever is LEFT of
+// the one shutdown grace after the HTTP drain, so a drain that spent the whole
+// budget calls this with an ALREADY-EXPIRED context, and a select whose cases
+// are both ready picks pseudo-randomly — a dump that DID finish then reported
+// false, and the caller logged "drain budget exceeded" and cancelled an idle
+// guard. AwaitDone re-checks completion after ctx fires, so completion wins.
+// (webhttp appears in this package for a pure context helper, not for server
+// plumbing: the misreport is HERE, in the wait, not at the call site.)
 func (g *Guard) WaitIdle(ctx context.Context) bool {
 	p := g.done.Load()
 	if p == nil {
 		return true
 	}
-	select {
-	case <-*p:
-		return true
-	case <-ctx.Done():
-		return false
-	}
+	return webhttp.AwaitDone(ctx, *p)
 }
 
 // CancelInFlight cancels the in-flight run's context if one is active, else is

@@ -10,11 +10,11 @@ package config
 
 import (
 	"fmt"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cplieger/pathinside"
 	"github.com/cplieger/pg-autodump/internal/spec"
 	"github.com/cplieger/webhttp"
 )
@@ -106,23 +106,17 @@ func (w *warnings) addf(format string, args ...any) {
 // to the default would hide that the operator's chosen directory was ignored —
 // for a backup tool, failing to start is safer than backing up to the wrong
 // place. main surfaces the error and aborts startup. The check is per path
-// component, so a legal name that merely contains consecutive dots (e.g.
-// "/dumps/a..b") is accepted.
+// component (pathinside.HasDotDot, examining the value AS WRITTEN so a
+// traversal that would normalize away is still refused), so a legal name that
+// merely contains consecutive dots (e.g. "/dumps/a..b") is accepted.
 func loadDumpDir(v string) (string, error) {
 	if v == "" {
 		return DefaultDumpDir, nil
 	}
-	if hasDotDotComponent(v) {
+	if pathinside.HasDotDot(v) {
 		return "", fmt.Errorf("DUMP_DIR %q must not contain a %q path component (refusing to start; set a directory without path traversal)", v, "..")
 	}
 	return v, nil
-}
-
-// hasDotDotComponent reports whether p contains ".." as a full path component
-// (the traversal form), as opposed to ".." merely appearing inside a longer
-// name. Paths here are Linux container paths, so '/' is the only separator.
-func hasDotDotComponent(p string) bool {
-	return slices.Contains(strings.Split(p, "/"), "..")
 }
 
 func loadDumpTimeout(v string, w *warnings) time.Duration {

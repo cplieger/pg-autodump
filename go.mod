@@ -14,3 +14,5 @@ require (
 )
 
 require github.com/cplieger/pathinside v1.0.0
+
+require github.com/cplieger/keyenc v1.0.0

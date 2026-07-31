@@ -2,6 +2,8 @@ github.com/cplieger/atomicfile/v2 v2.5.0 h1:487E64mT93XeFb1h4GnXyKTJH37xxWH36RcL
 github.com/cplieger/atomicfile/v2 v2.5.0/go.mod h1:jgwJ7oU3qahL4NwiF+1iBIzPRpR8LwXnicSalGoJeVA=
 github.com/cplieger/health v1.4.0 h1:MnLfSZNRnq7wYSMVi1s8Ox0kowk5iPzmqVKQ5JHHsoM=
 github.com/cplieger/health v1.4.0/go.mod h1:15Lm3XhPMU3nCEDfIH2hVAz6TXH06Wwiz9tgBi71vEE=
+github.com/cplieger/keyenc v1.0.0 h1:JcFP/Eo+vCWXOyRvUCIVXyJIUOtfy0GkKgOXKE+vU2Q=
+github.com/cplieger/keyenc v1.0.0/go.mod h1:p1k0R76F3pZH5i+OrNd3UazKrcsYL26H3kXly083ozA=
 github.com/cplieger/pathinside v1.0.0 h1:w58q7tntX7VcVnDmF4r/FNKnvl1yLq4tDac845XTdBU=
 github.com/cplieger/pathinside v1.0.0/go.mod h1:yHMRs1HFsqkCGWYUzRCD+DoKWCIZE8Uj0wTKkFTFUsg=
 github.com/cplieger/scheduler/v3 v3.0.0 h1:vka8qTY7q6yK6pOQyoi8YXB+4fW59RqUD1XaMNIx0ZU=

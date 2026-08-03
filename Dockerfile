@@ -5,14 +5,10 @@
 # consumes it with a bare `ARG TINI_VERSION`; Renovate bumps this one line.
 # renovate: datasource=github-releases depName=krallin/tini
 ARG TINI_VERSION=v0.19.0
-# Integrity pins -- when TINI_VERSION is bumped, update both SHA256s to the
-# new release's values. Renovate can't recompute them (github-releases exposes
-# the tag, not asset hashes), so the bump needs a manual recompute; upstream
-# publishes the hash next to each asset:
-#   curl -fsSL https://github.com/krallin/tini/releases/download/<version>/tini-static-amd64.sha256sum
-#   curl -fsSL https://github.com/krallin/tini/releases/download/<version>/tini-static-arm64.sha256sum
 # A stale pin fail-closes the build (sha256sum -c in the fetch stage).
+# repin: dep=krallin/tini url=https://github.com/krallin/tini/releases/download/{version}/tini-static-amd64
 ARG TINI_SHA256_AMD64=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee
+# repin: dep=krallin/tini url=https://github.com/krallin/tini/releases/download/{version}/tini-static-arm64
 ARG TINI_SHA256_ARM64=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9
 
 # renovate: datasource=docker depName=golang

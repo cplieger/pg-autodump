@@ -10,7 +10,7 @@ require (
 require (
 	github.com/cplieger/scheduler/v3 v3.0.0
 	github.com/cplieger/slogx v1.6.0
-	github.com/cplieger/webhttp v1.21.0
+	github.com/cplieger/webhttp v1.22.0
 )
 
 require github.com/cplieger/pathinside v1.0.0

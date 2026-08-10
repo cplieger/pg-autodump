@@ -3,7 +3,7 @@ module github.com/cplieger/pg-autodump
 go 1.26.5
 
 require (
-	github.com/cplieger/atomicfile/v2 v2.7.0
+	github.com/cplieger/atomicfile/v2 v2.8.0
 	github.com/cplieger/health v1.5.0
 )
 

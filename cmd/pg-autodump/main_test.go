@@ -4,6 +4,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -149,4 +151,76 @@ func TestExitForRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+// requireSetgidWidensMkdir makes parent setgid and proves the kernel really does
+// store a mode mkdir did not ask for underneath it, skipping the caller
+// otherwise. It is the witness that keeps the create-path custody test below
+// honest: on a filesystem that honours every mode request, a test that creates a
+// directory and finds it 0700 cannot tell a VERIFIED create from an unverified
+// one, and would pass just as happily against the os.MkdirAll it replaced.
+// Linux propagates S_ISGID from a setgid parent to a new subdirectory, which is
+// a real widening produced by the kernel rather than a mock.
+func requireSetgidWidensMkdir(t *testing.T, parent string) {
+	t.Helper()
+	if err := os.Chmod(parent, 0o700|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(parent, "witness")
+	if err := os.Mkdir(witness, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(witness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSetgid == 0 {
+		t.Skipf("kernel did not widen a 0o700 mkdir under a setgid parent (got %v); "+
+			"this test cannot distinguish a verified create from an unverified one here", fi.Mode())
+	}
+}
+
+// The cycle directory holds the flock that is the only thing keeping the
+// resident server and an exec'd `pg-autodump run` from dumping at the same
+// moment, and it sits in the one directory another principal on the host can
+// also write. So its mode must be owner-only as MEASURED: os.MkdirAll asked for
+// 0700 and never looked at what the filesystem stored.
+func TestEnsureCycleDirVerifiesTheModeItCreated(t *testing.T) {
+	parent := t.TempDir()
+	requireSetgidWidensMkdir(t, parent)
+
+	dir := filepath.Join(parent, "pg-autodump")
+	if err := ensureCycleDir(dir, discardLogger()); err != nil {
+		t.Fatalf("ensureCycleDir: %v", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode(); got != os.ModeDir|0o700 {
+		t.Fatalf("created dir mode = %v, want %v: the mode it created was not verified",
+			got, os.ModeDir|0o700)
+	}
+}
+
+// A symlink planted at the cycle-directory path is refused rather than followed.
+// os.MkdirAll resolves it and reports success, which would relocate the cycle
+// lock onto a file the planter controls and let two dump cycles run at once.
+func TestEnsureCycleDirRefusesSymlink(t *testing.T) {
+	base := t.TempDir()
+	target := filepath.Join(base, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "pg-autodump")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureCycleDir(link, discardLogger()); err == nil {
+		t.Fatal("symlinked cycle dir accepted; want refusal")
+	}
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

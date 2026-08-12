@@ -167,3 +167,120 @@ func TestRunRetentionIsolatedPerServer(t *testing.T) {
 		}
 	}
 }
+
+// requireSetgidWidensMkdir makes parent setgid and proves the kernel really does
+// store a mode mkdir did not ask for underneath it, skipping the caller
+// otherwise. It is the witness that keeps the create-path custody tests below
+// honest: on a filesystem that honours every mode request, a test that creates a
+// directory and finds it 0700 cannot tell a VERIFIED create from an unverified
+// one, and would pass just as happily against the os.MkdirAll it replaced.
+// Linux propagates S_ISGID from a setgid parent to a new subdirectory, which is
+// a real widening produced by the kernel rather than a mock.
+func requireSetgidWidensMkdir(t *testing.T, parent string) {
+	t.Helper()
+	if err := os.Chmod(parent, 0o700|os.ModeSetgid); err != nil {
+		t.Fatal(err)
+	}
+	witness := filepath.Join(parent, "witness")
+	if err := os.Mkdir(witness, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Lstat(witness)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSetgid == 0 {
+		t.Skipf("kernel did not widen a 0o700 mkdir under a setgid parent (got %v); "+
+			"this test cannot distinguish a verified create from an unverified one here", fi.Mode())
+	}
+}
+
+// The per-server directory that receives a full pg_dump must come out owner-only
+// as MEASURED, not as requested. os.MkdirAll(dir, 0o700) asked for 0700 and
+// never looked at what it got, so on a filesystem storing something wider the
+// directory holding every row of every dumped database was born
+// group-accessible, from a call that reported success.
+func TestEnsureServerDirVerifiesTheModeItCreated(t *testing.T) {
+	parent := t.TempDir()
+	requireSetgidWidensMkdir(t, parent)
+
+	dir := filepath.Join(parent, spec.ServerDir("h1", 5432))
+	if err := orchestratorFor(t, parent, 1, nil).ensureServerDir(dir); err != nil {
+		t.Fatalf("ensureServerDir: %v", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode(); got != os.ModeDir|0o700 {
+		t.Fatalf("created dir mode = %v, want %v: the mode it created was not verified",
+			got, os.ModeDir|0o700)
+	}
+}
+
+// The same property end-to-end: a real run under a widening parent leaves the
+// directory it dumped into owner-only, and the dump still lands.
+func TestRunVerifiesTheServerDirModeItCreated(t *testing.T) {
+	dir := t.TempDir()
+	requireSetgidWidensMkdir(t, dir)
+
+	specs := []spec.DBSpec{{Host: "h1", Port: 5432, DBName: "app", User: "u"}}
+	res := orchestratorFor(t, dir, 1, specs).Run(deadlineCtx(t))
+	if res[0].Reason != ReasonOK {
+		t.Fatalf("reason = %q, want ok (detail %q)", res[0].Reason, res[0].Detail)
+	}
+	sub := filepath.Join(dir, "h1_5432")
+	fi, err := os.Lstat(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode(); got != os.ModeDir|0o700 {
+		t.Fatalf("server dir mode = %v, want %v", got, os.ModeDir|0o700)
+	}
+	if _, err := os.Stat(filepath.Join(sub, "app.dump")); err != nil {
+		t.Errorf("dump should still land in the verified dir: %v", err)
+	}
+}
+
+// A pre-existing server directory carrying group access is REFUSED, not adopted
+// and not chmod'd into compliance: dumping into it would publish the database to
+// whoever already had access, and repairing a directory this process did not
+// create would take over a name another principal may own. The failure is the
+// per-DB mkdir_failed reason, so the operator sees it per database rather than
+// losing the whole run.
+// TestEnsureServerDirRepairsItsOwnGroupAccessibleOutput pins the migration
+// contract. An earlier release created these per-server directories with a plain
+// MkdirAll(0o700), so on a widening dataset they are already sitting at 0770 —
+// and the library's default rule, never repair a pre-existing directory, would
+// refuse every one of them and fail every database with mkdir_failed on the
+// first run after the upgrade. WithRepairOwnedDir narrows them instead.
+//
+// This is not a weakening: EnsurePrivateDir has already proved the directory is
+// owned by our own euid before the repair is considered, and a directory cannot
+// be planted under another uid's ownership. What it costs is that a deliberately
+// group-readable per-server directory would be narrowed — which is the right
+// trade here and NOT at the cycle dir, whose comment says so: that one is on
+// ephemeral tmpfs where no legacy mode can exist, so it still refuses.
+func TestEnsureServerDirRepairsItsOwnGroupAccessibleOutput(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, spec.ServerDir("h1", 5432))
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	// Mkdir applies umask; force the wide mode explicitly.
+	if err := os.Chmod(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := orchestratorFor(t, parent, 1, nil).ensureServerDir(dir); err != nil {
+		t.Fatalf("a 0750 directory this app itself created was refused: %v; "+
+			"every database would fail with mkdir_failed on the first run after upgrade", err)
+	}
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o700 {
+		t.Fatalf("mode = %v, want 0700: the pre-existing directory was adopted without being repaired",
+			fi.Mode().Perm())
+	}
+}

@@ -11,8 +11,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
+	"github.com/cplieger/atomicfile/v2"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
@@ -50,6 +52,10 @@ type Orchestrator struct {
 	concurrency int
 	keep        int
 	freeKBWarn  int64
+	// serverDir serializes the per-server custody sequence below; see
+	// ensureServerDir for why the create and its mode repair must not interleave
+	// across two workers naming the same directory.
+	serverDir sync.Mutex
 }
 
 // New builds an Orchestrator from validated params.
@@ -67,13 +73,32 @@ func New(p *Params) *Orchestrator {
 		log:         log,
 		now:         now,
 		freeSpace:   statfsFreeKB,
-		dumpDir:     p.DumpDir,
+		dumpDir:     absDumpDir(p.DumpDir),
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,
 		concurrency: p.Concurrency,
 		keep:        max(1, p.Keep),
 		freeKBWarn:  p.FreeKBWarn,
 	}
+}
+
+// absDumpDir resolves the configured dump directory to an absolute path once,
+// here on the single-threaded construction path.
+//
+// DUMP_DIR is an operator string this app has never required to be absolute,
+// and the custody check in ensureServerDir refuses a relative one on purpose: a
+// verdict about "dumps/db_5432" is a statement about wherever the process
+// happens to be standing, which nothing stops another goroutine from changing
+// between the check and the write. Resolving at construction keeps a relative
+// DUMP_DIR working exactly as it did while giving the check a path whose meaning
+// cannot move under the worker pool. A failing os.Getwd leaves the value as
+// configured rather than guessing; the custody check then reports it.
+func absDumpDir(dir string) string {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return dir
+	}
+	return abs
 }
 
 // Run executes every spec and returns one Result per database in spec order.
@@ -155,11 +180,9 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	// Qualify the artifact by its server: DUMP_DIR/<host>_<port>/<dbname>.dump.
 	// This makes the path honor the (host, port, dbname) identity the validator
 	// dedups on, so two databases sharing a name on different servers can never
-	// map to one file. MkdirAll is idempotent and safe for concurrent workers
-	// (same or different subdirs); 0700 matches the unprivileged, read-only,
-	// non-root runtime (only this process traverses it).
+	// map to one file.
 	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := o.ensureServerDir(dir); err != nil {
 		return o.finish(&Result{
 			Host: s.Host, DBName: s.DBName, Reason: ReasonMkdirFailed,
 			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
@@ -181,6 +204,62 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 		}
 	}
 	return o.finish(&res, nil)
+}
+
+// ensureServerDir establishes the per-server subdirectory that will receive this
+// database's dump, and PROVES it came out owner-only.
+//
+// The mode passed to mkdir is a request, not a result, and os.MkdirAll never
+// looks at what it got: on a filesystem carrying an inheritable group-write ACL
+// the kernel stores 0770 for a 0o700 mkdir (measured on a ZFS nfs4acl dataset),
+// and the call still returns nil. What lands in this directory is
+// pg_dump --format=custom output — every row of every dumped database, schema
+// included — so a silently-widened 0770 makes the full contents of each Postgres
+// this sidecar reaches readable by anything sharing the container's group, with
+// nothing logged and nothing at the call site to suggest a tighter mode was ever
+// asked for. It also gets the pre-existing case right where MkdirAll cannot: a
+// symlink planted at this path is refused by the kernel rather than followed, so
+// a dump is never staged into a directory the planter chose, and a directory
+// owned by another uid or already carrying group access is refused instead of
+// adopted.
+//
+// EnsurePrivateDir is a single level, so DUMP_DIR itself keeps the plain
+// MkdirAll it has always had at the same 0700. That is deliberate: DUMP_DIR is
+// the operator's mount point, this app has never claimed custody of it, and
+// refusing to start because a bind-mounted /dumps came in group-readable would
+// break deployments that are working today.
+//
+// The lock is what makes this safe for the worker pool, which is the whole point
+// of running the pool over one server's databases. Without it the concurrent
+// case is worse than the bug being fixed: on exactly the widening filesystem
+// this exists for, the worker that wins the mkdir owns the directory and repairs
+// its mode, while a worker that loses arrives on the pre-existing path — and if
+// it stats between the winner's mkdir and the winner's repair it sees the
+// widened mode and correctly refuses to adopt it, failing that database's dump
+// with mkdir_failed. Serializing create-then-repair closes that window; the lock
+// spans a mkdir and an fstat/fchmod pair, never a dump, so the parallelism that
+// matters is untouched.
+//
+// WithRepairOwnedDir is what makes the FIRST run after this change survive.
+// These per-server directories are this app's own past output: an earlier
+// release created them with a plain MkdirAll(0o700), so on a widening dataset
+// they are already sitting at 0770, and the library's default rule — never
+// repair a pre-existing directory — would refuse every one of them and fail
+// every database with mkdir_failed. The option narrows them instead, and it is
+// sound here rather than a loosening: EnsurePrivateDir has already proved the
+// directory is owned by our own euid, and a directory cannot be planted under
+// someone else's ownership. The repair logs once per directory, so the one-time
+// migration is visible rather than silent.
+func (o *Orchestrator) ensureServerDir(dir string) error {
+	o.serverDir.Lock()
+	defer o.serverDir.Unlock()
+
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return err
+	}
+	_, err := atomicfile.EnsurePrivateDir(dir,
+		atomicfile.WithLogger(o.log), atomicfile.WithRepairOwnedDir())
+	return err
 }
 
 // finish logs a result and returns it (by value) so callers can

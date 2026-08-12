@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cplieger/atomicfile/v2"
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
@@ -63,9 +64,10 @@ func run(args []string, getenv func(string) string) int {
 
 // cycleDir holds the cross-process cycle-coordination files
 // (scheduler.Exclusive's cycle.lock and cycle.queued). It lives under /tmp —
-// already a required-writable tmpfs for the health marker — and is created
-// 0700 by whichever entry point starts first; the server and any exec'd
-// `pg-autodump run` share it because they run as the same container user.
+// already a required-writable tmpfs for the health marker — and whichever entry
+// point starts first establishes it 0700 through ensureCycleDir; the server and
+// any exec'd `pg-autodump run` share it because they run as the same container
+// user.
 const cycleDir = "/tmp/pg-autodump"
 
 // cycleQueueCapacity is scheduler.Exclusive's rerun-queue depth (the library
@@ -81,11 +83,45 @@ const cycleQueueCapacity = 1
 // signalled; an in-flight run is never interrupted by the gate — the drain
 // path owns cancellation.
 func newCycleExclusive(ctx context.Context, log *slog.Logger) (*scheduler.Exclusive, error) {
-	if err := os.MkdirAll(cycleDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create cycle dir %s: %w", cycleDir, err)
+	if err := ensureCycleDir(cycleDir, log); err != nil {
+		return nil, err
 	}
 	return scheduler.NewExclusive(cycleDir, log,
 		scheduler.WithGate(func() bool { return ctx.Err() == nil })), nil
+}
+
+// ensureCycleDir establishes dir as an owner-only directory and PROVES it came
+// out that way, before scheduler.Exclusive puts the cycle lock inside it. dir is
+// a parameter rather than the cycleDir constant so tests can exercise the
+// custody rules against a temp directory.
+//
+// This one lives under /tmp — the only directory in this container another
+// principal can also write — and that makes two failures reachable here that
+// os.MkdirAll cannot see. The mode it takes is a request, not a result: on a
+// filesystem carrying an inheritable group-write ACL the kernel stores 0770 for
+// a 0o700 mkdir (measured on a ZFS nfs4acl dataset) and MkdirAll returns nil
+// having never looked at what it got. And MkdirAll resolves symlinks and reports
+// success, so a link planted at this path before first start silently relocates
+// the cycle lock — and that lock is the only thing keeping the resident server
+// and an exec'd `pg-autodump run` from dumping at the same moment, which is two
+// pg_dump processes staging over one another's output. Unlike the dump
+// directory, what leaks through a wide mode here is not database contents; it is
+// control over the mutual exclusion. EnsurePrivateDir has the kernel refuse the
+// link, refuses a foreign owner or an already-group-accessible pre-existing
+// directory, and repairs then re-stats one it created itself.
+//
+// It is a single level, so the parent keeps a plain MkdirAll at the same 0700.
+// In every real deployment that call finds /tmp already there — it is the
+// container's tmpfs and a documented precondition, since the health marker needs
+// it too — and it stays so the parent is established rather than assumed.
+func ensureCycleDir(dir string, log *slog.Logger) error {
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return fmt.Errorf("create cycle dir parent %s: %w", filepath.Dir(dir), err)
+	}
+	if _, err := atomicfile.EnsurePrivateDir(dir, atomicfile.WithLogger(log)); err != nil {
+		return fmt.Errorf("create cycle dir %s: %w", dir, err)
+	}
+	return nil
 }
 
 // newOrchestrator wires the dump orchestrator from validated config. Shared by

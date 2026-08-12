@@ -437,45 +437,72 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	}
 }
 
+// throttleProbeAttempts bounds the failed-bearer probe loops below. It only
+// has to EXCEED the preset's burst, which webhttp.FailedAuthRateLimit now owns
+// along with the refill cadence: these tests assert the throttle's BEHAVIOUR
+// (attempts admitted inward to their 401s, then a 429 carrying Retry-After and
+// the shared code) instead of re-copying the numbers the adoption deleted.
+const throttleProbeAttempts = 64
+
 // TestAuthFailureThrottle pins the failed-bearer throttle end to end through
-// the full middleware chain: authFailBurst bad attempts pass inward to their
-// 401s, the next is answered 429 with a Retry-After hint before reaching the
-// handler, a VALID bearer is never throttled even mid-flood, and requests the
-// predicate excludes (GET /dump, /healthz) draw no tokens.
+// the full middleware chain: bad attempts inside the preset's burst pass
+// inward to their 401s, the flood is then cut off with a 429 carrying a
+// Retry-After hint before reaching the handler, a VALID bearer is never
+// throttled even mid-flood, and requests the predicate excludes (GET /dump,
+// /healthz) draw no tokens.
 func TestAuthFailureThrottle(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "sekrit")
 
-	// Burn the whole burst with bad bearers: each is admitted by the limiter
-	// (consuming a token) and rejected 401 by authMiddleware.
-	for i := range authFailBurst {
+	badBearer := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodPost, "/dump", nil)
 		req.Header.Set("Authorization", "Bearer wrong")
 		srv.Handler.ServeHTTP(rec, req)
-		if rec.Code != http.StatusUnauthorized {
-			t.Fatalf("bad attempt %d: status = %d, want 401 (inside burst)", i+1, rec.Code)
-		}
+		return rec
 	}
 
-	// The bucket is empty: the next bad attempt is throttled before the
-	// handler, with a whole-second Retry-After hint.
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/dump", nil)
-	req.Header.Set("Authorization", "Bearer wrong")
-	srv.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("over-budget bad attempt: status = %d, want 429", rec.Code)
+	// Drive bad bearers until the shared bucket empties. Every attempt the
+	// limiter admits must reach authMiddleware's 401; the first refusal is the
+	// throttle engaging before the handler. How MANY are admitted is the
+	// preset's tuning rather than this app's, so what is asserted is that some
+	// are (an operator retrying a rotated credential by hand is not refused on
+	// the first try) and that the flood is cut off within the probe bound.
+	admitted := 0
+	var throttled *httptest.ResponseRecorder
+	for i := range throttleProbeAttempts {
+		rec := badBearer()
+		if rec.Code == http.StatusTooManyRequests {
+			throttled = rec
+			break
+		}
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("bad attempt %d: status = %d, want 401 (admitted) or 429 (throttled)", i+1, rec.Code)
+		}
+		admitted++
 	}
-	if rec.Header().Get("Retry-After") == "" {
+	if throttled == nil {
+		t.Fatalf("%d bad bearer attempts were never throttled; the failed-auth limiter is not engaged", throttleProbeAttempts)
+	}
+	if admitted == 0 {
+		t.Error("the first bad bearer attempt was throttled; the preset's burst must admit attempts to their 401s")
+	}
+	if throttled.Header().Get("Retry-After") == "" {
 		t.Error("throttled 429 carries no Retry-After hint")
 	}
-	if !strings.Contains(rec.Body.String(), "too_many_auth_failures") {
-		t.Errorf("throttled body = %q, want the too_many_auth_failures envelope", rec.Body.String())
+	body := throttled.Body.String()
+	if !strings.Contains(body, "too_many_auth_failures") {
+		t.Errorf("throttled body = %q, want the too_many_auth_failures envelope", body)
+	}
+	// The code above is the preset's (shared across services so log queries
+	// and alert rules key on one string); the message stays this app's, so it
+	// must still name the credential a caller presented.
+	if !strings.Contains(body, "too many failed bearer attempts") {
+		t.Errorf("throttled body = %q, want this app's bearer-specific message", body)
 	}
 
 	// A valid bearer never draws from the bucket: it passes even mid-flood.
-	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/dump", nil)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/dump", nil)
 	req.Header.Set("Authorization", "Bearer sekrit")
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -499,10 +526,13 @@ func TestAuthFailureThrottle(t *testing.T) {
 // TestAuthFailureThrottle_openModeDisabled pins the off contract: with no
 // configured token the limiter is the identity, so unauthenticated POSTs are
 // never 429'd no matter the volume (open mode is documented as unthrottled).
+// The bypass carries the whole contract now that the preset owns the tuning —
+// FailedAuthRateLimit has no non-positive "off" and the fail-closed verifier
+// would read every open-mode request as a failed attempt.
 func TestAuthFailureThrottle_openModeDisabled(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "")
 
-	for i := range authFailBurst + 5 {
+	for i := range throttleProbeAttempts {
 		rec := httptest.NewRecorder()
 		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dump", nil))
 		if rec.Code == http.StatusTooManyRequests {

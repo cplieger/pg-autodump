@@ -1,6 +1,6 @@
 module github.com/cplieger/pg-autodump
 
-go 1.26.5
+go 1.26.6
 
 require (
 	github.com/cplieger/atomicfile/v2 v2.9.0

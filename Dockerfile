@@ -14,6 +14,12 @@ ARG TINI_SHA256_ARM64=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa8
 # renovate: datasource=docker depName=golang
 FROM golang:1.26-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
 
+# GOTOOLCHAIN=auto: a dependency bump that requires a newer Go patch downloads
+# that toolchain instead of failing the build, which decouples module updates
+# from base-image updates. The build stays reproducible because go.mod pins the
+# version; `local` (the golang image default) hard-fails such a build.
+ENV GOTOOLCHAIN=auto
+
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

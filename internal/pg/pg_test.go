@@ -1,7 +1,6 @@
 package pg
 
 import (
-	"context"
 	"io"
 	"os"
 	"strings"
@@ -17,7 +16,7 @@ import (
 // grace) and the child leading its own process group.
 func TestNewCommand(t *testing.T) {
 	t.Parallel()
-	cmd := newCommand(context.Background(), "sleep", "1")
+	cmd := newCommand(t.Context(), "sleep", "1")
 	if cmd.Cancel == nil {
 		t.Error("Cancel not set (graceful SIGTERM on ctx cancellation expected)")
 	}
@@ -38,7 +37,7 @@ func TestNewCommand(t *testing.T) {
 // the behavioral half of the Setpgid pin in TestNewCommand.
 func TestNewCommand_ChildRunsInOwnProcessGroup(t *testing.T) {
 	t.Parallel()
-	cmd := newCommand(context.Background(), "sleep", "2")
+	cmd := newCommand(t.Context(), "sleep", "2")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("Start() failed: %v", err)
 	}
@@ -170,13 +169,13 @@ func TestPGToolRejectsDeadlinelessContext(t *testing.T) {
 	tool := New("/secrets/.pgpass", 5*time.Second)
 	conn := dump.Conn{Host: "h", Port: 5432, DBName: "db", User: "u"}
 
-	if _, _, err := tool.Dump(context.Background(), conn, io.Discard); err != ErrNoDeadline {
+	if _, _, err := tool.Dump(t.Context(), conn, io.Discard); err != ErrNoDeadline {
 		t.Errorf("Dump(no-deadline ctx) err = %v, want ErrNoDeadline", err)
 	}
-	if err := tool.VerifyTOC(context.Background(), "ignored-path"); err != ErrNoDeadline {
+	if err := tool.VerifyTOC(t.Context(), "ignored-path"); err != ErrNoDeadline {
 		t.Errorf("VerifyTOC(no-deadline ctx) err = %v, want ErrNoDeadline", err)
 	}
-	if _, _, err := tool.Probe(context.Background(), conn); err != ErrNoDeadline {
+	if _, _, err := tool.Probe(t.Context(), conn); err != ErrNoDeadline {
 		t.Errorf("Probe(no-deadline ctx) err = %v, want ErrNoDeadline", err)
 	}
 }

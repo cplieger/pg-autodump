@@ -81,7 +81,7 @@ func TestStageAndReplace(t *testing.T) {
 
 func TestStageAndReplaceContextTimeout(t *testing.T) {
 	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	pg := &fakePG{dump: func(_ context.Context, _ Conn, w io.Writer) (int, string, error) {
 		cancel() // simulate the run being cancelled mid-dump
 		_, _ = io.WriteString(w, "partial")
@@ -102,7 +102,7 @@ func TestStageAndReplaceContextTimeout(t *testing.T) {
 // timeout/shutdown).
 func TestStageAndReplaceCommitContextCancel(t *testing.T) {
 	dir := t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	pg := &fakePG{
 		dump: func(_ context.Context, _ Conn, w io.Writer) (int, string, error) {
 			_, _ = io.WriteString(w, "complete-archive")
@@ -128,7 +128,7 @@ func TestStageAndReplaceCommitContextCancel(t *testing.T) {
 func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 	t.Run("cancel during verify is killed not truncated", func(t *testing.T) {
 		dir := t.TempDir()
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		pg := &fakePG{
 			dump: func(_ context.Context, _ Conn, w io.Writer) (int, string, error) {
 				_, _ = io.WriteString(w, "complete-archive")
@@ -170,6 +170,7 @@ func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 // ReasonOther: the run was aborted, not a temp-create fault.
 func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 	dir := t.TempDir()
+	// Deliberately pre-cancelled, not t.Context().
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // dead ctx before stageAndReplace: NewPendingFile sees it first
 	res := stageAndReplace(ctx, &fakePG{}, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})

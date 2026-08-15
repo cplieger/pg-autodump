@@ -38,7 +38,7 @@ func (f *fakePG) VerifyTOC(ctx context.Context, path string) error {
 
 func deadlineCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }

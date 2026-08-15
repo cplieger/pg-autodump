@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,7 +43,7 @@ func pruneOldDumps(dir, dbname string, keep int) (int, error) {
 	if len(names) <= keep {
 		return 0, nil
 	}
-	sort.Strings(names) // ascending == oldest-first (timestamp format is lexically sortable)
+	slices.Sort(names) // ascending == oldest-first (timestamp format is lexically sortable)
 	return removeDumps(dir, names[:len(names)-keep])
 }
 

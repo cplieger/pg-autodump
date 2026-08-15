@@ -3,7 +3,7 @@ package dump
 import (
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 )
@@ -38,7 +38,7 @@ func TestDumpFileNameLexicallySortable(t *testing.T) {
 	older := dumpFileName("app", 2, time.Date(2026, 6, 13, 1, 0, 0, 0, time.UTC))
 	newer := dumpFileName("app", 2, time.Date(2026, 6, 13, 2, 0, 0, 0, time.UTC))
 	names := []string{newer, older}
-	sort.Strings(names)
+	slices.Sort(names)
 	if names[0] != older || names[1] != newer {
 		t.Fatalf("lexical sort did not order by time: %v", names)
 	}

@@ -23,7 +23,7 @@ func TestGuardSingleFlightAndCancel(t *testing.T) {
 
 	t.Run("CancelInFlight cancels the in-flight run context", func(t *testing.T) {
 		var g Guard
-		ctx, cancel := context.WithCancel(context.Background())
+		ctx, cancel := context.WithCancel(t.Context())
 		release, ok := g.TryAcquire(cancel)
 		if !ok {
 			t.Fatal("TryAcquire ok = false, want true")
@@ -57,6 +57,7 @@ func TestGuardSingleFlightAndCancel(t *testing.T) {
 func TestGuardWaitIdle(t *testing.T) {
 	t.Run("idle guard returns true even when ctx is already done", func(t *testing.T) {
 		var g Guard
+		// Deliberately pre-cancelled, not t.Context().
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // drain budget already expired
 		if !g.WaitIdle(ctx) {
@@ -83,6 +84,7 @@ func TestGuardWaitIdle(t *testing.T) {
 			t.Fatal("TryAcquire ok = false, want true")
 		}
 		defer release()
+		// Deliberately pre-cancelled, not t.Context().
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // drain budget expires while the run is still in flight
 		if g.WaitIdle(ctx) {

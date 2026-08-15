@@ -17,7 +17,7 @@ import (
 
 func probeTestCtx(t *testing.T) context.Context {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 	return ctx
 }
@@ -217,7 +217,7 @@ func TestProbeCtxTimeoutNotAuth(t *testing.T) {
 	tool := New("/secrets/.pgpass", 5*time.Second)
 	tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\nexec sleep 10\n") // outlives the ctx deadline; exec so kill closes the pipe
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 
 	_, kind, perr := tool.Probe(ctx, dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})

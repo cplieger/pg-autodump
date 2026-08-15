@@ -52,6 +52,7 @@ func TestRunPoolCancelSkips(t *testing.T) {
 		{Host: "h", Port: 5432, DBName: "a", User: "u"},
 		{Host: "h", Port: 5432, DBName: "b", User: "u"},
 	}
+	// Deliberately pre-cancelled, not t.Context().
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already cancelled: nothing should dispatch
 
@@ -75,7 +76,7 @@ func TestRunPoolCancelMidDispatch(t *testing.T) {
 		{Host: "h", Port: 5432, DBName: "a", User: "u"},
 		{Host: "h", Port: 5432, DBName: "b", User: "u"},
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	entered := make(chan struct{})
 	var dumped sync.Map
 

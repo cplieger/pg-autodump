@@ -108,7 +108,15 @@ FROM alpine:3.24@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec4
 # apk upgrade: the pinned base ships some packages (e.g. libssl3) at a stale,
 # CVE-affected revision; upgrading floats them forward on each rebuild.
 # postgresql18-client: pg_dump / pg_restore / psql (network clients).
-RUN apk upgrade --no-cache \
+# PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
+# layer verbatim on every rebuild, so the `apk upgrade` below floats nothing
+# forward after the first build and the image keeps shipping the packages that
+# were current then. The central release/CI/scan builds pass today's UTC date.
+# The `echo` is load-bearing: BuildKit keys a RUN on the build args it actually
+# CONSUMES, so a merely-declared ARG would change nothing.
+ARG PKG_REFRESH=static
+RUN echo "OS package refresh: ${PKG_REFRESH}" \
+    && apk upgrade --no-cache \
     && apk add --no-cache postgresql18-client \
     && addgroup -g 65532 -S pgautodump && adduser -S -G pgautodump -u 65532 pgautodump
 

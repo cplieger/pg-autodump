@@ -40,8 +40,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.StmtTimeout <= cfg.DumpTimeout {
 		t.Fatalf("StmtTimeout %s must exceed DumpTimeout %s", cfg.StmtTimeout, cfg.DumpTimeout)
 	}
-	if cfg.ShutdownGrace <= cfg.DumpTimeout {
-		t.Fatalf("ShutdownGrace %s must exceed DumpTimeout %s", cfg.ShutdownGrace, cfg.DumpTimeout)
+	if cfg.ShutdownTimeout <= cfg.DumpTimeout {
+		t.Fatalf("ShutdownTimeout %s must exceed DumpTimeout %s", cfg.ShutdownTimeout, cfg.DumpTimeout)
 	}
 	if cfg.AuthToken != "" {
 		t.Fatalf("AuthToken should default empty")
@@ -272,37 +272,52 @@ func TestLoadFreeKBZeroDisablesAndValidPassesThrough(t *testing.T) {
 	}
 }
 
-func TestLoadShutdownGrace(t *testing.T) {
+func TestLoadShutdownTimeout(t *testing.T) {
 	def, dwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
-	if def.ShutdownGrace != def.DumpTimeout+15*time.Second {
-		t.Errorf("default ShutdownGrace = %s, want DumpTimeout+15s = %s", def.ShutdownGrace, def.DumpTimeout+15*time.Second)
+	if def.ShutdownTimeout != def.DumpTimeout+15*time.Second {
+		t.Errorf("default ShutdownTimeout = %s, want DumpTimeout+15s = %s", def.ShutdownTimeout, def.DumpTimeout+15*time.Second)
 	}
 	if len(dwarns) != 0 {
-		t.Errorf("default ShutdownGrace: want no warnings, got %v", dwarns)
+		t.Errorf("default ShutdownTimeout: want no warnings, got %v", dwarns)
 	}
 
-	bad, bwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_GRACE": "nope"})
-	if bad.ShutdownGrace != bad.DumpTimeout+15*time.Second {
-		t.Errorf("invalid SHUTDOWN_GRACE: ShutdownGrace = %s, want derived %s", bad.ShutdownGrace, bad.DumpTimeout+15*time.Second)
+	bad, bwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "nope"})
+	if bad.ShutdownTimeout != bad.DumpTimeout+15*time.Second {
+		t.Errorf("invalid SHUTDOWN_TIMEOUT: ShutdownTimeout = %s, want derived %s", bad.ShutdownTimeout, bad.DumpTimeout+15*time.Second)
 	}
 	if len(bwarns) == 0 {
-		t.Error("invalid SHUTDOWN_GRACE: expected a warning, got none")
+		t.Error("invalid SHUTDOWN_TIMEOUT: expected a warning, got none")
 	}
 
-	ok, owarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_GRACE": "600"})
-	if ok.ShutdownGrace != 600*time.Second {
-		t.Errorf("valid SHUTDOWN_GRACE=600: ShutdownGrace = %s, want 600s", ok.ShutdownGrace)
+	ok, owarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "600s"})
+	if ok.ShutdownTimeout != 600*time.Second {
+		t.Errorf("valid SHUTDOWN_TIMEOUT=600s: ShutdownTimeout = %s, want 600s", ok.ShutdownTimeout)
 	}
 	if len(owarns) != 0 {
-		t.Errorf("valid SHUTDOWN_GRACE=600: want no warnings, got %v", owarns)
+		t.Errorf("valid SHUTDOWN_TIMEOUT=600s: want no warnings, got %v", owarns)
 	}
 
-	low, lwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "300", "SHUTDOWN_GRACE": "30"})
-	if low.ShutdownGrace != 30*time.Second {
-		t.Errorf("below-timeout SHUTDOWN_GRACE=30: ShutdownGrace = %s, want 30s (value still honored)", low.ShutdownGrace)
+	low, lwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "300", "SHUTDOWN_TIMEOUT": "30s"})
+	if low.ShutdownTimeout != 30*time.Second {
+		t.Errorf("below-timeout SHUTDOWN_TIMEOUT=30s: ShutdownTimeout = %s, want 30s (value still honored)", low.ShutdownTimeout)
 	}
 	if len(lwarns) == 0 {
-		t.Error("below-timeout SHUTDOWN_GRACE: expected a warning that an in-flight dump may be killed")
+		t.Error("below-timeout SHUTDOWN_TIMEOUT: expected a warning that an in-flight dump may be killed")
+	}
+}
+
+// TestLoadShutdownTimeoutRejectsBareInteger is the clean-break contract for
+// SHUTDOWN_TIMEOUT: the value is a Go duration, and a bare integer (the old
+// unitless spelling of seconds) is NOT accepted as a compatibility fallback.
+// It parses as malformed, so it warns and takes the derived default rather
+// than silently meaning 30 seconds.
+func TestLoadShutdownTimeoutRejectsBareInteger(t *testing.T) {
+	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "30"})
+	if cfg.ShutdownTimeout != cfg.DumpTimeout+15*time.Second {
+		t.Errorf("SHUTDOWN_TIMEOUT=30 (unitless): ShutdownTimeout = %s, want derived %s (a bare integer is not a duration)", cfg.ShutdownTimeout, cfg.DumpTimeout+15*time.Second)
+	}
+	if len(warns) == 0 {
+		t.Error("SHUTDOWN_TIMEOUT=30 (unitless): expected a warning that the value is not a positive duration, got none")
 	}
 }
 
@@ -401,29 +416,30 @@ func TestLoadPositiveIntWarningNamesVariable(t *testing.T) {
 	}
 }
 
-func TestLoadShutdownGraceZeroFallsBackToDerived(t *testing.T) {
-	// SHUTDOWN_GRACE="0" is non-positive: it must fall back to the derived
-	// DumpTimeout+15s grace with a warning, not be honored as a zero-second
-	// drain budget (a 0 grace expires the shutdown drain context immediately
+func TestLoadShutdownTimeoutZeroFallsBackToDerived(t *testing.T) {
+	// SHUTDOWN_TIMEOUT="0s" is non-positive: it must fall back to the derived
+	// DumpTimeout+15s budget with a warning, not be honored as a zero drain
+	// budget (a 0 timeout expires the shutdown drain context immediately
 	// and skips graceful drain).
-	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_GRACE": "0"})
-	if cfg.ShutdownGrace != cfg.DumpTimeout+15*time.Second {
-		t.Errorf("SHUTDOWN_GRACE=0: ShutdownGrace = %s, want derived %s", cfg.ShutdownGrace, cfg.DumpTimeout+15*time.Second)
+	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "0s"})
+	if cfg.ShutdownTimeout != cfg.DumpTimeout+15*time.Second {
+		t.Errorf("SHUTDOWN_TIMEOUT=0s: ShutdownTimeout = %s, want derived %s", cfg.ShutdownTimeout, cfg.DumpTimeout+15*time.Second)
 	}
 	if len(warns) == 0 {
-		t.Error("SHUTDOWN_GRACE=0: expected a warning that the value is not a positive integer, got none")
+		t.Error("SHUTDOWN_TIMEOUT=0s: expected a warning that the value is not a positive duration, got none")
 	}
 }
 
-func TestLoadShutdownGraceEqualToTimeoutNoWarning(t *testing.T) {
-	// At grace == DumpTimeout the dump keeps its full budget on shutdown, so the
-	// "below DUMP_TIMEOUT" warning must fire only when grace is STRICTLY less.
-	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "300", "SHUTDOWN_GRACE": "300"})
-	if cfg.ShutdownGrace != 300*time.Second {
-		t.Errorf("SHUTDOWN_GRACE=300 (== DUMP_TIMEOUT): ShutdownGrace = %s, want 300s", cfg.ShutdownGrace)
+func TestLoadShutdownTimeoutEqualToTimeoutNoWarning(t *testing.T) {
+	// At the drain budget == DumpTimeout the dump keeps its full budget on
+	// shutdown, so the "below DUMP_TIMEOUT" warning must fire only when the
+	// budget is STRICTLY less.
+	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "300", "SHUTDOWN_TIMEOUT": "300s"})
+	if cfg.ShutdownTimeout != 300*time.Second {
+		t.Errorf("SHUTDOWN_TIMEOUT=300s (== DUMP_TIMEOUT): ShutdownTimeout = %s, want 300s", cfg.ShutdownTimeout)
 	}
 	if len(warns) != 0 {
-		t.Errorf("SHUTDOWN_GRACE == DUMP_TIMEOUT: want no warnings, got %v", warns)
+		t.Errorf("SHUTDOWN_TIMEOUT == DUMP_TIMEOUT: want no warnings, got %v", warns)
 	}
 }
 

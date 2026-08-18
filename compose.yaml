@@ -6,7 +6,7 @@ services:
     restart: unless-stopped
     # Override with PUID/PGID in .env; defaults to 1000:1000.
     user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
-    stop_grace_period: 315s  # >= SHUTDOWN_GRACE so an in-flight dump finishes on stop; see README
+    stop_grace_period: 315s  # >= SHUTDOWN_TIMEOUT so an in-flight dump finishes on stop; see README
 
     environment:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # space-separated host[:port]:dbname:user tuples

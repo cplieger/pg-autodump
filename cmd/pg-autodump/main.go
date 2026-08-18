@@ -144,7 +144,7 @@ func newOrchestrator(cfg *config.Config, log *slog.Logger) *dump.Orchestrator {
 // preflight, wires the cycle lock, dump orchestrator, and HTTP server,
 // reclaims crash-orphaned temp dumps, optionally starts the built-in ticker,
 // then serves until a signal and drains any in-flight dump within
-// ShutdownGrace. It returns the process exit code.
+// ShutdownTimeout. It returns the process exit code.
 func runServer(getenv func(string) string) int {
 	slogx.Setup(slogx.Options{})
 	log := slog.Default()
@@ -208,7 +208,7 @@ func runServer(getenv func(string) string) int {
 	log.Info("pg-autodump listening",
 		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
 
-	// webhttp.Run drains the HTTP server within ShutdownGrace, then invokes the
+	// webhttp.Run drains the HTTP server within ShutdownTimeout, then invokes the
 	// teardown below with a context bounded by the same deadline. A built-in
 	// ticker dump holds no HTTP connection Shutdown can see, so drainGuard waits
 	// for the single-flight guard to go idle within the remaining budget; if it
@@ -216,8 +216,8 @@ func runServer(getenv func(string) string) int {
 	// The pre-drain phase flips the health marker red strictly BEFORE the drain
 	// begins, so a probe reports unready during the drain window (the marker is
 	// a FILE read by the healthcheck CLI, which listener closure does not cover).
-	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownGrace, log),
-		webhttp.WithShutdownGrace(cfg.ShutdownGrace),
+	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownTimeout, log),
+		webhttp.WithShutdownGrace(cfg.ShutdownTimeout),
 		webhttp.WithPreDrain(func(context.Context) {
 			log.Info("shutting down", "cause", context.Cause(ctx))
 			marker.Set(false)
@@ -236,7 +236,7 @@ func runServer(getenv func(string) string) int {
 // runner executes the queued cycle when its current run finishes, and the
 // per-database results land in that process's log stream. No HTTP listener is
 // bound and the health marker is not touched; DUMP_INTERVAL, LISTEN_ADDR,
-// AUTH_TOKEN, and SHUTDOWN_GRACE are ignored, because scheduling, transport,
+// AUTH_TOKEN, and SHUTDOWN_TIMEOUT are ignored, because scheduling, transport,
 // and drain belong to the invoking scheduler.
 func runOnce(getenv func(string) string) int {
 	slogx.Setup(slogx.Options{})
@@ -403,7 +403,7 @@ func runTrigger(getenv func(string) string) int {
 	}
 	url := "http://" + localAddr(cfg.ListenAddr) + "/dump"
 	// Bound the trigger on the server's worst-case total dump time, NOT on
-	// SHUTDOWN_GRACE (a drain knob the operator may set low for unrelated
+	// SHUTDOWN_TIMEOUT (a drain knob the operator may set low for unrelated
 	// reasons). The server dumps Specs in ceil(len/concurrency) serial waves,
 	// each database bounded by DumpTimeout plus the reachability probe cap, so
 	// a flat DumpTimeout+slack would falsely time out a multi-database run and

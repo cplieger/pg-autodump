@@ -2,8 +2,8 @@ github.com/cplieger/atomicfile/v2 v2.9.1 h1:ffPe0EEDOUuVJCFpYlj6GbyBBQe6B/M2pYAl
 github.com/cplieger/atomicfile/v2 v2.9.1/go.mod h1:nGhc6CiB3BdQtQsKh/E4Trp5kr4wRxcpslZYsc/qBRQ=
 github.com/cplieger/health v1.5.1 h1:HxMLi2KOgNwCJ9yo+YicnRQXelD5B0hJTfmG/eJ0cWc=
 github.com/cplieger/health v1.5.1/go.mod h1:pFkWxVKbja/KO/bkI0ybdN4LipfX8yNTqSM/S0ufrhE=
-github.com/cplieger/keyenc v1.0.2 h1:1DjKsJOOXOu7Qdhupj7S5Wq6fcrA1moKnBZBrF37XiE=
-github.com/cplieger/keyenc v1.0.2/go.mod h1:Q9zMsHPmtkcMvl8PjC2r3YIOoDicMlUcwkEdv+9oK2I=
+github.com/cplieger/keyenc v1.0.3 h1:PD5dj5VCa2GfHYaohdYsAloRiWcM9sWBx8yw5rXG3hg=
+github.com/cplieger/keyenc v1.0.3/go.mod h1:Q9zMsHPmtkcMvl8PjC2r3YIOoDicMlUcwkEdv+9oK2I=
 github.com/cplieger/pathinside v1.0.1 h1:9V47HfttoYR8V0JE24u50KGNujXmnWLVdIiOGawsY3w=
 github.com/cplieger/pathinside v1.0.1/go.mod h1:WLX0Ih8PbQmhaKmaUjJ+OhaiggEeIFqSFy9Qs1oDQKo=
 github.com/cplieger/scheduler/v3 v3.0.1 h1:ojSjH+GTpXvJ3WkYCJ8zUenjSGYR7It0aM8o4EZuMbo=

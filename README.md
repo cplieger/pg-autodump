@@ -110,7 +110,7 @@ docker run --rm \
   `/dumps`, non-empty `DB_SPECS`) weren't met. SIGTERM mid-run cancels the
   in-flight `pg_dump` cleanly (reported as `killed`, non-zero exit).
 - **No listener, no timer.** `run` binds no HTTP port and ignores
-  `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL`, and `SHUTDOWN_GRACE`:
+  `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL`, and `SHUTDOWN_TIMEOUT`:
   transport, scheduling, and drain belong to the invoking scheduler. The
   image's `HEALTHCHECK` is aimed at the resident server and reports nothing
   useful for a run-and-exit container.
@@ -139,7 +139,7 @@ docker run --rm \
 | `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables. | `1048576` | No |
 | `AUTH_TOKEN` | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback. | `""` | No |
 | `LISTEN_ADDR` | HTTP listen address. | `:9847` | No |
-| `SHUTDOWN_GRACE` | Drain budget on SIGTERM. Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp). | `DUMP_TIMEOUT+15s` | No |
+| `SHUTDOWN_TIMEOUT` | Drain budget on SIGTERM (Go duration, e.g. `315s`). Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp). | `DUMP_TIMEOUT+15s` | No |
 
 > **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port may be omitted). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`), or use `PGPASSWORD` instead.
 
@@ -309,7 +309,7 @@ pg-autodump succeeds `db-dumper`, which ran `pg_dump` via `docker exec` over the
 - Rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`.
 - Provide credentials via a read-only `.pgpass` and a least-privilege role (see above).
 - Move triggers from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`), and health to `GET /healthz`.
-- Set the healthcheck to `["CMD", "pg-autodump", "health"]` and `stop_grace_period` >= `SHUTDOWN_GRACE`.
+- Set the healthcheck to `["CMD", "pg-autodump", "health"]` and `stop_grace_period` >= `SHUTDOWN_TIMEOUT`.
 
 ## Contributing
 

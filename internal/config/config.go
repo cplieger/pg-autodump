@@ -53,7 +53,7 @@ type Config struct {
 	DumpConcurrency int
 	DumpInterval    time.Duration // DUMP_INTERVAL, default 24h; "off" disables the built-in timer (external trigger only)
 	DumpKeep        int           // DUMP_KEEP, default 7; 1 = single stable <dbname>.dump, >1 = N timestamped copies retained
-	ShutdownGrace   time.Duration
+	ShutdownTimeout time.Duration // SHUTDOWN_TIMEOUT, Go duration; default DUMP_TIMEOUT+15s
 	FreeKBWarn      int64
 }
 
@@ -96,7 +96,7 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	cfg.DumpInterval = loadInterval(src, &w)
 	cfg.DumpKeep = loadPositiveInt(src, "DUMP_KEEP", DefaultDumpKeep, &w)
 	cfg.FreeKBWarn = loadFreeKB(src, &w)
-	cfg.ShutdownGrace = loadShutdownGrace(src, cfg.DumpTimeout, &w)
+	cfg.ShutdownTimeout = loadShutdownTimeout(src, cfg.DumpTimeout, &w)
 
 	return cfg, w, dumpDirErr
 }
@@ -225,24 +225,28 @@ func loadFreeKB(src envx.Source, w *warnings) int64 {
 	}
 }
 
-func loadShutdownGrace(src envx.Source, dumpTimeout time.Duration, w *warnings) time.Duration {
+// loadShutdownTimeout reads SHUTDOWN_TIMEOUT as a Go duration (e.g. "315s",
+// "5m"). Unset falls back to the derived DumpTimeout+shutdownSlack; a
+// malformed or non-positive value warns and uses the same derived value. A
+// value below DUMP_TIMEOUT is honoured but warned about, since it lets the
+// drain kill an in-flight dump.
+func loadShutdownTimeout(src envx.Source, dumpTimeout time.Duration, w *warnings) time.Duration {
 	derived := dumpTimeout + shutdownSlack
-	secs, ok, err := src.IntStrict("SHUTDOWN_GRACE")
+	timeout, ok, err := src.DurationStrict("SHUTDOWN_TIMEOUT")
 	switch {
 	case err != nil:
-		w.addf("SHUTDOWN_GRACE %q is not a positive integer; using derived %s", rawValue(err), derived)
+		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration; using derived %s", rawValue(err), derived)
 		return derived
 	case !ok:
 		return derived
-	case secs <= 0:
-		w.addf("SHUTDOWN_GRACE %q is not a positive integer; using derived %s", strconv.Itoa(secs), derived)
+	case timeout <= 0:
+		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration; using derived %s", timeout.String(), derived)
 		return derived
 	}
-	grace := time.Duration(secs) * time.Second
-	if grace < dumpTimeout {
-		w.addf("SHUTDOWN_GRACE %s is below DUMP_TIMEOUT %s; an in-flight dump may be killed on shutdown", grace, dumpTimeout)
+	if timeout < dumpTimeout {
+		w.addf("SHUTDOWN_TIMEOUT %s is below DUMP_TIMEOUT %s; an in-flight dump may be killed on shutdown", timeout, dumpTimeout)
 	}
-	return grace
+	return timeout
 }
 
 func firstNonEmpty(v, def string) string {

@@ -185,7 +185,7 @@ func loadInterval(src envx.Source, w *warnings) time.Duration {
 	// (scheduler.ParseInterval maps negative to the default, not to
 	// disabled), so the sentinel check reads the raw value and only the
 	// duration parse goes through envx.
-	switch strings.ToLower(strings.TrimSpace(src.String("DUMP_INTERVAL", ""))) {
+	switch strings.ToLower(strings.TrimSpace(src.String("DUMP_INTERVAL"))) {
 	case "off", "disabled":
 		return 0
 	}

@@ -177,8 +177,8 @@ func loadPositiveInt(src envx.Source, key envx.Key, def int, w *warnings) int {
 }
 
 func loadInterval(src envx.Source, w *warnings) time.Duration {
-	// Matches the sibling schedulers (SYNC_INTERVAL / FCLONES_INTERVAL /
-	// SCHED_INTERVAL): the built-in timer runs by default; "off", "disabled",
+	// Matches the sibling schedulers (SYNC_INTERVAL / SCAN_INTERVAL /
+	// RUN_INTERVAL): the built-in timer runs by default; "off", "disabled",
 	// or a zero duration ("0"/"0s") hands scheduling to an external trigger
 	// (e.g. Ofelia). Unparseable values fall back to the default. The
 	// off/disabled sentinels and the negative-disables policy are this app's

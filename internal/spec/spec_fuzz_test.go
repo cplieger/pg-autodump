@@ -7,11 +7,11 @@ import (
 	"unicode"
 )
 
-// FuzzParseSpecs asserts the untrusted-input invariants: ParseSpecs never
+// FuzzParse asserts the untrusted-input invariants: Parse never
 // panics, yields exactly one DBSpec per whitespace token, and any spec that is
 // NOT marked Invalid satisfies the full grammar (so it is safe to pass to
 // pg_dump). This is the boundary between operator config and a process argv.
-func FuzzParseSpecs(f *testing.F) {
+func FuzzParse(f *testing.F) {
 	seeds := []string{
 		"", "   ", "host:db:user", "host:5432:db:user",
 		"-bad:db:user", "host:..:user", "host:0:db:user",
@@ -25,7 +25,7 @@ func FuzzParseSpecs(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, raw string) {
-		specs := ParseSpecs(raw)
+		specs := Parse(raw)
 
 		if want := len(strings.Fields(raw)); len(specs) != want {
 			t.Fatalf("got %d specs, want %d (one per whitespace token)", len(specs), want)

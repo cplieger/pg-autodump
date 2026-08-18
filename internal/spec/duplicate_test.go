@@ -8,7 +8,7 @@ import "testing"
 // "invalid", so it must be set on the colliding spec and left false on both the
 // keeper and a format-invalid token.
 func TestParseSpecsMarksDuplicateFlag(t *testing.T) {
-	specs := ParseSpecs("host:db:user host:db:user2 nope")
+	specs := Parse("host:db:user host:db:user2 nope")
 	if len(specs) != 3 {
 		t.Fatalf("len(specs) = %d, want 3", len(specs))
 	}

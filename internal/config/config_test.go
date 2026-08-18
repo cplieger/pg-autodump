@@ -459,3 +459,40 @@ func TestListenerOpenAndPublic(t *testing.T) {
 		})
 	}
 }
+
+// TestLoadTypedValuesTrimAndTreatBlankAsUnset pins the envx.Source parse
+// semantics this package adopted (go-rulebook C19): typed values are trimmed
+// before parsing, and a whitespace-only value reads as UNSET — silent
+// default, no warning. The pre-envx loaders warned on whitespace-only input;
+// the fleet-standard semantics win, and this test is the record of that
+// deliberate change.
+func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
+	t.Run("whitespace-only is unset, silent", func(t *testing.T) {
+		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "   ", "DUMP_KEEP": "\t"})
+		if cfg.DumpTimeout != DefaultDumpTimeout {
+			t.Errorf("DumpTimeout = %s, want default %s", cfg.DumpTimeout, DefaultDumpTimeout)
+		}
+		if cfg.DumpKeep != DefaultDumpKeep {
+			t.Errorf("DumpKeep = %d, want default %d", cfg.DumpKeep, DefaultDumpKeep)
+		}
+		if len(warns) != 0 {
+			t.Errorf("whitespace-only values must read as unset without warnings, got %v", warns)
+		}
+	})
+	t.Run("surrounding whitespace is trimmed, value honored", func(t *testing.T) {
+		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": " 3 "})
+		if cfg.DumpKeep != 3 {
+			t.Errorf("DumpKeep = %d, want 3 (typed parse trims)", cfg.DumpKeep)
+		}
+		if len(warns) != 0 {
+			t.Errorf("want no warnings for a trimmed valid value, got %v", warns)
+		}
+	})
+	t.Run("malformed warning renders the trimmed value", func(t *testing.T) {
+		_, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": " bad "})
+		want := Warning(`DUMP_KEEP "bad" is not a positive integer; using default 7`)
+		if len(warns) != 1 || warns[0] != want {
+			t.Errorf("warnings = %v, want exactly [%q]", warns, want)
+		}
+	})
+}

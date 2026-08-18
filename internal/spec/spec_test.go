@@ -68,7 +68,7 @@ func TestParseSpecs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			specs := ParseSpecs(tt.raw)
+			specs := Parse(tt.raw)
 			if len(specs) != tt.wantCount {
 				t.Fatalf("count = %d, want %d", len(specs), tt.wantCount)
 			}
@@ -86,7 +86,7 @@ func TestParseSpecs(t *testing.T) {
 
 func TestParseSpecsNeverDropsTokens(t *testing.T) {
 	raw := "a:b:c d e:f:g:h i:1:j:k"
-	if got := len(ParseSpecs(raw)); got != 4 {
+	if got := len(Parse(raw)); got != 4 {
 		t.Fatalf("got %d specs for 4 tokens; tokens must never be dropped", got)
 	}
 }
@@ -96,7 +96,7 @@ func TestParseSpecsNeverDropsTokens(t *testing.T) {
 // would reject port 1, and `port > 65535` -> `port >= 65535` would reject port
 // 65535. Both extremes must parse as valid with the exact port preserved.
 func TestParseSpecsPortBoundaries(t *testing.T) {
-	low := ParseSpecs("host:1:db:user")
+	low := Parse("host:1:db:user")
 	if len(low) != 1 || low[0].Invalid != "" {
 		t.Fatalf("port 1 should be valid, got %+v", low)
 	}
@@ -104,7 +104,7 @@ func TestParseSpecsPortBoundaries(t *testing.T) {
 		t.Errorf("port = %d, want 1 (lower boundary)", low[0].Port)
 	}
 
-	high := ParseSpecs("host:65535:db:user")
+	high := Parse("host:65535:db:user")
 	if len(high) != 1 || high[0].Invalid != "" {
 		t.Fatalf("port 65535 should be valid, got %+v", high)
 	}
@@ -120,7 +120,7 @@ func TestParseSpecsPortBoundaries(t *testing.T) {
 // rejected. With the default port 5432 (4 digits) and the "_" separator, a
 // 250-char host yields a 255-byte ServerDir and a 251-char host a 256-byte one.
 func TestParseSpecsServerDirLengthBoundary(t *testing.T) {
-	atLimit := ParseSpecs(strings.Repeat("a", 250) + ":db:user")
+	atLimit := Parse(strings.Repeat("a", 250) + ":db:user")
 	if len(atLimit) != 1 {
 		t.Fatalf("count = %d, want 1", len(atLimit))
 	}
@@ -132,7 +132,7 @@ func TestParseSpecsServerDirLengthBoundary(t *testing.T) {
 			maxServerDirLen, atLimit[0].Invalid)
 	}
 
-	over := ParseSpecs(strings.Repeat("a", 251) + ":db:user")
+	over := Parse(strings.Repeat("a", 251) + ":db:user")
 	if len(over) != 1 || over[0].Invalid == "" {
 		t.Errorf("a ServerDir of %d bytes (one over the limit) must be rejected, got %+v", maxServerDirLen+1, over)
 	}

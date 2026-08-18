@@ -31,13 +31,13 @@ func TestDueForStartupDump(t *testing.T) {
 	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
 
 	t.Run("no dumps means due", func(t *testing.T) {
-		if !DueForStartupDump(t.TempDir(), interval, now) {
+		if !DueForStartup(t.TempDir(), interval, now) {
 			t.Fatal("empty dump dir: want due (no dump yet)")
 		}
 	})
 
 	t.Run("missing dir means due", func(t *testing.T) {
-		if !DueForStartupDump(filepath.Join(t.TempDir(), "nope"), interval, now) {
+		if !DueForStartup(filepath.Join(t.TempDir(), "nope"), interval, now) {
 			t.Fatal("missing dump dir: want due")
 		}
 	})
@@ -45,7 +45,7 @@ func TestDueForStartupDump(t *testing.T) {
 	t.Run("fresh dump in a server subdir suppresses startup", func(t *testing.T) {
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "app.dump"), now.Add(-1*time.Hour))
-		if DueForStartupDump(dir, interval, now) {
+		if DueForStartup(dir, interval, now) {
 			t.Fatal("a dump 1h old (< 24h interval): want NOT due")
 		}
 	})
@@ -53,7 +53,7 @@ func TestDueForStartupDump(t *testing.T) {
 	t.Run("stale dump triggers startup", func(t *testing.T) {
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "app.dump"), now.Add(-48*time.Hour))
-		if !DueForStartupDump(dir, interval, now) {
+		if !DueForStartup(dir, interval, now) {
 			t.Fatal("a dump 48h old (>= 24h interval): want due")
 		}
 	})
@@ -64,7 +64,7 @@ func TestDueForStartupDump(t *testing.T) {
 		// artifact of this app and must not suppress the startup dump.
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(dir, "app.dump"), now.Add(-1*time.Hour))
-		if !DueForStartupDump(dir, interval, now) {
+		if !DueForStartup(dir, interval, now) {
 			t.Fatal("only a root-level dump present: want due (root is not the layout)")
 		}
 	})
@@ -73,7 +73,7 @@ func TestDueForStartupDump(t *testing.T) {
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h1_5432"), "app.dump"), now.Add(-48*time.Hour)) // stale
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h2_5432"), "app.dump"), now.Add(-1*time.Hour))  // fresh
-		if DueForStartupDump(dir, interval, now) {
+		if DueForStartup(dir, interval, now) {
 			t.Fatal("one fresh dump among stale ones: want NOT due (newest wins)")
 		}
 	})
@@ -84,7 +84,7 @@ func TestDueForStartupDump(t *testing.T) {
 		// a recent dump (in a subdir so the suffix filter, not the root
 		// ignore, is what this case pins).
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "notes.txt"), now.Add(-1*time.Hour))
-		if !DueForStartupDump(dir, interval, now) {
+		if !DueForStartup(dir, interval, now) {
 			t.Fatal("only a non-dump file present: want due (no dump artifact)")
 		}
 	})
@@ -92,7 +92,7 @@ func TestDueForStartupDump(t *testing.T) {
 	t.Run("boundary: exactly one interval old is due", func(t *testing.T) {
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "app.dump"), now.Add(-interval))
-		if !DueForStartupDump(dir, interval, now) {
+		if !DueForStartup(dir, interval, now) {
 			t.Fatal("a dump exactly one interval old: want due (>= boundary)")
 		}
 	})

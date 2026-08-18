@@ -27,7 +27,7 @@ unauthenticated path to arbitrary command execution.
 | Silent backup corruption             | each dump is verified after creation; atomic write (temp→rename)                                            | dump + verify tests               |
 | Credential exposure                  | DB credentials come from config/env, never logged; redaction on error paths                                 | source review                     |
 | Privilege escalation at runtime      | runs as non-root (UID 65532); `cap_drop: [ALL]`; file-marker Docker healthcheck (`pg-autodump health`)      | Dockerfile, healthcheck           |
-| Resource exhaustion                  | single-flight guard bounds concurrent runs; `DB_SPECS` parsing is fuzzed                                    | `FuzzParseSpecs`, `httpapi` tests |
+| Resource exhaustion                  | single-flight guard bounds concurrent runs; `DB_SPECS` parsing is fuzzed                                    | `FuzzParse`, `httpapi` tests      |
 
 ## Residual risks
 

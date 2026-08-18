@@ -58,7 +58,7 @@ func TestParseSpecsDedupeKeyKeepsColonBearingHostsDistinct(t *testing.T) {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			specs := ParseSpecs(tc.raw)
+			specs := Parse(tc.raw)
 			if len(specs) != len(tc.wantDup) {
 				t.Fatalf("len(specs) = %d, want %d", len(specs), len(tc.wantDup))
 			}
@@ -149,7 +149,7 @@ func FuzzParseSpecsDedupeKeyInjective(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, raw string) {
-		specs := ParseSpecs(raw)
+		specs := Parse(raw)
 		seen := make(map[triple]string, len(specs))
 
 		for i, s := range specs {

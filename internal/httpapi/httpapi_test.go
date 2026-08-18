@@ -15,8 +15,8 @@ import (
 
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v3"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/scheduler/v4"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
@@ -131,30 +131,40 @@ func TestDumpFailureBodyOmitsStderr(t *testing.T) {
 
 func TestAuthRequired(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "sekret")
-	if rec := post(t, srv, ""); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("missing token: status = %d, want 401", rec.Code)
+	// One rejection class per named subtest: a regression in one arm must
+	// not hide the others behind the first Fatal.
+	rejected := map[string]string{
+		"missing token":         "",
+		"non-bearer scheme":     "Basic sekret",
+		"empty presented token": "Bearer ",
+		"prefix-matching token": "Bearer sekret-with-suffix",
+		"wrong token":           "Bearer wrong",
 	}
-	if rec := post(t, srv, "Basic sekret"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("non-bearer scheme: status = %d, want 401", rec.Code)
+	for name, header := range rejected {
+		t.Run(name, func(t *testing.T) {
+			if rec := post(t, srv, header); rec.Code != http.StatusUnauthorized {
+				t.Errorf("status = %d, want 401", rec.Code)
+			}
+		})
 	}
-	if rec := post(t, srv, "Bearer "); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("empty presented token: status = %d, want 401", rec.Code)
-	}
-	if rec := post(t, srv, "Bearer sekret-with-suffix"); rec.Code != http.StatusUnauthorized {
-		t.Fatalf("prefix-matching token: status = %d, want 401", rec.Code)
-	}
-	rec := post(t, srv, "Bearer wrong")
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("wrong token: status = %d, want 401", rec.Code)
-	}
-	// The rejection is http.Error's plain "unauthorized" — the same body,
-	// status, and Content-Type as before the webhttp verifier switch.
-	if got := rec.Body.String(); got != "unauthorized\n" {
-		t.Fatalf("401 body = %q, want %q", got, "unauthorized\n")
-	}
-	if rec := post(t, srv, "Bearer sekret"); rec.Code == http.StatusUnauthorized {
-		t.Fatalf("correct token rejected: status = %d", rec.Code)
-	}
+	t.Run("rejection body is http.Error's plain unauthorized", func(t *testing.T) {
+		// Status and body asserted on the SAME response: the pre-subtest test
+		// coupled them, and the coupling is the point — the 401 must carry
+		// http.Error's plain body, the same shape as before the webhttp
+		// verifier switch.
+		rec := post(t, srv, "Bearer wrong")
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want 401", rec.Code)
+		}
+		if got := rec.Body.String(); got != "unauthorized\n" {
+			t.Errorf("401 body = %q, want %q", got, "unauthorized\n")
+		}
+	})
+	t.Run("correct token accepted", func(t *testing.T) {
+		if rec := post(t, srv, "Bearer sekret"); rec.Code == http.StatusUnauthorized {
+			t.Errorf("correct token rejected: status = %d", rec.Code)
+		}
+	})
 }
 
 // TestVerifierFailsClosedOnEmptyConfigured pins the contract the auth gate

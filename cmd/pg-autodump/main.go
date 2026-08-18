@@ -25,16 +25,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
+	"github.com/cplieger/atomicfile/v3"
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/webhttp/v2"
 )
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }
@@ -364,7 +364,7 @@ func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trig
 	// crash/restart loop must not become a dump loop). The run goes through the
 	// shared single-flight guard, so it is cancelled by the same drain path as
 	// any other run on shutdown.
-	if dump.DueForStartupDump(dumpDir, interval, time.Now()) && ctx.Err() == nil {
+	if dump.DueForStartup(dumpDir, interval, time.Now()) && ctx.Err() == nil {
 		switch _, ok, err := trigger.Run(); {
 		case err != nil:
 			log.Error("startup dump failed; cycle coordination error", "err", err)
@@ -376,7 +376,7 @@ func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trig
 	}
 
 	// scheduler.RunLoop drives the recurring ticks. No FireOnStart: the startup
-	// dump above is conditional (DueForStartupDump), unlike an unconditional
+	// dump above is conditional (DueForStartup), unlike an unconditional
 	// fire-on-start. RunLoop re-checks ctx before each tick — so a pending tick
 	// racing a fresh SIGTERM never launches a run the drain then abandons — and
 	// returns when ctx is cancelled.

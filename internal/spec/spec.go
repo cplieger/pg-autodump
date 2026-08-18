@@ -40,7 +40,7 @@ type DBSpec struct {
 	Duplicate bool // true => Invalid because it duplicates an earlier host:port:dbname
 }
 
-// ParseSpecs splits raw on whitespace and validates each tuple. Every token
+// Parse splits raw on whitespace and validates each tuple. Every token
 // yields exactly one DBSpec (valid or Invalid); tokens are never dropped
 // silently. Duplicate (host, port, dbname) keys keep the first occurrence and
 // mark later ones Invalid. The returned slice preserves input order.
@@ -70,7 +70,7 @@ type DBSpec struct {
 // escaped. Nothing persists the key: `seen` is a local map that lives for the
 // duration of this call. In particular it is NOT the artifact path — that is
 // ServerDir, which is deliberately left alone (see its doc comment).
-func ParseSpecs(raw string) []DBSpec {
+func Parse(raw string) []DBSpec {
 	tokens := strings.Fields(raw)
 	specs := make([]DBSpec, 0, len(tokens))
 	seen := make(map[string]struct{}, len(tokens))

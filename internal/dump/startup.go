@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// DueForStartupDump reports whether the built-in scheduler should run one dump
+// DueForStartup reports whether the built-in scheduler should run one dump
 // at startup. It returns true when no dump artifact under dumpDir is newer than
 // one interval (including when there are none at all). This closes the
 // restart-starvation gap: the ticker's first fire is one full interval after
@@ -18,7 +18,7 @@ import (
 // clock (file mtimes are wall-clock); a dump with a future mtime (a backward
 // clock step) reads as fresh and suppresses the startup dump, which is the safe
 // direction (never destroys budget on a redundant run).
-func DueForStartupDump(dumpDir string, interval time.Duration, now time.Time) bool {
+func DueForStartup(dumpDir string, interval time.Duration, now time.Time) bool {
 	newest, found := newestDumpModTime(dumpDir)
 	if !found {
 		return true

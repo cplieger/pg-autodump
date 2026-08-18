@@ -1,6 +1,11 @@
 // Package config is the single environment-reading layer. os.Getenv appears
 // nowhere else in the codebase (per go.md): every tunable is a typed Config
-// field populated once at startup by Load and never mutated. No database
+// field populated once at startup by Load and never mutated. Typed reads go
+// through envx's injectable Source (built over the getenv Load receives, so
+// the run(args, getenv) test seam survives); the strict variants return the
+// parse result to Load, which owns this app's warning policy — warnings
+// accumulate into a slice the caller logs once at startup, they do not go to
+// slog mid-parse. No database
 // password is ever a Config field; pg_dump reads .pgpass (or the
 // libpq-owned PGPASSWORD) itself, so DB passwords never transit memory
 // this package logs or formats. The lone secret this package holds is
@@ -9,14 +14,16 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/cplieger/pathinside"
+	"github.com/cplieger/envx/v2"
+	"github.com/cplieger/pathinside/v2"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // Defaults for every tunable. Exported so tests and docs share one source.
@@ -65,6 +72,7 @@ type Warning string
 // internal/spec and reported per-DB by the orchestrator, never here.
 func Load(getenv func(string) string) (Config, []Warning, error) {
 	var w warnings
+	src := envx.Source{Get: getenv}
 	dumpDir, dumpDirErr := loadDumpDir(getenv("DUMP_DIR"))
 	cfg := Config{
 		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), DefaultListenAddr),
@@ -76,21 +84,31 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	// Each token is validated independently in internal/spec; a malformed one
 	// (control characters, bad shape, traversal) becomes an Invalid spec the
 	// orchestrator reports and skips, so one bad entry never blocks the rest.
-	cfg.Specs = spec.ParseSpecs(getenv("DB_SPECS"))
+	cfg.Specs = spec.Parse(getenv("DB_SPECS"))
 
-	cfg.DumpTimeout = loadDumpTimeout(getenv("DUMP_TIMEOUT"), &w)
+	cfg.DumpTimeout = loadDumpTimeout(src, &w)
 	// Server-side statement_timeout sits ABOVE the Go DumpTimeout so the Go
 	// deadline fires first (clean "timeout" class); the server-side bound only
 	// matters for an uncleanly-dropped network path, where it self-aborts the
 	// backend rather than aborting a legitimate long COPY.
 	cfg.StmtTimeout = cfg.DumpTimeout + stmtTimeoutSlack
-	cfg.DumpConcurrency = loadPositiveInt(getenv("DUMP_CONCURRENCY"), "DUMP_CONCURRENCY", DefaultConcurrency, &w)
-	cfg.DumpInterval = loadInterval(getenv("DUMP_INTERVAL"), &w)
-	cfg.DumpKeep = loadPositiveInt(getenv("DUMP_KEEP"), "DUMP_KEEP", DefaultDumpKeep, &w)
-	cfg.FreeKBWarn = loadFreeKB(getenv("DUMP_FREE_KB_WARN"), &w)
-	cfg.ShutdownGrace = loadShutdownGrace(getenv("SHUTDOWN_GRACE"), cfg.DumpTimeout, &w)
+	cfg.DumpConcurrency = loadPositiveInt(src, "DUMP_CONCURRENCY", DefaultConcurrency, &w)
+	cfg.DumpInterval = loadInterval(src, &w)
+	cfg.DumpKeep = loadPositiveInt(src, "DUMP_KEEP", DefaultDumpKeep, &w)
+	cfg.FreeKBWarn = loadFreeKB(src, &w)
+	cfg.ShutdownGrace = loadShutdownGrace(src, cfg.DumpTimeout, &w)
 
 	return cfg, w, dumpDirErr
+}
+
+// rawValue extracts the offending raw string from a strict-getter error for
+// this package's warning lines; envx's *ParseError carries the trimmed value.
+func rawValue(err error) string {
+	var perr *envx.ParseError
+	if errors.As(err, &perr) {
+		return perr.Value
+	}
+	return ""
 }
 
 // warnings accumulates non-fatal notes; the addf helper keeps call sites terse.
@@ -119,14 +137,16 @@ func loadDumpDir(v string) (string, error) {
 	return v, nil
 }
 
-func loadDumpTimeout(v string, w *warnings) time.Duration {
-	if v == "" {
-		return DefaultDumpTimeout
-	}
-	secs, err := strconv.Atoi(v)
+func loadDumpTimeout(src envx.Source, w *warnings) time.Duration {
+	secs, ok, err := src.IntStrict("DUMP_TIMEOUT")
 	switch {
-	case err != nil || secs <= 0:
-		w.addf("DUMP_TIMEOUT %q is not a positive integer; using default %s", v, DefaultDumpTimeout)
+	case err != nil:
+		w.addf("DUMP_TIMEOUT %q is not a positive integer; using default %s", rawValue(err), DefaultDumpTimeout)
+		return DefaultDumpTimeout
+	case !ok:
+		return DefaultDumpTimeout
+	case secs <= 0:
+		w.addf("DUMP_TIMEOUT %q is not a positive integer; using default %s", strconv.Itoa(secs), DefaultDumpTimeout)
 		return DefaultDumpTimeout
 	case time.Duration(secs)*time.Second < MinDumpTimeout:
 		w.addf("DUMP_TIMEOUT %ds below minimum; clamped to %s", secs, MinDumpTimeout)
@@ -140,38 +160,44 @@ func loadDumpTimeout(v string, w *warnings) time.Duration {
 // back to def (with a warning) on an empty, malformed, or non-positive
 // value. Shared by DUMP_CONCURRENCY and DUMP_KEEP, which carry the
 // identical "positive int or default" contract.
-func loadPositiveInt(v, name string, def int, w *warnings) int {
-	if v == "" {
+func loadPositiveInt(src envx.Source, key envx.Key, def int, w *warnings) int {
+	n, ok, err := src.IntStrict(key)
+	switch {
+	case err != nil:
+		w.addf("%s %q is not a positive integer; using default %d", key, rawValue(err), def)
 		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil || n < 1 {
-		w.addf("%s %q is not a positive integer; using default %d", name, v, def)
+	case !ok:
 		return def
+	case n < 1:
+		w.addf("%s %q is not a positive integer; using default %d", key, strconv.Itoa(n), def)
+		return def
+	default:
+		return n
 	}
-	return n
 }
 
-func loadInterval(v string, w *warnings) time.Duration {
+func loadInterval(src envx.Source, w *warnings) time.Duration {
 	// Matches the sibling schedulers (SYNC_INTERVAL / FCLONES_INTERVAL /
 	// SCHED_INTERVAL): the built-in timer runs by default; "off", "disabled",
 	// or a zero duration ("0"/"0s") hands scheduling to an external trigger
-	// (e.g. Ofelia). Unparseable values fall back to the default.
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return DefaultDumpInterval
-	}
-	switch strings.ToLower(v) {
+	// (e.g. Ofelia). Unparseable values fall back to the default. The
+	// off/disabled sentinels and the negative-disables policy are this app's
+	// (scheduler.ParseInterval maps negative to the default, not to
+	// disabled), so the sentinel check reads the raw value and only the
+	// duration parse goes through envx.
+	switch strings.ToLower(strings.TrimSpace(src.String("DUMP_INTERVAL", ""))) {
 	case "off", "disabled":
 		return 0
 	}
-	d, err := time.ParseDuration(v)
+	d, ok, err := src.DurationStrict("DUMP_INTERVAL")
 	switch {
 	case err != nil:
-		w.addf("DUMP_INTERVAL %q is not a valid duration; using default %s (set \"off\" to disable)", v, DefaultDumpInterval)
+		w.addf("DUMP_INTERVAL %q is not a valid duration; using default %s (set \"off\" to disable)", rawValue(err), DefaultDumpInterval)
+		return DefaultDumpInterval
+	case !ok:
 		return DefaultDumpInterval
 	case d < 0:
-		w.addf("DUMP_INTERVAL %q is negative; built-in timer disabled (use a positive duration or 'off')", v)
+		w.addf("DUMP_INTERVAL %q is negative; built-in timer disabled (use a positive duration or 'off')", d.String())
 		return 0
 	case d == 0:
 		return 0
@@ -180,26 +206,36 @@ func loadInterval(v string, w *warnings) time.Duration {
 	}
 }
 
-func loadFreeKB(v string, w *warnings) int64 {
-	if v == "" {
+// loadFreeKB reads DUMP_FREE_KB_WARN via IntStrict; int is 64-bit on both
+// fleet platforms (amd64, arm64), so the old ParseInt(v, 10, 64) range is
+// unchanged.
+func loadFreeKB(src envx.Source, w *warnings) int64 {
+	kb, ok, err := src.IntStrict("DUMP_FREE_KB_WARN")
+	switch {
+	case err != nil:
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer; using default %d", rawValue(err), DefaultFreeKBWarn)
 		return DefaultFreeKBWarn
-	}
-	kb, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || kb < 0 {
-		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer; using default %d", v, DefaultFreeKBWarn)
+	case !ok:
 		return DefaultFreeKBWarn
+	case kb < 0:
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer; using default %d", strconv.Itoa(kb), DefaultFreeKBWarn)
+		return DefaultFreeKBWarn
+	default:
+		return int64(kb)
 	}
-	return kb
 }
 
-func loadShutdownGrace(v string, dumpTimeout time.Duration, w *warnings) time.Duration {
+func loadShutdownGrace(src envx.Source, dumpTimeout time.Duration, w *warnings) time.Duration {
 	derived := dumpTimeout + shutdownSlack
-	if v == "" {
+	secs, ok, err := src.IntStrict("SHUTDOWN_GRACE")
+	switch {
+	case err != nil:
+		w.addf("SHUTDOWN_GRACE %q is not a positive integer; using derived %s", rawValue(err), derived)
 		return derived
-	}
-	secs, err := strconv.Atoi(v)
-	if err != nil || secs <= 0 {
-		w.addf("SHUTDOWN_GRACE %q is not a positive integer; using derived %s", v, derived)
+	case !ok:
+		return derived
+	case secs <= 0:
+		w.addf("SHUTDOWN_GRACE %q is not a positive integer; using derived %s", strconv.Itoa(secs), derived)
 		return derived
 	}
 	grace := time.Duration(secs) * time.Second

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
+	"github.com/cplieger/atomicfile/v3"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
@@ -258,7 +258,7 @@ func (o *Orchestrator) ensureServerDir(dir string) error {
 		return err
 	}
 	_, err := atomicfile.EnsurePrivateDir(dir,
-		atomicfile.WithLogger(o.log), atomicfile.WithRepairOwnedDir())
+		atomicfile.WithLogger(o.log), atomicfile.WithRepairOwnedDir(true))
 	return err
 }
 

@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
+	"github.com/cplieger/atomicfile/v3"
 )
 
 // reclaimAllOrphans is the maxAge passed to atomicfile.CleanupStaleTemps when

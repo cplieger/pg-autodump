@@ -26,7 +26,7 @@ func TestParseSpecsIPv6(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			specs := ParseSpecs(tt.raw)
+			specs := Parse(tt.raw)
 			if len(specs) != 1 {
 				t.Fatalf("len(specs) = %d, want 1", len(specs))
 			}
@@ -54,7 +54,7 @@ func TestParseSpecsIPv6(t *testing.T) {
 // they dedup to one spec (the second is marked Duplicate) and would map to one
 // artifact path rather than two redundant backups.
 func TestParseSpecsIPv6Canonicalization(t *testing.T) {
-	specs := ParseSpecs("[2001:DB8::1]:5432:app:ro [2001:db8:0:0:0:0:0:1]:5432:app:ro")
+	specs := Parse("[2001:DB8::1]:5432:app:ro [2001:db8:0:0:0:0:0:1]:5432:app:ro")
 	if len(specs) != 2 {
 		t.Fatalf("len(specs) = %d, want 2", len(specs))
 	}
@@ -72,7 +72,7 @@ func TestParseSpecsIPv6Canonicalization(t *testing.T) {
 // A bracketed IPv4 and the equivalent bare IPv4 are the same identity: they
 // canonicalize to the same host and collapse to one spec.
 func TestParseSpecsBracketedIPv4UnifiesWithBare(t *testing.T) {
-	specs := ParseSpecs("[192.0.2.1]:5432:app:ro 192.0.2.1:5432:app:ro")
+	specs := Parse("[192.0.2.1]:5432:app:ro 192.0.2.1:5432:app:ro")
 	if len(specs) != 2 {
 		t.Fatalf("len(specs) = %d, want 2", len(specs))
 	}
@@ -88,7 +88,7 @@ func TestParseSpecsBracketedIPv4UnifiesWithBare(t *testing.T) {
 // component limit is rejected at parse as invalid, never failed mid-run.
 func TestParseSpecsOverlongHostRejected(t *testing.T) {
 	long := strings.Repeat("a", 260)
-	specs := ParseSpecs(long + ":5432:app:ro")
+	specs := Parse(long + ":5432:app:ro")
 	if len(specs) != 1 {
 		t.Fatalf("len(specs) = %d, want 1", len(specs))
 	}

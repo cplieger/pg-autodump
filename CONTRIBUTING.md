@@ -90,7 +90,7 @@ govulncheck ./...
 The spec parser is fuzzed; run the target directly when touching it:
 
 ```sh
-go test ./internal/spec -run '^$' -fuzz '^FuzzParseSpecs$' -fuzztime 30s
+go test ./internal/spec -run '^$' -fuzz '^FuzzParse$' -fuzztime 30s
 ```
 
 BuildKit checks are errors (`# check=error=true`), so an image build also
@@ -104,7 +104,7 @@ docker build -t pg-autodump .
 CI runs the same battery via the shared `cplieger/ci` reusable workflow
 (`.github/workflows/ci.yaml`; synced, do not edit). Fuzz targets run on
 the weekly schedule; a counterexample opens an issue, fixed by committing
-the minimized seed under `internal/spec/testdata/fuzz/FuzzParseSpecs/`.
+the minimized seed under `internal/spec/testdata/fuzz/FuzzParse/`.
 
 ## Commits and PRs
 

@@ -406,7 +406,8 @@ func TestFinishDiagErrAttr(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(
 			&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, Detail: "connect_error"},
-			errors.New("dial tcp 10.0.0.1:5432: connect: connection refused"))
+			errors.New("dial tcp 10.0.0.1:5432: connect: connection refused"),
+		)
 		if _, ok := rec.AttrValue("dump connect_error", "err"); !ok {
 			t.Fatal("finish omitted err when the probe diagnostic differs from detail; want it logged for the operator")
 		}
@@ -416,7 +417,8 @@ func TestFinishDiagErrAttr(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(
 			&Result{Host: "h", DBName: "db", Reason: ReasonOther, Detail: "boom"},
-			errors.New("boom"))
+			errors.New("boom"),
+		)
 		requireCompletionLine(t, rec, "dump other")
 		if _, ok := rec.AttrValue("dump other", "err"); ok {
 			t.Fatalf("finish logged err when the diagnostic equals detail; want it omitted (no duplicate of the same text)")

@@ -44,12 +44,10 @@ func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(conte
 			return results
 		case sem <- struct{}{}:
 		}
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
+		wg.Go(func() {
 			defer func() { <-sem }()
 			results[i] = dumpOne(ctx, &specs[i])
-		}(i)
+		})
 	}
 
 	wg.Wait()

@@ -104,8 +104,7 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 // rawValue extracts the offending raw string from a strict-getter error for
 // this package's warning lines; envx's *ParseError carries the trimmed value.
 func rawValue(err error) string {
-	var perr *envx.ParseError
-	if errors.As(err, &perr) {
+	if perr, ok := errors.AsType[*envx.ParseError](err); ok {
 		return perr.Value
 	}
 	return ""

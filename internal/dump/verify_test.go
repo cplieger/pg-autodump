@@ -179,11 +179,15 @@ func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 	}
 }
 
-// When pending.Commit fails for a real filesystem reason while the context is
-// still live, stageAndReplace must classify the outcome as rename_failed -- not
-// killed/timeout and not ok. Pre-creating the target as a directory makes
-// atomicfile's final rename (temp -> target) fail with a non-context error, the
-// only deterministic way to reach the rename_failed branch.
+// When the target cannot be replaced for a real filesystem reason while the
+// context is still live, stageAndReplace must classify the outcome as
+// rename_failed -- not killed/timeout and not ok. Pre-creating the target as a
+// directory is the deterministic way to reach it: atomicfile refuses a
+// non-regular write target up front (ErrNotRegular at NewPendingFile) rather
+// than staging a whole dump for a rename that cannot succeed, so this arrives
+// at the temp-create gate. The reason word is the same either way, which is the
+// point -- the operator fact is "the prior dump is intact and the new one could
+// not be put in place", not which syscall noticed.
 func TestStageAndReplaceCommitRenameFailedLiveCtx(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "app.dump"), 0o755); err != nil {

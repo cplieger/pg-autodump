@@ -1,6 +1,7 @@
 package dump
 
 import (
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ const reclaimAllOrphans = time.Nanosecond
 // clean removal. Best-effort: unreadable directories are skipped and per-file
 // failures are handled inside CleanupStaleTemps; only the outcome is logged
 // here.
-func ReclaimOrphans(dumpDir string, log *slog.Logger) {
+func ReclaimOrphans(ctx context.Context, dumpDir string, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -44,12 +45,12 @@ func ReclaimOrphans(dumpDir string, log *slog.Logger) {
 		// the dumps themselves; the reclaim scan stays best-effort.
 		return
 	}
-	total := reclaimDir(dumpDir, log)
+	total := reclaimDir(ctx, dumpDir, log)
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
 		}
-		total += reclaimDir(filepath.Join(dumpDir, e.Name()), log)
+		total += reclaimDir(ctx, filepath.Join(dumpDir, e.Name()), log)
 	}
 	if total > 0 {
 		log.Info("reclaimed stale temp files", "dir", dumpDir, "count", total)
@@ -58,11 +59,11 @@ func ReclaimOrphans(dumpDir string, log *slog.Logger) {
 
 // reclaimDir reaps the package-recognized stale temps in one directory,
 // returning the count removed. Failures are logged at Warn and count as zero.
-func reclaimDir(dir string, log *slog.Logger) int {
-	removed, err := atomicfile.CleanupStaleTemps(dir, reclaimAllOrphans)
+func reclaimDir(ctx context.Context, dir string, log *slog.Logger) int {
+	res, err := atomicfile.CleanupStaleTemps(ctx, dir, reclaimAllOrphans)
 	if err != nil {
 		log.Warn("stale temp cleanup failed", "dir", dir, "err", err)
-		return 0
+		return res.Removed
 	}
-	return removed
+	return res.Removed
 }

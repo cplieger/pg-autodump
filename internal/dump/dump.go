@@ -113,7 +113,7 @@ func absDumpDir(dir string) string {
 // section documents the Loki absence rule that keys on it to catch a silent
 // non-run of this backup-critical sidecar, not just a loud per-DB failure.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
-	ReclaimOrphans(o.dumpDir, o.log)
+	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()
 
 	results := make([]Result, len(o.specs))

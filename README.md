@@ -129,7 +129,7 @@ docker run --rm \
 
 | Variable | Description | Default | Required |
 | --- | --- | --- | --- |
-| `DB_SPECS` | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped. | - | Yes |
+| `DB_SPECS` | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped. | _none_ | Yes |
 | `PGPASSFILE` | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user). | `/secrets/.pgpass` | No |
 | `DUMP_DIR` | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value with a `..` path component is **fatal**: startup aborts rather than silently relocate backups to the default. Names that merely contain dots (`/dumps/a..b`) are fine. | `/dumps` | No |
 | `DUMP_TIMEOUT` | Per-dump seconds (min 10). | `300` | No |
@@ -139,9 +139,9 @@ docker run --rm \
 | `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables. | `1048576` | No |
 | `AUTH_TOKEN` | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback. | `""` | No |
 | `LISTEN_ADDR` | HTTP listen address. | `:9847` | No |
-| `SHUTDOWN_TIMEOUT` | Drain budget on SIGTERM (Go duration, e.g. `315s`). Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp). | `DUMP_TIMEOUT+15s` | No |
+| `SHUTDOWN_TIMEOUT` | Drain budget on SIGTERM (Go duration, for example `315s`). Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp). | `DUMP_TIMEOUT+15s` | No |
 
-> **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port may be omitted). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`), or use `PGPASSWORD` instead.
+> **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port is optional). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`), or use `PGPASSWORD` instead.
 
 ### Volumes
 
@@ -287,11 +287,13 @@ Updated automatically via [Renovate](https://github.com/renovatebot/renovate) an
 | postgresql18-client | [PostgreSQL](https://www.postgresql.org/) |
 | tini | [GitHub](https://github.com/krallin/tini) |
 | github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile) |
+| github.com/cplieger/envx | [GitHub](https://github.com/cplieger/envx) |
 | github.com/cplieger/health | [GitHub](https://github.com/cplieger/health) |
+| github.com/cplieger/keyenc | [GitHub](https://github.com/cplieger/keyenc) |
+| github.com/cplieger/pathinside | [GitHub](https://github.com/cplieger/pathinside) |
 | github.com/cplieger/scheduler | [GitHub](https://github.com/cplieger/scheduler) |
 | github.com/cplieger/slogx | [GitHub](https://github.com/cplieger/slogx) |
 | github.com/cplieger/webhttp | [GitHub](https://github.com/cplieger/webhttp) |
-| pgregory.net/rapid | [pkg.go.dev](https://pkg.go.dev/pgregory.net/rapid) |
 
 `tini` (PID 1) is fetched as the pinned upstream static binary, SHA256-verified per arch, fail-closed.
 
@@ -315,7 +317,7 @@ pg-autodump succeeds `db-dumper`, which ran `pg_dump` via `docker exec` over the
 
 Issues and pull requests are welcome. Please open an issue first for larger
 changes so the approach can be discussed before implementation. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the package layout, load-bearing
+[CONTRIBUTING.md](CONTRIBUTING.md) for the package layout, essential
 invariants, and local checks.
 
 ## Disclaimer

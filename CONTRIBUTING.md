@@ -1,7 +1,7 @@
 # Contributing to pg-autodump
 
 Notes on the layout, local workflow, and conventions specific to this
-repo. Most of it is standard Go, but a few things are load-bearing and
+repo. Most of it is standard Go, but a few things are essential and
 easy to trip over.
 
 ## What this is

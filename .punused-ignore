@@ -1,6 +1,6 @@
 # punused findings adjudicated as false positives. One literal substring per
 # line, matched against punused's output line; full-line `#` comments carry the
-# reason. Invalid-by-construction classes: `.kiro/steering/tools.md`.
+# reason.
 #
 # boundedBuffer is the bounded stderr sink documented at internal/pg/pg.go, and
 # Write exists to satisfy io.Writer. It is assigned to exec.Cmd.Stderr in

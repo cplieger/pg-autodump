@@ -34,7 +34,7 @@ func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 	writeFile(t, subTemp)
 	writeFile(t, keepDump)
 
-	ReclaimOrphans(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if _, err := os.Stat(subTemp); !os.IsNotExist(err) {
 		t.Errorf("%s still exists; want it reclaimed", subTemp)
@@ -62,7 +62,7 @@ func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
 	writeFile(t, operatorFile)
 	writeFile(t, operatorLookalike)
 
-	ReclaimOrphans(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if _, err := os.Stat(leakedProbe); !os.IsNotExist(err) {
 		t.Errorf("leaked preflight probe %s still exists; want it reclaimed", leakedProbe)
@@ -92,7 +92,7 @@ func TestReclaimOrphansLeavesNonTemps(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	ReclaimOrphans(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	if _, err := os.Stat(notTemp); err != nil {
 		t.Errorf("non-temp %s was reclaimed: %v", notTemp, err)
@@ -107,7 +107,7 @@ func TestReclaimOrphansLeavesNonTemps(t *testing.T) {
 // anything.
 func TestReclaimOrphansMissingDirIsNoop(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
-	ReclaimOrphans(dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("reclaim created the missing dir %s", dir)
 	}

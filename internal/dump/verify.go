@@ -2,6 +2,7 @@ package dump
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -98,6 +99,7 @@ func removeDumps(dir string, names []string) (int, error) {
 //
 // Steps:
 //  1. open an atomicfile pending write (mode 0600) in dir;
+//     target is not a regular file            -> rename_failed (prior intact);
 //     ctx already ended                       -> discard, timeout/killed
 //  2. pg.Dump(ctx, conn, pending)            — network pg_dump, local child
 //  3. ctx timeout/cancel                      -> discard, timeout/killed
@@ -113,6 +115,20 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 
 	pending, err := atomicfile.NewPendingFile(ctx, target, atomicfile.WithMode(0o600))
 	if err != nil {
+		// A target occupied by a directory, FIFO, device node or socket is
+		// refused here rather than at Commit: atomicfile validates the write
+		// target up front so a whole dump is not staged for a rename that
+		// cannot succeed. The operator fact is the same one Commit used to
+		// report -- the prior dump is intact and the new one could not be put
+		// in place -- so it classifies as rename_failed. Routing it to
+		// ReasonOther would file it under "cannot create temp file", which
+		// names the wrong thing: the temp is fine, the destination is not.
+		if errors.Is(err, atomicfile.ErrNotRegular) {
+			return Result{
+				Reason: ReasonRenameFailed,
+				Detail: "target is not a regular file: " + err.Error(),
+			}
+		}
 		// A ctx cancel/deadline at temp-create time is a killed/timeout, not a
 		// generic temp-create fault: atomicfile checks ctx before opening the
 		// temp and returns a context-wrapped error on cancel. abortOr mirrors

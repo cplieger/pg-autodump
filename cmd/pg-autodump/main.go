@@ -180,7 +180,7 @@ func runServer(getenv func(string) string) int {
 		log.Error("cycle coordination unavailable; refusing to start", "err", err)
 		return 1
 	}
-	reclaimAtStartup(cfg.DumpDir, log)
+	reclaimAtStartup(ctx, cfg.DumpDir, log)
 
 	guard := &dump.Guard{}
 	orch := newOrchestrator(&cfg, log)
@@ -344,13 +344,13 @@ func drainInFlightDump(guard *dump.Guard, grace time.Duration, log *slog.Logger)
 // be reaped. A busy (or unusable) lock skips the reclaim — every dump cycle
 // reclaims again with the lock held (dump.Orchestrator.Run), so skipping here
 // defers the cleanup, never leaks it.
-func reclaimAtStartup(dumpDir string, log *slog.Logger) {
+func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 	lock, ok, err := scheduler.TryLock(filepath.Join(cycleDir, scheduler.ExclusiveLockName))
 	if err != nil || !ok {
 		return
 	}
 	defer lock.Unlock()
-	dump.ReclaimOrphans(dumpDir, log)
+	dump.ReclaimOrphans(ctx, dumpDir, log)
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL). A deployment

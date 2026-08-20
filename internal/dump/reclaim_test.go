@@ -112,3 +112,73 @@ func TestReclaimOrphansMissingDirIsNoop(t *testing.T) {
 		t.Errorf("reclaim created the missing dir %s", dir)
 	}
 }
+
+// A temp the sweep SEES and cannot unlink is reported, not silently dropped.
+// This is the only outcome of the three that reaches an operator here:
+// obs.Preflight's ladder probes the DUMP_DIR root only, so a per-server
+// subdirectory that takes a create and refuses an unlink is outside its reach,
+// and dumps keep succeeding because a dump commits with a rename. It also does
+// not self-clear: atomicfile counts ENOENT on either the lstat or the remove as
+// neither removed nor failed, so a benign race with a concurrent preflight
+// probe cannot produce this count.
+//
+// The sticky bit is what separates "cannot unlink" from "cannot write": on a +t
+// directory only the file's owner may unlink, while anyone with write
+// permission may still create. Root bypasses that check, so the test skips
+// rather than asserting a condition the kernel will not produce for it.
+func TestReclaimOrphansReportsUnreclaimableTemps(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the sticky-bit unlink restriction this case needs")
+	}
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "dbhost_5432")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	orphan := filepath.Join(sub, ".atomicfile-789.tmp")
+	writeFile(t, orphan)
+	// r-x only: the entry is listable, so the temp is a candidate, and the
+	// unlink is denied.
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+
+	removed, unreclaimed := reclaimDir(t.Context(), sub, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0: the unlink is denied", removed)
+	}
+	if unreclaimed != 1 {
+		t.Errorf("unreclaimed = %d, want 1: the orphan was seen and could not be unlinked", unreclaimed)
+	}
+	if _, err := os.Stat(orphan); err != nil {
+		t.Errorf("orphan %s should still be there: %v", orphan, err)
+	}
+}
+
+// The flat sweep can never report Unreadable, which is why ReclaimOrphans does
+// not read it: atomicfile increments that counter only for a path BELOW the
+// swept directory, and every sweep here is one directory deep. A subdirectory
+// nobody can enter is therefore invisible to this sweep rather than counted,
+// and the guard against that is the per-server loop visiting each one directly.
+func TestReclaimDirUnreadableSubdirIsNotCounted(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the directory-mode restriction this case needs")
+	}
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "locked")
+	if err := os.MkdirAll(locked, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(locked, ".atomicfile-321.tmp"))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o700) })
+
+	removed, unreclaimed := reclaimDir(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if removed != 0 || unreclaimed != 0 {
+		t.Errorf("reclaimDir(flat) = (%d, %d), want (0, 0): a subdirectory is out of a flat sweep's reach",
+			removed, unreclaimed)
+	}
+}

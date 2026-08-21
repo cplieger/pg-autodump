@@ -334,6 +334,37 @@ func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	}
 }
 
+// A trigger run whose cross-process cycle coordination went fine logs no
+// coordination warning. That warning means the rerun queue-file bookkeeping
+// degraded while the dump itself succeeded — the line an operator chasing a
+// missed rerun looks for — so emitting it after every clean cycle would bury the
+// real one.
+func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
+	var buf bytes.Buffer
+	orch := dump.New(&dump.Params{
+		PG:          &stubPG{},
+		Logger:      discard(),
+		DumpDir:     t.TempDir(),
+		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
+		DumpTimeout: 30 * time.Second,
+		Concurrency: 1,
+	})
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch,
+		slog.New(slog.NewTextHandler(&buf, nil)))
+
+	results, ok, err := trigger.Run()
+
+	if !ok || err != nil {
+		t.Fatalf("Trigger.Run() = (ok=%v, err=%v), want (true, nil)", ok, err)
+	}
+	if len(results) != 1 || results[0].Reason != dump.ReasonOK {
+		t.Fatalf("Trigger.Run() results = %+v, want one ok result", results)
+	}
+	if strings.Contains(buf.String(), "cycle coordination error after run") {
+		t.Errorf("Trigger.Run() on a clean cycle logged a coordination warning, want none: %q", buf.String())
+	}
+}
+
 // A cycle lock held by ANOTHER process (an exec'd `pg-autodump run`) makes
 // POST /dump respond 429 exactly like an in-process contention: the server
 // must never dump concurrently with a one-shot run. The test holds the flock
@@ -397,20 +428,23 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 }
 
 // NewServer wires the server's timeout budget. IdleTimeout is 60s and both the
-// header and full read timeouts are readHeaderTimeout; there is deliberately no
-// WriteTimeout (a dump run holds the response open for minutes). A miscomputed
-// IdleTimeout (e.g. 60/time.Second collapsing to 0) would silently remove the
-// keep-alive idle bound.
+// header and full read timeouts are 10s; there is deliberately no WriteTimeout
+// (a dump run holds the response open for minutes). Each budget is asserted
+// against its intended duration rather than against the constant it is built
+// from: a miscomputed constant (e.g. 60/time.Second or 10/time.Second
+// collapsing to 0) would silently remove the keep-alive idle bound or the
+// slow-header guard while still matching itself.
 func TestServerTimeoutsConfigured(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "")
 	if srv.IdleTimeout != 60*time.Second {
 		t.Errorf("IdleTimeout = %v, want 60s", srv.IdleTimeout)
 	}
-	if srv.ReadHeaderTimeout != readHeaderTimeout {
-		t.Errorf("ReadHeaderTimeout = %v, want %v", srv.ReadHeaderTimeout, readHeaderTimeout)
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s (the slow-header guard)", srv.ReadHeaderTimeout)
 	}
-	if srv.ReadTimeout != readHeaderTimeout {
-		t.Errorf("ReadTimeout = %v, want %v", srv.ReadTimeout, readHeaderTimeout)
+	if srv.ReadTimeout != srv.ReadHeaderTimeout {
+		t.Errorf("ReadTimeout = %v, want the same budget as ReadHeaderTimeout (%v)",
+			srv.ReadTimeout, srv.ReadHeaderTimeout)
 	}
 	if srv.WriteTimeout != 0 {
 		t.Errorf("WriteTimeout = %v, want 0 (a dump run holds the response open by design)", srv.WriteTimeout)

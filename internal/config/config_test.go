@@ -151,10 +151,17 @@ func TestLoadClampsAndWarns(t *testing.T) {
 }
 
 func TestLoadDumpInterval(t *testing.T) {
-	// Default (unset): the built-in timer is on.
+	// Default (unset): the built-in timer is on. main gates the ticker on
+	// DumpInterval > 0, so a non-positive default would silently turn the
+	// periodic dump off and leave a backup sidecar that only ever runs when
+	// something triggers it — with nothing in the log to say so.
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
 	if def.DumpInterval != DefaultDumpInterval {
 		t.Fatalf("default DumpInterval = %s, want %s", def.DumpInterval, DefaultDumpInterval)
+	}
+	if def.DumpInterval <= 0 {
+		t.Fatalf("default DumpInterval = %s, want a positive interval (the built-in timer must be on by default)",
+			def.DumpInterval)
 	}
 
 	cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_INTERVAL": "6h"})
@@ -322,6 +329,15 @@ func TestLoadShutdownTimeoutRejectsBareInteger(t *testing.T) {
 }
 
 func TestLoadDumpTimeout(t *testing.T) {
+	// The default budget has to clear the same minimum the loader enforces on
+	// operator input. A default below it would hand every dump a budget the
+	// loader would have refused from an operator, and at zero the dump context
+	// is already expired when pg_dump starts, so every database fails.
+	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
+	if def.DumpTimeout < MinDumpTimeout {
+		t.Errorf("default DumpTimeout = %s, want at least MinDumpTimeout %s", def.DumpTimeout, MinDumpTimeout)
+	}
+
 	for _, bad := range []string{"abc", "0", "-5"} {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": bad})
 		if cfg.DumpTimeout != DefaultDumpTimeout {

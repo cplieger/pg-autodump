@@ -8,7 +8,12 @@ import (
 	"testing"
 
 	"github.com/cplieger/atomicfile/v3"
+	"github.com/cplieger/slogx/capture"
 )
+
+// reclaimedMsg is the message of ReclaimOrphans's reclaim line, the scope for
+// the capture assertions below.
+const reclaimedMsg = "reclaimed stale temp files"
 
 // writeFile creates a file with marker content, failing the test on error.
 func writeFile(t *testing.T, path string) {
@@ -110,6 +115,75 @@ func TestReclaimOrphansMissingDirIsNoop(t *testing.T) {
 	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("reclaim created the missing dir %s", dir)
+	}
+}
+
+// The reclaim is reported through the logger the CALLER supplied, and the line
+// carries how many temps were removed. That count is the operator's only record
+// that orphans were accumulating in a directory this app stages a dump into
+// every cycle, so it must reach the caller's own logger rather than whatever the
+// process default happens to be.
+func TestReclaimOrphansReportsTheReclaimToTheSuppliedLogger(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "dbhost_5432")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(sub, ".atomicfile-456.tmp"))
+
+	logger, rec := capture.New()
+	ReclaimOrphans(t.Context(), dir, logger)
+
+	got, ok := rec.AttrValue(reclaimedMsg, "count")
+	if !ok {
+		t.Fatalf("ReclaimOrphans(dir with 1 orphan) logged %v, want a %q line on the supplied logger",
+			rec.Messages(), reclaimedMsg)
+	}
+	if got != "1" {
+		t.Errorf("ReclaimOrphans(dir with 1 orphan) logged count = %q, want %q", got, "1")
+	}
+}
+
+// A sweep with nothing to reclaim says nothing at all. Both lines are operator
+// signals — the Info one says orphans were accumulating, the Warn one says they
+// could not be removed and the volume is filling — so a cycle that reclaimed
+// zero temps and failed on none must stay silent, or every clean run reports a
+// problem it does not have.
+func TestReclaimOrphansCleanSweepIsSilent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "dbhost_5432")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	writeFile(t, filepath.Join(sub, "app.dump"))
+
+	logger, rec := capture.New()
+	ReclaimOrphans(t.Context(), dir, logger)
+
+	if rec.Len() != 0 {
+		t.Errorf("ReclaimOrphans(clean dir) logged %v, want no output", rec.Messages())
+	}
+}
+
+// A directory the sweep could read reports no cleanup failure, and the counts it
+// returns are the outcome the caller sums into the reclaim line. reclaimDir's
+// Warn names a dump directory the sweep could not walk, which is a volume-level
+// fault an operator is expected to act on; a readable one must not produce it.
+func TestReclaimDirReadableDirReportsCleanCounts(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".atomicfile-456.tmp"))
+
+	logger, rec := capture.New()
+	removed, unreclaimed := reclaimDir(t.Context(), dir, logger)
+
+	if removed != 1 || unreclaimed != 0 {
+		t.Errorf("reclaimDir(readable dir with 1 orphan) = (%d, %d), want (1, 0)", removed, unreclaimed)
+	}
+	if rec.Len() != 0 {
+		t.Errorf("reclaimDir(readable dir) logged %v, want no output", rec.Messages())
 	}
 }
 

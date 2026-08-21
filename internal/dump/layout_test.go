@@ -93,6 +93,29 @@ func TestRunHostQualifiedIPv6(t *testing.T) {
 	}
 }
 
+// A relative DUMP_DIR still produces dumps. The orchestrator resolves the
+// configured directory to an absolute path once, at construction, because the
+// per-server custody check refuses a relative one: a verdict about
+// "dumps/h_5432" is a statement about wherever the process happens to be
+// standing, which nothing stops another goroutine from changing between the
+// check and the write. Operators have never been required to configure an
+// absolute path, so without that resolution every database in the run would
+// fail mkdir_failed.
+func TestRunRelativeDumpDirStillWritesDumps(t *testing.T) {
+	base := t.TempDir()
+	t.Chdir(base)
+	specs := []spec.DBSpec{{Host: "h", Port: 5432, DBName: "app", User: "u"}}
+
+	res := orchestratorFor(t, "dumps", 1, specs).Run(deadlineCtx(t))
+
+	if res[0].Reason != ReasonOK {
+		t.Fatalf("relative DUMP_DIR %q: reason = %q, want ok (detail %q)", "dumps", res[0].Reason, res[0].Detail)
+	}
+	if _, err := os.Stat(filepath.Join(base, "dumps", "h_5432", "app.dump")); err != nil {
+		t.Errorf("relative DUMP_DIR %q: dump not found under the resolved directory: %v", "dumps", err)
+	}
+}
+
 // When the per-server subdirectory cannot be created (here a regular file
 // occupies its path), that database fails with reason mkdir_failed and a detail
 // naming the directory, and other databases in the run are unaffected.

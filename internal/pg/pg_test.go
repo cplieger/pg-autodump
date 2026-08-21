@@ -1,8 +1,10 @@
 package pg
 
 import (
+	"context"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -59,6 +61,60 @@ func TestNewCommand_ChildRunsInOwnProcessGroup(t *testing.T) {
 	}
 	if childPgid != cmd.Process.Pid {
 		t.Errorf("child pgid = %d, want %d (the child should lead its own group)", childPgid, cmd.Process.Pid)
+	}
+}
+
+// TestNewCommand_CancelSignalsTheWholeGroup is the behavioral half of the
+// group-directed cancel: a cancellation must reach every member of the child's
+// process group, not just the child itself, so a pg client that forked a worker
+// stops with its leader instead of keeping a Postgres connection and a staged
+// temp file alive after the dump was abandoned.
+//
+// The lingering member is a DIRECT child of the test binary that JOINS the
+// child's group, so this test owns it and observes its death at an instant it
+// controls. A descendant forked inside the child cannot serve: it is orphaned
+// the moment the group leader exits, so whether it is ever collected depends on
+// the ambient reaper rather than on the code under test.
+func TestNewCommand_CancelSignalsTheWholeGroup(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	leader := newCommand(ctx, "sleep", "30")
+	if err := leader.Start(); err != nil {
+		t.Fatalf("Start(leader) failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = leader.Process.Kill()
+		_ = leader.Wait()
+	})
+
+	member := exec.Command("sleep", "30")
+	member.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pgid: leader.Process.Pid}
+	if err := member.Start(); err != nil {
+		t.Fatalf("Start(group member) failed: %v", err)
+	}
+	pgid, err := syscall.Getpgid(member.Process.Pid)
+	if err != nil {
+		t.Fatalf("Getpgid(group member) failed: %v", err)
+	}
+	if pgid != leader.Process.Pid {
+		t.Fatalf("group member pgid = %d, want %d: the fixture never joined the child's group, "+
+			"so every assertion below would pass for the wrong reason", pgid, leader.Process.Pid)
+	}
+
+	exited := make(chan error, 1)
+	go func() { exited <- member.Wait() }()
+
+	cancel()
+
+	select {
+	case err := <-exited:
+		if err == nil {
+			t.Errorf("group member exited cleanly (status 0), want termination by the cancel's signal")
+		}
+	case <-time.After(10 * time.Second):
+		_ = member.Process.Kill()
+		t.Error("group member outlived the cancel by 10s: the cancel reached only the child, " +
+			"so a worker forked by pg_dump would survive an abandoned dump")
 	}
 }
 

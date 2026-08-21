@@ -5,6 +5,7 @@ import (
 	"math"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 
 	"github.com/cplieger/slogx/capture"
@@ -146,11 +147,46 @@ func TestStatfsFreeKB(t *testing.T) {
 	}
 }
 
+// The default probe reports KILOBYTES, which is the unit that makes a configured
+// FREE_KB_WARN threshold mean what the operator wrote. The band is the widest
+// honest statement of that unit which needs no second reading of the same
+// drifting filesystem: a kilobyte figure is at least the free-block count (on
+// any filesystem whose blocks are a kilobyte or more) and at most the free-byte
+// count. A figure in blocks or in bytes sits outside the band by orders of
+// magnitude. TestCheckDiskSpaceLogsRealFreeKB below cannot make this statement,
+// because its oracle is this same function: a scaling error moves both sides of
+// that comparison together.
+func TestStatfsFreeKBReportsKilobytes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		t.Fatalf("Statfs(%q) failed: %v", dir, err)
+	}
+	if st.Bsize < 1024 || st.Bavail == 0 {
+		t.Skipf("filesystem backing %q reports bsize=%d bavail=%d; the kilobyte band needs blocks of "+
+			"at least 1KB and some free space", dir, st.Bsize, st.Bavail)
+	}
+	atLeast, atMost := int64(st.Bavail), int64(st.Bavail)*st.Bsize
+
+	freeKB, err := statfsFreeKB(dir)
+	if err != nil {
+		t.Fatalf("statfsFreeKB(%q) unexpected error: %v", dir, err)
+	}
+
+	if freeKB < atLeast || freeKB > atMost {
+		t.Errorf("statfsFreeKB(%q) = %d, want a kilobyte figure in [%d, %d] (bavail=%d blocks of %d bytes)",
+			dir, freeKB, atLeast, atMost, st.Bavail, st.Bsize)
+	}
+}
+
 // End-to-end through the DEFAULT probe: with the warning forced on (threshold
-// MaxInt64) checkDiskSpace warns and logs the real free_kb. The oracle is the
-// same production statfsFreeKB, compared within a generous band that absorbs
-// benign drift between the two reads; an arithmetic error (e.g. dropping the
-// block-size scaling) would move the value by orders of magnitude and fail.
+// MaxInt64) checkDiskSpace warns and logs the real free_kb, so the value an
+// operator reads came from the production probe against the real volume rather
+// than from a stub. The oracle is that same statfsFreeKB, compared within a
+// generous band that absorbs benign drift between the two reads — which means
+// this comparison cannot see a scaling error (it would move both sides
+// together); the unit itself is pinned by TestStatfsFreeKBReportsKilobytes.
 func TestCheckDiskSpaceLogsRealFreeKB(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

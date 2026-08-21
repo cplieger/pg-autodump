@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
+	"github.com/cplieger/atomicfile/v3"
 )
 
 // dumpTimeFormat is the UTC timestamp embedded in retained dump filenames. It

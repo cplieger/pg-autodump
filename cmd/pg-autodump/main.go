@@ -25,16 +25,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
+	"github.com/cplieger/atomicfile/v3"
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/webhttp/v2"
 )
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }

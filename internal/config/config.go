@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/pathinside"
+	"github.com/cplieger/pathinside/v2"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/webhttp"
+	"github.com/cplieger/webhttp/v2"
 )
 
 // Defaults for every tunable. Exported so tests and docs share one source.

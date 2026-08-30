@@ -111,9 +111,9 @@ func TestDumpFailureReturns500(t *testing.T) {
 }
 
 // On an execution-tool failure the response body carries only the reason word,
-// not the raw pg_dump stderr (l-f21 hardening): the bounded stderr can echo
-// schema/object/role names, and the endpoint may run open, so the detail is
-// routed to the logs only. stubPG with exit 1 writes stderr "boom" => pg_error.
+// not the raw pg_dump stderr: the bounded stderr can echo schema/object/role
+// names, and the endpoint may run open, so the detail is routed to the logs
+// only. stubPG with exit 1 writes stderr "boom" => pg_error.
 func TestDumpFailureBodyOmitsStderr(t *testing.T) {
 	srv := newTestServer(t, &stubPG{exit: 1}, "")
 	rec := post(t, srv, "")

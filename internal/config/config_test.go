@@ -493,11 +493,10 @@ func TestListenerOpenAndPublic(t *testing.T) {
 }
 
 // TestLoadTypedValuesTrimAndTreatBlankAsUnset pins the envx.Source parse
-// semantics this package adopted (go-rulebook C19): typed values are trimmed
-// before parsing, and a whitespace-only value reads as UNSET — silent
-// default, no warning. The pre-envx loaders warned on whitespace-only input;
-// the fleet-standard semantics win, and this test is the record of that
-// deliberate change.
+// semantics this package adopted: typed values are trimmed before parsing, and
+// a whitespace-only value reads as UNSET — silent default, no warning. The
+// pre-envx loaders warned on whitespace-only input; the library's semantics
+// win, and this test is the record of that deliberate change.
 func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
 	t.Run("whitespace-only is unset, silent", func(t *testing.T) {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "   ", "DUMP_KEEP": "\t"})

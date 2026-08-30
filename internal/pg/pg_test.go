@@ -13,7 +13,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/dump"
 )
 
-// TestNewCommand pins the fleet-standard child shape shared with
+// TestNewCommand pins the child shape this package shares with
 // docker-renovate-scheduler: graceful cancellation (Cancel set, WaitDelay
 // grace) and the child leading its own process group.
 func TestNewCommand(t *testing.T) {

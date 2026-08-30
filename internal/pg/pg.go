@@ -38,47 +38,26 @@ var ErrNoDeadline = errors.New("pg: context has no deadline")
 const stderrCap = 2048
 
 // newCommand builds every child process this package spawns (pg_dump,
-// pg_restore, psql). It is the fleet-standard child shape shared with
-// docker-renovate-scheduler: the scheduler library supplies graceful
-// cancellation (SIGTERM on context cancellation, then a DefaultGrace 5s
-// window before os/exec escalates to SIGKILL), Setpgid puts the child in its
-// OWN process group, and Cancel targets that whole group.
-//
-// Setpgid is the load-bearing half. PID 1 here is tini, which in its default
-// mode signals only its immediate child — but a group-forwarding init
-// (dumb-init, `tini -g`) would forward a docker-stop SIGTERM to the daemon's
-// entire process group, TERMing an in-flight pg_dump out-of-band in the same
-// instant as the daemon and silently defeating the shutdown drain
-// (Guard.WaitIdle would just observe the corpse). That exact failure shipped
-// to prod in docker-renovate-scheduler. With its own group the child only
-// ever receives signals the daemon sends it (ctx cancellation on timeout or
-// drain-budget expiry), so the drain semantics hold under ANY init above the
-// daemon instead of depending on tini's forwarding default. The caller wires
-// Stdout/Stderr/Env on the returned command.
-//
-// The group-targeted Cancel matters only if a child ever has group members:
-// pg_dump --format=custom is single-process today, so group-SIGTERM equals
-// child-SIGTERM — but a future parallel dump (--format=directory --jobs=N)
-// forks workers, and a direct-child Cancel would silently under-kill them.
-// Aligning with renovate's group Cancel now closes that latent divergence.
-//
-// Fleet alignment note (l-f3 audit, 2026-07): this own-process-group wrapper
-// stays deliberately app-side — the scheduler library gains a
-// WithProcessGroup() option only when a THIRD consumer of the shape appears
-// (scheduler.md, "Setpgid pairing rule"). Copies to keep line-aligned when
-// editing either: docker-renovate-scheduler runner.go defaultCommandRunner
-// (superset — adds stdio streaming and post-run group sweep/probe/drain,
-// because its child provably spawns package-manager descendants) and this
-// one. vibekit internal/auth login_proc_unix.go carries the group half only
-// (hard SIGKILL on timeout, no scheduler dep — a deliberate non-copy).
+// pg_restore, psql): the scheduler library's graceful cancellation (SIGTERM,
+// then a DefaultGrace window before os/exec escalates to SIGKILL), the child
+// in its OWN process group, and a Cancel that targets that whole group. The
+// caller wires Stdout/Stderr/Env on the returned command.
 var newCommand scheduler.CommandRunner = func() scheduler.CommandRunner {
 	base := scheduler.NewCommandRunner(scheduler.DefaultGrace)
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmd := base(ctx, name, args...)
+		// Setpgid is what makes the shutdown drain hold, under any init above
+		// this daemon. A group-forwarding init (dumb-init, `tini -g`) forwards
+		// a docker-stop SIGTERM to the daemon's entire group, TERMing an
+		// in-flight pg_dump in the same instant as the daemon and leaving the
+		// drain to observe a corpse. That shipped to prod once in a sibling
+		// scheduler. Its own group means the child only receives what the
+		// daemon sends it.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Cancel = func() error {
-			// Signal the child's whole process group (Setpgid makes it the
-			// leader), so any forked worker stops with it.
+			// The whole group, not the head: pg_dump --format=custom is
+			// single-process today, but --format=directory --jobs=N forks
+			// workers a direct-child Cancel would silently under-kill.
 			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone

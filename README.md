@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/pg-autodump/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/pg-autodump)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/pg-autodump/releases)
 
+<!-- hub-overview BEGIN -->
 On-demand PostgreSQL logical-backup sidecar. Trigger it, and it writes a verified dump per database for your real backup tool to collect.
 
 ## What it does
@@ -31,6 +32,7 @@ HTTP) and runs as an ordinary **unprivileged** user.
 - **Bounded parallelism.** `DUMP_CONCURRENCY` dumps databases concurrently with no per-host serialization, so the common one-server-many-DBs case is not forced serial. One knob, safe default.
 - **Built-in retention.** Keeps the newest `DUMP_KEEP` timestamped dumps per database (7 by default), pruning older ones after each successful run. Set `DUMP_KEEP=1` to instead keep a single stable `<dbname>.dump` and delegate versioning to your backup tool.
 - **Standard surface.** `POST /dump`, `GET /healthz`. Trigger by the built-in daily timer (default), over HTTP, `docker exec ... pg-autodump trigger`, or run one cycle as a batch job with `pg-autodump run` (see [One-shot mode](#one-shot-mode)).
+<!-- hub-overview END -->
 
 ## Quick start
 

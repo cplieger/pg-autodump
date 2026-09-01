@@ -16,16 +16,13 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// fixedNow returns a clock pinned to a 2026 instant so timestamped dump
-// filenames produced during a run sort AFTER any 2020-era fixtures a test
-// pre-creates (newest-last), making prune outcomes deterministic.
+// fixedNow pins the clock to a 2026 instant so dump filenames produced
+// during a run sort after any 2020-era fixtures a test pre-creates.
 func fixedNow() func() time.Time {
 	t := time.Date(2026, 6, 15, 0, 0, 0, 0, time.UTC)
 	return func() time.Time { return t }
 }
 
-// dumpOrchestrator builds an Orchestrator that dumps one database "app"
-// successfully (fakePG default), at a fixed clock, with the given keep.
 func dumpOrchestrator(t *testing.T, dir string, keep int) *Orchestrator {
 	t.Helper()
 	return New(&Params{
@@ -40,8 +37,6 @@ func dumpOrchestrator(t *testing.T, dir string, keep int) *Orchestrator {
 	})
 }
 
-// captureOrchestrator mirrors dumpOrchestrator but routes the log to buf so the
-// prune-outcome log lines can be asserted.
 func captureOrchestrator(t *testing.T, dir string, keep int, buf *bytes.Buffer) *Orchestrator {
 	t.Helper()
 	return New(&Params{
@@ -101,9 +96,8 @@ func TestOrchestratorProbeFailureClassified(t *testing.T) {
 	}
 }
 
-// When a probe reports no typed FailKind but a raw error, the failure
-// classifies as ReasonOther and the human detail is the probe error text (not
-// the bare reason string "other").
+// An untyped probe error classifies as ReasonOther with the probe's own
+// error text as Detail, not the bare reason string "other".
 func TestOrchestratorProbeOtherUsesErrorDetail(t *testing.T) {
 	t.Parallel()
 	orch := New(&Params{
@@ -126,13 +120,11 @@ func TestOrchestratorProbeOtherUsesErrorDetail(t *testing.T) {
 	}
 }
 
-// After a successful dump with keep>1 the orchestrator prunes old timestamped
-// copies; copies beyond the keep window are removed. With three 2020 copies +
-// one fresh 2026 copy at keep=2, the two oldest must be removed.
+// With keep=2 and three old copies plus one fresh dump, the two oldest are pruned.
 func TestOrchestratorPrunesAfterSuccessfulDump(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	srv := filepath.Join(dir, "h_5432") // ServerDir for {host h, port 5432}
+	srv := filepath.Join(dir, "h_5432")
 	if err := os.MkdirAll(srv, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -152,8 +144,6 @@ func TestOrchestratorPrunesAfterSuccessfulDump(t *testing.T) {
 		t.Fatalf("dump reason = %q, want ok", res[0].Reason)
 	}
 
-	// keep=2: the freshest 2026 copy + the newest 2020 copy survive; the two
-	// oldest 2020 copies are pruned.
 	for _, gone := range []string{"app.20200101T000000Z.dump", "app.20200102T000000Z.dump"} {
 		if _, err := os.Stat(filepath.Join(srv, gone)); !os.IsNotExist(err) {
 			t.Errorf("expected %q to be pruned after successful dump, stat err = %v", gone, err)
@@ -166,12 +156,11 @@ func TestOrchestratorPrunesAfterSuccessfulDump(t *testing.T) {
 	}
 }
 
-// With keep==1 the stable "app.dump" scheme is used and NO prune runs, so
-// existing timestamped copies must survive untouched.
+// keep=1 uses the stable "app.dump" scheme; no prune runs.
 func TestOrchestratorKeepOneDoesNotPrune(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	srv := filepath.Join(dir, "h_5432") // ServerDir for {host h, port 5432}
+	srv := filepath.Join(dir, "h_5432")
 	if err := os.MkdirAll(srv, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -201,13 +190,11 @@ func TestOrchestratorKeepOneDoesNotPrune(t *testing.T) {
 	}
 }
 
-// After a successful prune that removed at least one copy, the orchestrator
-// emits a "pruned old dumps" info line. With three 2020 copies + a fresh 2026
-// copy at keep=2, two copies are removed, so the line must appear.
+// A prune that removes at least one copy logs a "pruned old dumps" info line.
 func TestOrchestratorLogsPrunedCountWhenRemoved(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	srv := filepath.Join(dir, "h_5432") // ServerDir for {host h, port 5432}
+	srv := filepath.Join(dir, "h_5432")
 	if err := os.MkdirAll(srv, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -231,13 +218,12 @@ func TestOrchestratorLogsPrunedCountWhenRemoved(t *testing.T) {
 	}
 }
 
-// When the prune ran but removed nothing (the copies are within the keep
-// window), NO "pruned old dumps" line is emitted. One existing 2020 copy + the
-// fresh 2026 copy at keep=2 prunes nothing, so the line must be absent.
+// A prune that removes nothing (copies within the keep window) logs no
+// "pruned old dumps" line.
 func TestOrchestratorNoPruneLogWhenNothingRemoved(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	srv := filepath.Join(dir, "h_5432") // ServerDir for {host h, port 5432}
+	srv := filepath.Join(dir, "h_5432")
 	if err := os.MkdirAll(srv, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -255,9 +241,6 @@ func TestOrchestratorNoPruneLogWhenNothingRemoved(t *testing.T) {
 	}
 }
 
-// clamp(v,lo,hi) returns lo when v<lo, hi when v>hi, else v unchanged.
-// Asserting the in-range passthrough and both clamped ends pins every
-// comparison and the order of the branches.
 func TestClamp(t *testing.T) {
 	t.Parallel()
 	if got := clamp(5, 1, 10); got != 5 {
@@ -269,15 +252,13 @@ func TestClamp(t *testing.T) {
 	if got := clamp(15, 1, 10); got != 10 {
 		t.Errorf("clamp(15, 1, 10) = %d, want 10 (above hi clamps to hi)", got)
 	}
-	// A non-1 lower bound exercises the lo branch independently of the
-	// production caller, which always passes lo=1.
+	// Production always passes lo=1; a non-1 lower bound exercises the lo
+	// branch independently of that caller.
 	if got := clamp(1, 2, 10); got != 2 {
 		t.Errorf("clamp(1, 2, 10) = %d, want 2 (below lo clamps to lo)", got)
 	}
 }
 
-// invalidResult uses the raw token as the DB label only when the parsed name is
-// empty, and maps the Duplicate flag to ReasonDuplicate (else ReasonInvalid).
 func TestInvalidResultDBNameFallback(t *testing.T) {
 	t.Parallel()
 
@@ -307,16 +288,12 @@ func TestLevelFor(t *testing.T) {
 		{reason: ReasonInvalid, want: "WARN"},
 		{reason: ReasonDuplicate, want: "WARN"},
 		{reason: ReasonSkipped, want: "WARN"},
-		// A killed dump is a graceful-shutdown cancel, not a failure: Warn so
-		// a clean operator shutdown does not false-fire the dump-failure alert.
+		// A killed dump is a graceful shutdown, not a failure.
 		{reason: ReasonKilled, want: "WARN"},
 		{reason: ReasonConnectError, want: "ERROR"},
 		{reason: ReasonTimeout, want: "ERROR"},
 		{reason: ReasonPGError, want: "ERROR"},
 		{reason: ReasonOther, want: "ERROR"},
-		// The remaining reasons all fall through to the default (ERROR)
-		// branch; pinning each one catches a mutant that moves any of them
-		// into the INFO/WARN case clause (as ReasonKilled was just moved).
 		{reason: ReasonEmpty, want: "ERROR"},
 		{reason: ReasonTruncated, want: "ERROR"},
 		{reason: ReasonAuthError, want: "ERROR"},
@@ -331,10 +308,8 @@ func TestLevelFor(t *testing.T) {
 	}
 }
 
-// requireCompletionLine fails the test unless finish() logged its completion
-// line (message "dump <reason>"), so the attr-ABSENCE assertions below cannot
-// pass vacuously when nothing was logged at all. Each test uses a fresh
-// recorder and calls finish once, so the message scopes exactly one record.
+// requireCompletionLine fails the test unless finish() logged msg, so an
+// attr-ABSENCE assertion below cannot pass vacuously on a missing record.
 func requireCompletionLine(t *testing.T, rec *capture.Recorder, msg string) {
 	t.Helper()
 	if !rec.Contains(msg) {
@@ -342,14 +317,11 @@ func requireCompletionLine(t *testing.T, rec *capture.Recorder, msg string) {
 	}
 }
 
-// finishOrchestrator builds an Orchestrator whose only configured behavior is
-// the capture logger, for exercising finish()'s log-attribute gates in isolation.
 func finishOrchestrator(logger *slog.Logger) *Orchestrator {
 	return New(&Params{PG: &fakePG{}, Logger: logger})
 }
 
-// finish logs the server_version attribute only when the probe resolved a
-// positive major; a zero (unknown) version is omitted from the log line.
+// server_version is logged only when the probe resolved a positive major.
 func TestFinishServerVersionAttr(t *testing.T) {
 	t.Run("logged when the major is positive", func(t *testing.T) {
 		logger, rec := capture.New()
@@ -373,8 +345,8 @@ func TestFinishServerVersionAttr(t *testing.T) {
 	})
 }
 
-// finish logs the detail attribute only for a failure that carries one; a
-// successful result keeps its "ok (N bytes)" detail in the body, not the log line.
+// detail is logged only for a failure that carries one; a success keeps its
+// "ok (N bytes)" detail in the body, not the log line.
 func TestFinishDetailAttr(t *testing.T) {
 	t.Run("logged for a failure carrying a detail", func(t *testing.T) {
 		logger, rec := capture.New()
@@ -398,9 +370,8 @@ func TestFinishDetailAttr(t *testing.T) {
 	})
 }
 
-// finish logs the diagnostic error (the dial error / psql stderr behind a
-// failure) only when it differs from the result Detail, so the same text is
-// never recorded twice on one line.
+// The diagnostic error is logged only when it differs from Detail, so the
+// same text is never recorded twice on one line.
 func TestFinishDiagErrAttr(t *testing.T) {
 	t.Run("logged when the diagnostic differs from detail", func(t *testing.T) {
 		logger, rec := capture.New()

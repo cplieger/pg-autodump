@@ -88,14 +88,11 @@ type Result struct {
 func (r *Result) OK() bool { return r.Reason == ReasonOK }
 
 // BodyDetail is the operator-facing line for the POST /dump (and `trigger`)
-// response body. For the execution-tool failure reasons whose Detail carries a
-// raw pg_dump/pg_restore stderr tail (pg_error, truncated, other), it returns
-// only the reason word: that stderr can echo schema/object/role names and error
-// text, and the endpoint may run open (no AUTH_TOKEN), so the full detail is
-// kept to the logs (the orchestrator's per-result log line records r.Detail) and
-// out of a body any reachable client could read. Every other reason returns its
-// Detail (e.g. "ok (4823104 bytes)", a validation reason, "connect_error"),
-// falling back to the reason word when Detail is empty.
+// response body. For pg_error/truncated/other, whose Detail carries a raw
+// pg_dump/pg_restore stderr tail, it returns only the reason word — that
+// stderr can echo schema/role names and the endpoint may run without
+// AUTH_TOKEN, so the full detail stays in the logs. Every other reason
+// returns its Detail, falling back to the reason word when Detail is empty.
 func (r *Result) BodyDetail() string {
 	switch r.Reason {
 	case ReasonPGError, ReasonTruncated, ReasonOther:
@@ -108,10 +105,9 @@ func (r *Result) BodyDetail() string {
 }
 
 // classify maps a pg_dump exit code, a context error, and a typed FailKind
-// from the boundary to a Reason. Order matters: a cancelled or timed-out
-// context wins over any exit code, and a boundary-classified failure
-// (connect/auth/version) wins over a generic non-zero exit. No stderr
-// substring matching is ever used.
+// from the boundary to a Reason. A cancelled/timed-out context wins over any
+// exit code, and a boundary-classified failure wins over a generic non-zero
+// exit. No stderr substring matching is ever used.
 func classify(exitCode int, ctxErr error, kind FailKind) Reason {
 	switch {
 	case errors.Is(ctxErr, context.DeadlineExceeded):

@@ -30,13 +30,12 @@ if ! ver=$("$TINI_BIN" --version 2>&1); then
 fi
 
 # 1a. Exact-version assertion: the binary must report the pinned upstream
-#     version (TINI_EXPECTED_VERSION, passed by the Dockerfile test stage
-#     from ARG TINI_VERSION; a leading "v" is stripped here). Catches a
-#     fetch mixup shipping the wrong release. Unset means a bare local run:
-#     the check is skipped with a notice. The Dockerfile guards the ARG with
-#     :? so the in-image gate can never silently skip. Release binaries
-#     report "tini version X.Y.Z - git.<sha>"; the trailing space in the
-#     match keeps a prefix (0.19.0 vs 0.19.01) from passing.
+#     version (TINI_EXPECTED_VERSION, from the Dockerfile's ARG TINI_VERSION,
+#     leading "v" stripped). Catches a fetch mixup shipping the wrong release.
+#     Unset means a bare local run: skipped with a notice (the Dockerfile
+#     guards the ARG with :? so the in-image gate can never silently skip).
+#     The trailing space in the match keeps a prefix (0.19.0 vs 0.19.01) from
+#     passing.
 if [ -n "${TINI_EXPECTED_VERSION:-}" ]; then
   expected=${TINI_EXPECTED_VERSION#v}
   if ! printf '%s\n' "$ver" | head -n 1 | grep -qF "tini version ${expected} "; then
@@ -49,13 +48,9 @@ fi
 
 # 2. Embedded SBOM fragment (Dockerfile tini-fetcher stage): the CycloneDX
 #    file covering the upstream-fetched tini must ship in the image, name the
-#    component, and carry the ARG-derived version — a hardcoded version would
-#    drift silently on the next Renovate bump, which is exactly the failure
-#    mode the fragment exists to prevent. Gated on TINI_EXPECTED_VERSION like
-#    section 1a: in-image the Dockerfile's :? guard guarantees the variable,
-#    so the gate can never silently skip; a bare local run (no image
-#    filesystem) skips with a notice. BusyBox has no jq, so assert shape with
-#    grep: non-empty, starts with { and ends with }.
+#    component, and carry the ARG-derived version (a hardcoded version would
+#    drift silently on the next Renovate bump). Gated on TINI_EXPECTED_VERSION
+#    like section 1a. BusyBox has no jq, so assert shape with grep instead.
 if [ -n "${TINI_EXPECTED_VERSION:-}" ]; then
   sbom=/usr/share/sbom/pg-autodump.cdx.json
   expected=${TINI_EXPECTED_VERSION#v}

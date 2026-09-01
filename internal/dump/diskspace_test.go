@@ -11,21 +11,17 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// lowSpaceMsg is the message of checkDiskSpace's low-space warning, the
-// scope for the capture attr assertions below.
+// lowSpaceMsg is checkDiskSpace's low-space warning message.
 const lowSpaceMsg = "low free disk space for dumps"
 
-// fixedFreeSpace is an o.freeSpace stub that reports a controlled free-KB value,
-// so the low-space decision is exercised at an exact threshold without the live
-// filesystem's free space drifting between the probe and the assertion.
+// fixedFreeSpace stubs o.freeSpace to report a fixed free-KB value, avoiding
+// drift from the live filesystem.
 func fixedFreeSpace(freeKB int64) func(string) (int64, error) {
 	return func(string) (int64, error) { return freeKB, nil }
 }
 
-// The strict guard `freeKB < freeKBWarn` is the whole point of the check, and
-// its boundary was previously untestable without racing the live filesystem.
-// With the disk-space probe injected, the reading is exact, so below / equal /
-// above the threshold are all deterministic.
+// The injected probe makes the freeKB < freeKBWarn boundary exact and
+// deterministic instead of racing the live filesystem.
 func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 	t.Parallel()
 	const warn = 1_000_000 // 1 GB threshold, in KB
@@ -72,8 +68,7 @@ func TestCheckDiskSpaceThresholdBoundary(t *testing.T) {
 }
 
 // A zero or negative threshold disables the check: checkDiskSpace must return
-// before probing the filesystem at all (no statfs, no log). The injected probe
-// records whether it was called so the "no probe" contract is asserted directly.
+// before probing the filesystem at all (no statfs, no log).
 func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
 	t.Parallel()
 	for _, warn := range []int64{0, -1} {
@@ -104,8 +99,8 @@ func TestCheckDiskSpaceDisabledSkipsProbe(t *testing.T) {
 	}
 }
 
-// When the probe fails, checkDiskSpace logs the probe-error warning and does NOT
-// also emit the low-space warning (a failed reading is unknown, not low).
+// A failed probe logs the probe-error warning, not the low-space warning (a
+// failed reading is unknown, not low).
 func TestCheckDiskSpaceProbeError(t *testing.T) {
 	t.Parallel()
 	logger, rec := capture.New()
@@ -127,9 +122,8 @@ func TestCheckDiskSpaceProbeError(t *testing.T) {
 	}
 }
 
-// The default probe (statfsFreeKB) returns positive free space for a usable temp
-// dir and errors for a missing path. This exercises the real syscall the
-// Orchestrator wires in by default, which the injected tests above stub out.
+// statfsFreeKB is the real syscall the Orchestrator wires in by default; the
+// injected tests above stub it out.
 func TestStatfsFreeKB(t *testing.T) {
 	t.Parallel()
 
@@ -147,15 +141,8 @@ func TestStatfsFreeKB(t *testing.T) {
 	}
 }
 
-// The default probe reports KILOBYTES, which is the unit that makes a configured
-// FREE_KB_WARN threshold mean what the operator wrote. The band is the widest
-// honest statement of that unit which needs no second reading of the same
-// drifting filesystem: a kilobyte figure is at least the free-block count (on
-// any filesystem whose blocks are a kilobyte or more) and at most the free-byte
-// count. A figure in blocks or in bytes sits outside the band by orders of
-// magnitude. TestCheckDiskSpaceLogsRealFreeKB below cannot make this statement,
-// because its oracle is this same function: a scaling error moves both sides of
-// that comparison together.
+// A kilobyte figure must fall in [bavail, bavail*bsize]; a figure in blocks or
+// bytes would sit outside this band by orders of magnitude.
 func TestStatfsFreeKBReportsKilobytes(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -180,13 +167,9 @@ func TestStatfsFreeKBReportsKilobytes(t *testing.T) {
 	}
 }
 
-// End-to-end through the DEFAULT probe: with the warning forced on (threshold
-// MaxInt64) checkDiskSpace warns and logs the real free_kb, so the value an
-// operator reads came from the production probe against the real volume rather
-// than from a stub. The oracle is that same statfsFreeKB, compared within a
-// generous band that absorbs benign drift between the two reads — which means
-// this comparison cannot see a scaling error (it would move both sides
-// together); the unit itself is pinned by TestStatfsFreeKBReportsKilobytes.
+// End-to-end through the default probe: forcing the warning on (threshold
+// MaxInt64) must log the real free_kb from statfsFreeKB, within a band that
+// absorbs drift between the two reads.
 func TestCheckDiskSpaceLogsRealFreeKB(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

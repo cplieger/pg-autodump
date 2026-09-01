@@ -20,8 +20,7 @@ import (
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
-// release after signalling entered, so single-flight (429) can be exercised;
-// dumpCalls counts Dump invocations so rerun coalescing can be asserted.
+// release after signalling entered, so single-flight (429) can be exercised.
 type stubPG struct {
 	entered   chan struct{}
 	release   chan struct{}
@@ -54,12 +53,10 @@ type okSignal struct{ ok bool }
 
 func (s okSignal) Healthy() bool { return s.ok }
 
-// discard is a throwaway logger for wiring the pieces under test.
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-// newTestServerInDir builds a server whose cross-process cycle lock lives in
-// cycleDir, so tests can contend on the lock the way an exec'd `pg-autodump
-// run` process would.
+// newTestServerInDir puts the cross-process cycle lock in cycleDir, so tests
+// can contend on it like an exec'd `pg-autodump run` process would.
 func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
 	t.Helper()
 	orch := dump.New(&dump.Params{
@@ -110,10 +107,8 @@ func TestDumpFailureReturns500(t *testing.T) {
 	}
 }
 
-// On an execution-tool failure the response body carries only the reason word,
-// not the raw pg_dump stderr: the bounded stderr can echo schema/object/role
-// names, and the endpoint may run open, so the detail is routed to the logs
-// only. stubPG with exit 1 writes stderr "boom" => pg_error.
+// The response body carries only the reason word, never raw pg_dump stderr
+// (which can echo schema/object/role names); stderr goes to logs only.
 func TestDumpFailureBodyOmitsStderr(t *testing.T) {
 	srv := newTestServer(t, &stubPG{exit: 1}, "")
 	rec := post(t, srv, "")
@@ -131,8 +126,6 @@ func TestDumpFailureBodyOmitsStderr(t *testing.T) {
 
 func TestAuthRequired(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "sekret")
-	// One rejection class per named subtest: a regression in one arm must
-	// not hide the others behind the first Fatal.
 	rejected := map[string]string{
 		"missing token":         "",
 		"non-bearer scheme":     "Basic sekret",
@@ -148,10 +141,6 @@ func TestAuthRequired(t *testing.T) {
 		})
 	}
 	t.Run("rejection body is http.Error's plain unauthorized", func(t *testing.T) {
-		// Status and body asserted on the SAME response: the pre-subtest test
-		// coupled them, and the coupling is the point — the 401 must carry
-		// http.Error's plain body, the same shape as before the webhttp
-		// verifier switch.
 		rec := post(t, srv, "Bearer wrong")
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", rec.Code)
@@ -167,13 +156,9 @@ func TestAuthRequired(t *testing.T) {
 	})
 }
 
-// TestVerifierFailsClosedOnEmptyConfigured pins the contract the auth gate
-// relies on: the wired verifier (webhttp.NewStaticTokenVerifier) never
-// authorizes when the configured secret is empty — not even for an empty
-// presented credential, where a bare hash-then-compare would match.
-// pg-autodump's documented open mode (empty AUTH_TOKEN serves unauthenticated,
-// TestDumpOKReturns200) is a bypass ABOVE this gate; the gate itself failing
-// closed means removing that bypass could never fail open.
+// webhttp.NewStaticTokenVerifier must never authorize when the configured
+// secret is empty, even for an empty presented credential. pg-autodump's open
+// mode (empty AUTH_TOKEN) is a bypass above this gate, not a weakening of it.
 func TestVerifierFailsClosedOnEmptyConfigured(t *testing.T) {
 	verify := webhttp.NewStaticTokenVerifier("")
 	for _, presented := range []string{"", "sekret", "Bearer "} {
@@ -225,8 +210,8 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
-// newTestServerWithLog mirrors newTestServer but routes the server's logger to
-// a caller-owned buffer so log output can be asserted.
+// newTestServerWithLog mirrors newTestServer but routes the logger to a
+// caller-owned buffer.
 func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(buf, nil))
@@ -247,8 +232,7 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	})
 }
 
-// failingWriter is an http.ResponseWriter whose Write always errors, so the
-// response-write failure branch in dumpHandler is exercised.
+// failingWriter is an http.ResponseWriter whose Write always errors.
 type failingWriter struct {
 	header http.Header
 	code   int
@@ -265,13 +249,10 @@ func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe 
 
 func (f *failingWriter) WriteHeader(code int) { f.code = code }
 
-// The response body is the per-database Detail, not the bare Reason. A
-// successful dump details "ok (N bytes)"; dumpHandler only substitutes the
-// Reason string when Detail is empty (`detail == ""`). The negation
-// (`detail != ""`) would replace a present detail with the reason, collapsing
-// "ok (5 bytes)" to "ok".
+// The response body is the per-database Detail, not the bare Reason;
+// dumpHandler substitutes Reason only when Detail is empty.
 func TestDumpResponseBodyUsesDetail(t *testing.T) {
-	srv := newTestServer(t, &stubPG{}, "") // stub writes "PGDMP" => 5 bytes
+	srv := newTestServer(t, &stubPG{}, "")
 	rec := post(t, srv, "")
 
 	if rec.Code != http.StatusOK {
@@ -282,9 +263,7 @@ func TestDumpResponseBodyUsesDetail(t *testing.T) {
 	}
 }
 
-// On a successful response write there must be NO write-failure warning
-// (`err != nil`). The negation (`err == nil`) would log the warning on every
-// successful request.
+// A successful response write must log no write-failure warning.
 func TestDumpSuccessLogsNoWriteWarning(t *testing.T) {
 	var buf bytes.Buffer
 	srv := newTestServerWithLog(t, &stubPG{}, &buf)
@@ -297,10 +276,8 @@ func TestDumpSuccessLogsNoWriteWarning(t *testing.T) {
 	}
 }
 
-// When the response write fails, the warning is emitted through the logger the
-// caller supplied to NewServer. The negation on NewServer's guard
-// (`log == nil` -> `log != nil`) would discard the supplied logger for the
-// default, so the message would never reach the caller's buffer.
+// A response-write failure is logged through the logger supplied to NewServer,
+// not the default.
 func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 	var buf bytes.Buffer
 	srv := newTestServerWithLog(t, &stubPG{}, &buf)
@@ -313,20 +290,17 @@ func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 	}
 }
 
-// NewTrigger defaults a nil logger to a non-nil one and keeps a supplied logger
-// unchanged: exercise both the nil input (defaulted) and a non-nil input
-// (retained) and assert the stored logger in each.
+// NewTrigger defaults a nil logger to non-nil and keeps a supplied logger
+// unchanged.
 func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	guard := &dump.Guard{}
 	cycle := scheduler.NewExclusive(t.TempDir(), nil)
 
-	// nil logger is replaced with a non-nil default.
 	trNil := NewTrigger(guard, cycle, nil, nil)
 	if trNil.log == nil {
 		t.Fatalf("NewTrigger(.., nil) left log nil; want it defaulted to a non-nil logger")
 	}
 
-	// a supplied logger is retained unchanged.
 	custom := slog.New(slog.NewTextHandler(io.Discard, nil))
 	trCustom := NewTrigger(guard, cycle, nil, custom)
 	if trCustom.log != custom {
@@ -334,11 +308,8 @@ func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	}
 }
 
-// A trigger run whose cross-process cycle coordination went fine logs no
-// coordination warning. That warning means the rerun queue-file bookkeeping
-// degraded while the dump itself succeeded — the line an operator chasing a
-// missed rerun looks for — so emitting it after every clean cycle would bury the
-// real one.
+// A clean cycle logs no cycle-coordination warning; that warning means the
+// rerun queue-file bookkeeping degraded and must stay rare enough to notice.
 func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
 	var buf bytes.Buffer
 	orch := dump.New(&dump.Params{
@@ -365,10 +336,8 @@ func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
 	}
 }
 
-// A cycle lock held by ANOTHER process (an exec'd `pg-autodump run`) makes
-// POST /dump respond 429 exactly like an in-process contention: the server
-// must never dump concurrently with a one-shot run. The test holds the flock
-// through a second file description, which is what a separate process would do.
+// A cycle lock held by another process (an exec'd `pg-autodump run`) makes
+// POST /dump respond 429, same as in-process contention.
 func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
 	cycleDir := t.TempDir()
 	srv := newTestServerInDir(t, &stubPG{}, "", cycleDir)
@@ -384,12 +353,9 @@ func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
 	}
 }
 
-// Depth-1 rerun coalescing end to end: demand queued (by what would be an
-// exec'd `pg-autodump run`) while the server's cycle is in flight is executed
-// by the server before the HTTP response is written. The requester never
-// blocks (OutcomeQueued returns immediately), the handler's body reports only
-// the caller's own first run, and the orchestrator runs exactly twice (one
-// spec, two cycles).
+// Rerun demand queued while the server's cycle is in flight is executed by
+// the server before the HTTP response is written; the requester never blocks
+// and the handler body reports only the caller's own first run.
 func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 	cycleDir := t.TempDir()
 	pg := &stubPG{entered: make(chan struct{}), release: make(chan struct{})}
@@ -400,9 +366,6 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 
 	<-pg.entered // server cycle now in flight, cycle lock held
 
-	// A second Exclusive on the same dir is the requester side of another
-	// process. Its job must never run here: the lock is busy, so the demand
-	// queues for the active runner.
 	requester := scheduler.NewExclusive(cycleDir, discard())
 	outcome, err := requester.Run(func() error {
 		t.Error("requester executed the job; want it queued behind the in-flight cycle")
@@ -412,8 +375,8 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 		t.Fatalf("requester.Run = (%v, %v), want (queued, nil)", outcome, err)
 	}
 
-	close(pg.release) // let the first cycle finish; the consume loop reruns
-	<-pg.entered      // the queued rerun entered Dump: demand was consumed
+	close(pg.release)
+	<-pg.entered // the queued rerun entered Dump
 
 	rec := <-done
 	if rec.Code != http.StatusOK {
@@ -427,13 +390,8 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 	}
 }
 
-// NewServer wires the server's timeout budget. IdleTimeout is 60s and both the
-// header and full read timeouts are 10s; there is deliberately no WriteTimeout
-// (a dump run holds the response open for minutes). Each budget is asserted
-// against its intended duration rather than against the constant it is built
-// from: a miscomputed constant (e.g. 60/time.Second or 10/time.Second
-// collapsing to 0) would silently remove the keep-alive idle bound or the
-// slow-header guard while still matching itself.
+// NewServer's timeout budget: IdleTimeout 60s, ReadHeaderTimeout/ReadTimeout
+// 10s, no WriteTimeout (a dump run holds the response open for minutes).
 func TestServerTimeoutsConfigured(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "")
 	if srv.IdleTimeout != 60*time.Second {
@@ -451,12 +409,9 @@ func TestServerTimeoutsConfigured(t *testing.T) {
 	}
 }
 
-// SecurityHeaders is wired into the middleware chain, so every response carries
-// webhttp's baseline hardening headers. nosniff is the one that matters for a
-// text/plain dump listing (it stops a browser MIME-sniffing the body); the
-// X-Frame-Options and Referrer-Policy defaults ride along as standardization.
-// There is deliberately no CSP or HSTS: this is a plain-HTTP, non-browser
-// control endpoint, and HSTS would make a browser refuse plain HTTP to the host.
+// webhttp's baseline hardening headers are present, but no CSP or HSTS: this
+// is a plain-HTTP, non-browser control endpoint, and HSTS would make a
+// browser refuse plain HTTP to the host.
 func TestSecurityHeadersPresent(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "")
 	rec := post(t, srv, "")
@@ -481,19 +436,13 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	}
 }
 
-// throttleProbeAttempts bounds the failed-bearer probe loops below. It only
-// has to EXCEED the preset's burst, which webhttp.FailedAuthRateLimit now owns
-// along with the refill cadence: these tests assert the throttle's BEHAVIOUR
-// (attempts admitted inward to their 401s, then a 429 carrying Retry-After and
-// the shared code) instead of re-copying the numbers the adoption deleted.
+// throttleProbeAttempts must exceed webhttp.FailedAuthRateLimit's burst.
 const throttleProbeAttempts = 64
 
-// TestAuthFailureThrottle pins the failed-bearer throttle end to end through
-// the full middleware chain: bad attempts inside the preset's burst pass
-// inward to their 401s, the flood is then cut off with a 429 carrying a
-// Retry-After hint before reaching the handler, a VALID bearer is never
-// throttled even mid-flood, and requests the predicate excludes (GET /dump,
-// /healthz) draw no tokens.
+// Bad attempts inside the preset's burst pass to their 401s, the flood is
+// then cut off with a 429 carrying Retry-After, a valid bearer is never
+// throttled even mid-flood, and excluded routes (GET /dump, /healthz) draw no
+// tokens.
 func TestAuthFailureThrottle(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "sekrit")
 
@@ -505,12 +454,6 @@ func TestAuthFailureThrottle(t *testing.T) {
 		return rec
 	}
 
-	// Drive bad bearers until the shared bucket empties. Every attempt the
-	// limiter admits must reach authMiddleware's 401; the first refusal is the
-	// throttle engaging before the handler. How MANY are admitted is the
-	// preset's tuning rather than this app's, so what is asserted is that some
-	// are (an operator retrying a rotated credential by hand is not refused on
-	// the first try) and that the flood is cut off within the probe bound.
 	admitted := 0
 	var throttled *httptest.ResponseRecorder
 	for i := range throttleProbeAttempts {
@@ -537,14 +480,10 @@ func TestAuthFailureThrottle(t *testing.T) {
 	if !strings.Contains(body, "too_many_auth_failures") {
 		t.Errorf("throttled body = %q, want the too_many_auth_failures envelope", body)
 	}
-	// The code above is the preset's (shared across services so log queries
-	// and alert rules key on one string); the message stays this app's, so it
-	// must still name the credential a caller presented.
 	if !strings.Contains(body, "too many failed bearer attempts") {
 		t.Errorf("throttled body = %q, want this app's bearer-specific message", body)
 	}
 
-	// A valid bearer never draws from the bucket: it passes even mid-flood.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/dump", nil)
 	req.Header.Set("Authorization", "Bearer sekrit")
@@ -553,8 +492,6 @@ func TestAuthFailureThrottle(t *testing.T) {
 		t.Errorf("valid bearer mid-flood: status = %d, want 200 (never throttled)", rec.Code)
 	}
 
-	// Excluded surfaces are untouched by the empty bucket: GET /dump still
-	// answers the mux's 405, and the liveness probe stays 200.
 	rec = httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/dump", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -567,12 +504,8 @@ func TestAuthFailureThrottle(t *testing.T) {
 	}
 }
 
-// TestAuthFailureThrottle_openModeDisabled pins the off contract: with no
-// configured token the limiter is the identity, so unauthenticated POSTs are
-// never 429'd no matter the volume (open mode is documented as unthrottled).
-// The bypass carries the whole contract now that the preset owns the tuning —
-// FailedAuthRateLimit has no non-positive "off" and the fail-closed verifier
-// would read every open-mode request as a failed attempt.
+// With no configured token the throttle must be disabled: unauthenticated
+// POSTs are never 429'd (FailedAuthRateLimit has no non-positive "off").
 func TestAuthFailureThrottle_openModeDisabled(t *testing.T) {
 	srv := newTestServer(t, &stubPG{}, "")
 

@@ -6,14 +6,11 @@ import (
 	"time"
 )
 
-// envFunc builds a getenv from a map for injection into Load.
 func envFunc(m map[string]string) func(string) string {
 	return func(k string) string { return m[k] }
 }
 
-// mustLoad calls Load and fails the test if it returns a fatal error. Every
-// test here exercises a non-fatal configuration (the one fatal case, a
-// traversal DUMP_DIR, has its own test), so the error is always expected nil.
+// mustLoad fails the test on a fatal Load error.
 func mustLoad(t *testing.T, m map[string]string) (Config, []Warning) {
 	t.Helper()
 	cfg, warns, err := Load(envFunc(m))
@@ -48,9 +45,6 @@ func TestLoadDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadEmptyEnvAllDefaults is the hardening contract: with NOTHING set,
-// Load yields a fully-populated, valid Config (every field a safe default) and
-// no warnings. A missing environment never blocks startup.
 func TestLoadEmptyEnvAllDefaults(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{})
 	if len(warns) != 0 {
@@ -77,10 +71,7 @@ func TestLoadNoSecretFields(t *testing.T) {
 	}
 }
 
-// A DUMP_DIR with a ".." path component is fatal: Load returns an error so
-// startup aborts rather than silently relocating backups to the default
-// directory (a backup tool must not guess where the operator's chosen
-// destination went).
+// A DUMP_DIR with a ".." component is fatal: startup must not silently relocate backups.
 func TestLoadDumpDirTraversalIsFatal(t *testing.T) {
 	for _, dir := range []string{"/dumps/../etc", "..", "/dumps/..", "../dumps"} {
 		cfg, warns, err := Load(envFunc(map[string]string{"DUMP_DIR": dir}))
@@ -93,9 +84,7 @@ func TestLoadDumpDirTraversalIsFatal(t *testing.T) {
 	}
 }
 
-// The traversal check matches ".." as a full path COMPONENT, not a substring:
-// a legal directory name that merely contains consecutive dots must load
-// unchanged (pre-fix behavior rejected "/dumps/a..b").
+// The traversal check matches ".." as a full path COMPONENT, not a substring.
 func TestLoadDumpDirDotsInsideNameIsLegal(t *testing.T) {
 	for _, dir := range []string{"/dumps/a..b", "/du..mps", "/dumps/v1..2/pg"} {
 		cfg, warns, err := Load(envFunc(map[string]string{"DUMP_DIR": dir}))
@@ -111,8 +100,7 @@ func TestLoadDumpDirDotsInsideNameIsLegal(t *testing.T) {
 	}
 }
 
-// A control character in one DB_SPECS token does not abort startup: that token
-// becomes an Invalid spec (reported per-DB later) while valid tokens parse.
+// A control character in one DB_SPECS token does not abort startup; it becomes an Invalid spec.
 func TestLoadControlCharSpecIsPerSpec(t *testing.T) {
 	cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "good-host:db:user h:db:u\x01"})
 	if len(cfg.Specs) != 2 {
@@ -136,7 +124,7 @@ func TestLoadEmptySpecsNotFatal(t *testing.T) {
 func TestLoadClampsAndWarns(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{
 		"DB_SPECS":         "h:db:u",
-		"DUMP_TIMEOUT":     "3", // below MinDumpTimeout
+		"DUMP_TIMEOUT":     "3",
 		"DUMP_CONCURRENCY": "abc",
 	})
 	if cfg.DumpTimeout != MinDumpTimeout {
@@ -151,10 +139,7 @@ func TestLoadClampsAndWarns(t *testing.T) {
 }
 
 func TestLoadDumpInterval(t *testing.T) {
-	// Default (unset): the built-in timer is on. main gates the ticker on
-	// DumpInterval > 0, so a non-positive default would silently turn the
-	// periodic dump off and leave a backup sidecar that only ever runs when
-	// something triggers it — with nothing in the log to say so.
+	// main gates the ticker on DumpInterval > 0; the default must stay positive.
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
 	if def.DumpInterval != DefaultDumpInterval {
 		t.Fatalf("default DumpInterval = %s, want %s", def.DumpInterval, DefaultDumpInterval)
@@ -169,17 +154,11 @@ func TestLoadDumpInterval(t *testing.T) {
 		t.Fatalf("DumpInterval = %s, want 6h", cfg.DumpInterval)
 	}
 
-	// Every disable sentinel maps to 0 (built-in timer off), matching the
-	// sibling schedulers.
 	for _, off := range []string{"off", "disabled", "0", "0s", "OFF"} {
 		got, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_INTERVAL": off})
 		if got.DumpInterval != 0 {
 			t.Fatalf("DUMP_INTERVAL=%q: DumpInterval = %s, want 0 (disabled)", off, got.DumpInterval)
 		}
-		// A disable sentinel is a SILENT 0 -- distinct from a negative duration,
-		// which returns 0 *with* a warning (TestLoadDumpIntervalNegativeDisablesWithWarning).
-		// Pin the no-warning half so a mutant that warns on the off/disabled or
-		// d==0 branch of loadInterval is caught.
 		if len(warns) != 0 {
 			t.Fatalf("DUMP_INTERVAL=%q: want no warnings (silent disable), got %v", off, warns)
 		}
@@ -187,7 +166,6 @@ func TestLoadDumpInterval(t *testing.T) {
 }
 
 func TestLoadDumpKeep(t *testing.T) {
-	// Default (unset): keep a rolling window.
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
 	if def.DumpKeep != DefaultDumpKeep {
 		t.Fatalf("default DumpKeep = %d, want %d", def.DumpKeep, DefaultDumpKeep)
@@ -198,7 +176,6 @@ func TestLoadDumpKeep(t *testing.T) {
 		t.Fatalf("DumpKeep = %d, want 5", cfg.DumpKeep)
 	}
 
-	// Invalid values fall back to the default with a warning.
 	for _, bad := range []string{"0", "-1", "two", "1.5"} {
 		got, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": bad})
 		if got.DumpKeep != DefaultDumpKeep {
@@ -210,10 +187,6 @@ func TestLoadDumpKeep(t *testing.T) {
 	}
 }
 
-// A valid DUMP_CONCURRENCY passes through unchanged and produces no warning.
-// This pins both negations on the rejection guard `err != nil || n < 1`
-// (loadPositiveInt): mutating `err != nil` -> `err == nil` or `n < 1` ->
-// `n >= 1` would reject a perfectly valid value and fall back to the default.
 func TestLoadValidConcurrencyPassesThrough(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "4"})
 	if cfg.DumpConcurrency != 4 {
@@ -224,8 +197,7 @@ func TestLoadValidConcurrencyPassesThrough(t *testing.T) {
 	}
 }
 
-// DUMP_CONCURRENCY=1 is the exact lower boundary: it is valid and must NOT be
-// rejected. The boundary mutant `n < 1` -> `n <= 1` would reject 1.
+// DUMP_CONCURRENCY=1 is the exact lower boundary and must be valid.
 func TestLoadConcurrencyBoundaryOneIsValid(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "1"})
 	if cfg.DumpConcurrency != 1 {
@@ -236,9 +208,7 @@ func TestLoadConcurrencyBoundaryOneIsValid(t *testing.T) {
 	}
 }
 
-// DUMP_KEEP=1 is the exact lower boundary: it selects the single-stable-file
-// scheme and is valid. The boundary mutant `n < 1` -> `n <= 1` (loadPositiveInt)
-// would reject 1 and fall back to the default of 7.
+// DUMP_KEEP=1 is the exact lower boundary: it selects the single-stable-file scheme and is valid.
 func TestLoadKeepBoundaryOneIsValid(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": "1"})
 	if cfg.DumpKeep != 1 {
@@ -313,11 +283,7 @@ func TestLoadShutdownTimeout(t *testing.T) {
 	}
 }
 
-// TestLoadShutdownTimeoutRejectsBareInteger is the clean-break contract for
-// SHUTDOWN_TIMEOUT: the value is a Go duration, and a bare integer (the old
-// unitless spelling of seconds) is NOT accepted as a compatibility fallback.
-// It parses as malformed, so it warns and takes the derived default rather
-// than silently meaning 30 seconds.
+// SHUTDOWN_TIMEOUT is a Go duration; a bare integer is not accepted as a compatibility fallback.
 func TestLoadShutdownTimeoutRejectsBareInteger(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "30"})
 	if cfg.ShutdownTimeout != cfg.DumpTimeout+15*time.Second {
@@ -329,10 +295,7 @@ func TestLoadShutdownTimeoutRejectsBareInteger(t *testing.T) {
 }
 
 func TestLoadDumpTimeout(t *testing.T) {
-	// The default budget has to clear the same minimum the loader enforces on
-	// operator input. A default below it would hand every dump a budget the
-	// loader would have refused from an operator, and at zero the dump context
-	// is already expired when pg_dump starts, so every database fails.
+	// The default must clear the same minimum the loader enforces on operator input.
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
 	if def.DumpTimeout < MinDumpTimeout {
 		t.Errorf("default DumpTimeout = %s, want at least MinDumpTimeout %s", def.DumpTimeout, MinDumpTimeout)
@@ -375,8 +338,7 @@ func TestLoadDumpIntervalInvalidFallsBack(t *testing.T) {
 	}
 }
 
-// A parseable NEGATIVE duration disables the timer (returns 0) and must warn --
-// distinct from "off"/"0" (silent 0) and an unparseable value (default 24h).
+// A parseable NEGATIVE duration disables the timer (returns 0) and must warn.
 func TestLoadDumpIntervalNegativeDisablesWithWarning(t *testing.T) {
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_INTERVAL": "-5m"})
 	if cfg.DumpInterval != 0 {
@@ -415,10 +377,6 @@ func TestLoadCustomListenAddrAndPGPassFile(t *testing.T) {
 }
 
 func TestLoadPositiveIntWarningNamesVariable(t *testing.T) {
-	// loadPositiveInt backs both DUMP_CONCURRENCY and DUMP_KEEP; the only thing
-	// distinguishing their fallback warnings is the name threaded from the call
-	// site. Pin that each warning names its own variable and renders the matching
-	// default (2 for concurrency, 7 for keep), so a swapped name argument is caught.
 	_, cw := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "bad"})
 	wantC := Warning(`DUMP_CONCURRENCY "bad" is not a positive integer; using default 2`)
 	if len(cw) != 1 || cw[0] != wantC {
@@ -433,10 +391,7 @@ func TestLoadPositiveIntWarningNamesVariable(t *testing.T) {
 }
 
 func TestLoadShutdownTimeoutZeroFallsBackToDerived(t *testing.T) {
-	// SHUTDOWN_TIMEOUT="0s" is non-positive: it must fall back to the derived
-	// DumpTimeout+15s budget with a warning, not be honored as a zero drain
-	// budget (a 0 timeout expires the shutdown drain context immediately
-	// and skips graceful drain).
+	// SHUTDOWN_TIMEOUT="0s" is non-positive and must fall back to the derived budget.
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "SHUTDOWN_TIMEOUT": "0s"})
 	if cfg.ShutdownTimeout != cfg.DumpTimeout+15*time.Second {
 		t.Errorf("SHUTDOWN_TIMEOUT=0s: ShutdownTimeout = %s, want derived %s", cfg.ShutdownTimeout, cfg.DumpTimeout+15*time.Second)
@@ -447,9 +402,7 @@ func TestLoadShutdownTimeoutZeroFallsBackToDerived(t *testing.T) {
 }
 
 func TestLoadShutdownTimeoutEqualToTimeoutNoWarning(t *testing.T) {
-	// At the drain budget == DumpTimeout the dump keeps its full budget on
-	// shutdown, so the "below DUMP_TIMEOUT" warning must fire only when the
-	// budget is STRICTLY less.
+	// The "below DUMP_TIMEOUT" warning must fire only when the budget is STRICTLY less.
 	cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "300", "SHUTDOWN_TIMEOUT": "300s"})
 	if cfg.ShutdownTimeout != 300*time.Second {
 		t.Errorf("SHUTDOWN_TIMEOUT=300s (== DUMP_TIMEOUT): ShutdownTimeout = %s, want 300s", cfg.ShutdownTimeout)
@@ -459,10 +412,7 @@ func TestLoadShutdownTimeoutEqualToTimeoutNoWarning(t *testing.T) {
 	}
 }
 
-// ListenerOpenAndPublic is true only when the endpoint is unauthenticated
-// (AUTH_TOKEN empty) AND bound to a non-loopback address. A set token, or a
-// loopback/localhost bind, makes it false. main turns a true result into a
-// one-line startup WARN.
+// ListenerOpenAndPublic is true only when AUTH_TOKEN is empty AND the bind is non-loopback.
 func TestListenerOpenAndPublic(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -492,11 +442,7 @@ func TestListenerOpenAndPublic(t *testing.T) {
 	}
 }
 
-// TestLoadTypedValuesTrimAndTreatBlankAsUnset pins the envx.Source parse
-// semantics this package adopted: typed values are trimmed before parsing, and
-// a whitespace-only value reads as UNSET — silent default, no warning. The
-// pre-envx loaders warned on whitespace-only input; the library's semantics
-// win, and this test is the record of that deliberate change.
+// envx.Source trims typed values before parsing; a whitespace-only value reads as UNSET (silent default, no warning).
 func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
 	t.Run("whitespace-only is unset, silent", func(t *testing.T) {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "   ", "DUMP_KEEP": "\t"})

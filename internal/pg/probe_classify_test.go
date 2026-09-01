@@ -23,8 +23,7 @@ func probeTestCtx(t *testing.T) context.Context {
 }
 
 // fakePsqlBin writes an executable stand-in for psql that ignores its args and
-// runs body, so Probe's post-dial classification can be exercised without a
-// real PostgreSQL server.
+// runs body, so Probe can be exercised without a real PostgreSQL server.
 func fakePsqlBin(t *testing.T, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "fakepsql")
@@ -36,8 +35,7 @@ func fakePsqlBin(t *testing.T, body string) string {
 
 // Probe separates a connect failure from an auth failure by dialing the host
 // first: a refused dial is FailConnect, while a successful dial followed by a
-// non-zero psql exit is FailAuth. Both arms are asserted against a real
-// loopback listener and a fake psql binary.
+// non-zero psql exit is FailAuth.
 func TestProbeClassifiesConnectVsAuth(t *testing.T) {
 	t.Run("dial ok and non-zero psql exit is auth", func(t *testing.T) {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -67,8 +65,6 @@ func TestProbeClassifiesConnectVsAuth(t *testing.T) {
 	})
 
 	t.Run("refused dial is connect", func(t *testing.T) {
-		// Bind then close to obtain a port that is almost certainly free, so
-		// the subsequent dial is refused rather than timing out.
 		l, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
@@ -79,7 +75,6 @@ func TestProbeClassifiesConnectVsAuth(t *testing.T) {
 
 		tool := New("/secrets/.pgpass", 5*time.Second)
 		tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\nexit 0\n") // must never run on a refused dial
-
 		_, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
 		if kind != dump.FailConnect {
 			t.Fatalf("Probe kind = %v, want FailConnect (dial refused)", kind)
@@ -90,13 +85,11 @@ func TestProbeClassifiesConnectVsAuth(t *testing.T) {
 	})
 }
 
-// Probe's post-dial psql failure has three arms beyond the auth case the
-// sibling test covers. A psql that cannot be started (vanished binary, fork
-// failure) is an environment fault, not auth: Probe must surface FailNone plus
-// the exec error so the orchestrator's classify maps it to ReasonOther,
-// mirroring the Dump path. And a non-zero psql exit that wrote nothing to
-// stderr must fall back to a synthetic "psql probe exited N" detail rather than
-// an empty error string.
+// Probe's post-dial psql failure has two more arms beyond the auth case above:
+// an unstartable psql (vanished binary, fork failure) is an environment fault,
+// so Probe must surface FailNone plus the exec error rather than auth; and a
+// non-zero exit with empty stderr falls back to a synthetic
+// "psql probe exited N" detail.
 func TestProbePostDialPsqlFailureArms(t *testing.T) {
 	t.Run("exec start failure after dial is not auth", func(t *testing.T) {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -109,7 +102,6 @@ func TestProbePostDialPsqlFailureArms(t *testing.T) {
 
 		tool := New("/secrets/.pgpass", 5*time.Second)
 		tool.psqlBin = filepath.Join(t.TempDir(), "no-such-psql") // never created
-
 		_, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
 		if kind != dump.FailNone {
 			t.Fatalf("Probe kind = %v, want FailNone (exec start failure is an environment fault, not auth)", kind)
@@ -130,7 +122,6 @@ func TestProbePostDialPsqlFailureArms(t *testing.T) {
 
 		tool := New("/secrets/.pgpass", 5*time.Second)
 		tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\nexit 3\n") // non-zero, writes nothing to stderr
-
 		_, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
 		if kind != dump.FailAuth {
 			t.Fatalf("Probe kind = %v, want FailAuth (dial ok, psql exited non-zero)", kind)
@@ -143,8 +134,7 @@ func TestProbePostDialPsqlFailureArms(t *testing.T) {
 
 // On a successful probe Probe reads server_version_num and reports
 // version_mismatch only when the shipped client major is older than the
-// server. Both arms are exercised with a fake pg_dump (client major) and a fake
-// psql (server_version_num) so no real PostgreSQL server is needed.
+// server.
 func TestProbeVersionClassification(t *testing.T) {
 	t.Run("server newer than client is version_mismatch", func(t *testing.T) {
 		l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -166,8 +156,8 @@ func TestProbeVersionClassification(t *testing.T) {
 		if major != 17 {
 			t.Errorf("Probe serverMajor = %d, want 17", major)
 		}
-		// The version-mismatch arm returns a non-nil error carrying the version
-		// gap so finish() logs the actionable "client N < server M" for the operator.
+		// The version-mismatch arm's error carries the version gap so finish()
+		// logs the actionable "client N < server M" for the operator.
 		if perr == nil {
 			t.Fatal("Probe err = nil, want the version-gap error surfaced for the operator log")
 		}
@@ -202,9 +192,8 @@ func TestProbeVersionClassification(t *testing.T) {
 	})
 }
 
-// A context timeout while psql is mid-flight must classify as a context error
-// (so classify maps it to timeout/killed), never a spurious auth_error. The
-// fake psql execs sleep so the ctx kill closes the stdout pipe promptly.
+// A context timeout while psql is mid-flight classifies as a context error
+// (so classify maps it to timeout/killed), never a spurious auth_error.
 func TestProbeCtxTimeoutNotAuth(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -215,8 +204,7 @@ func TestProbeCtxTimeoutNotAuth(t *testing.T) {
 	port, _ := strconv.Atoi(portStr)
 
 	tool := New("/secrets/.pgpass", 5*time.Second)
-	tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\nexec sleep 10\n") // outlives the ctx deadline; exec so kill closes the pipe
-
+	tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\nexec sleep 10\n") // outlives the deadline; exec so kill closes the pipe
 	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
 	defer cancel()
 
@@ -230,11 +218,9 @@ func TestProbeCtxTimeoutNotAuth(t *testing.T) {
 }
 
 // VerifyTOC rejects a non-zero pg_restore --list exit (a corrupt or
-// non-archive file), the secondary verify-before-replace guard: a readable
-// TOC (exit zero) is nil, a non-zero exit surfaces the bounded pg_restore
-// stderr tail, and an empty stderr falls back to a synthetic "pg_restore
-// --list exited N". Exercised with a fake restoreBin, so no real pg_restore
-// or archive fixture is needed (the same technique as the Probe tests).
+// non-archive file): exit zero is nil, a non-zero exit surfaces the bounded
+// stderr tail, and empty stderr falls back to a synthetic
+// "pg_restore --list exited N".
 func TestVerifyTOCExitClassification(t *testing.T) {
 	t.Run("readable toc (exit zero) is nil", func(t *testing.T) {
 		tool := New("/secrets/.pgpass", 5*time.Second)
@@ -268,12 +254,9 @@ func TestVerifyTOCExitClassification(t *testing.T) {
 	})
 }
 
-// TestVerifyTOCRunErrorMissingBinary covers VerifyTOC's run-error arm: when
-// pg_restore cannot be started (vanished binary / fork failure) run() returns a
-// non-ExitError, so VerifyTOC returns that exec error directly, distinct from
-// the non-zero-exit classification the exit-code arms exercise.
-// Pointing restoreBin at a non-existent path reaches it without a real
-// pg_restore -- the same fake-binary technique the Probe exec-start test uses.
+// VerifyTOC's run-error arm: when pg_restore cannot be started (vanished
+// binary / fork failure) run() returns a non-ExitError, distinct from the
+// non-zero-exit classification the exit-code arms exercise.
 func TestVerifyTOCRunErrorMissingBinary(t *testing.T) {
 	tool := New("/secrets/.pgpass", 5*time.Second)
 	tool.restoreBin = filepath.Join(t.TempDir(), "no-such-pg_restore") // never created
@@ -293,9 +276,9 @@ func TestBinariesPresent(t *testing.T) {
 	})
 }
 
-// Probe must NOT report version_mismatch when the client major cannot be resolved
-// (clientMajorCached caches 0 on a pg_dump --version failure): a non-resolvable client
-// skips the comparison rather than fabricating a mismatch.
+// Probe must not report version_mismatch when the client major cannot be
+// resolved: a non-resolvable client (clientMajorCached 0) skips the
+// comparison rather than fabricating a mismatch.
 func TestProbeUnknownClientMajorSkipsVersionCheck(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -321,10 +304,8 @@ func TestProbeUnknownClientMajorSkipsVersionCheck(t *testing.T) {
 	}
 }
 
-// Tool.Dump is the os/exec dump boundary. Its success path streams pg_dump stdout
-// into w and returns exit 0; a clean non-zero exit returns the code plus the bounded
-// stderr tail (no error). Exercised with a fake dumpBin -- the same technique the
-// Probe/VerifyTOC tests use -- so no real pg_dump or PostgreSQL server is needed.
+// Tool.Dump streams pg_dump stdout into w and returns exit 0 on success; a
+// clean non-zero exit returns the code plus the bounded stderr tail.
 func TestDumpStreamsAndClassifiesExit(t *testing.T) {
 	t.Run("ok streams stdout and exits zero", func(t *testing.T) {
 		tool := New("/secrets/.pgpass", 5*time.Second)
@@ -353,12 +334,9 @@ func TestDumpStreamsAndClassifiesExit(t *testing.T) {
 	})
 }
 
-// A non-positive dial timeout disables the per-dial sub-timeout: the dial must
-// fall back to the parent context, not a zero-length one. The guard is
-// `if t.dialTimeout > 0`, so with dialTimeout == 0 the dial uses ctx directly
-// and reaches a reachable server (FailNone). Were the guard to admit zero, the
-// dial would run under context.WithTimeout(ctx, 0) -- expiring immediately and
-// misreporting an open, healthy listener as connect_error.
+// A non-positive dial timeout disables the per-dial sub-timeout: the dial
+// must fall back to the parent context, not a zero-length one, or an open
+// reachable listener would misreport as connect_error.
 func TestProbeNonPositiveDialTimeoutUsesParentContext(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -370,12 +348,12 @@ func TestProbeNonPositiveDialTimeoutUsesParentContext(t *testing.T) {
 
 	tool := New("/secrets/.pgpass", 5*time.Second)
 	tool.dialTimeout = 0                                         // disable the dial sub-timeout
-	tool.dumpBin = filepath.Join(t.TempDir(), "no-such-pg_dump") // --version fails -> clientMajor 0 -> skip version check
+	tool.dumpBin = filepath.Join(t.TempDir(), "no-such-pg_dump") // --version fails -> clientMajor 0
 	tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\necho 150000\n")    // reachable server, major 15
 
 	major, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
 	if kind != dump.FailNone {
-		t.Fatalf("Probe kind = %v, want FailNone (a zero dial timeout must dial the open listener via the parent ctx, not expire instantly)", kind)
+		t.Fatalf("Probe kind = %v, want FailNone (a zero dial timeout must dial the open listener via the parent ctx)", kind)
 	}
 	if perr != nil {
 		t.Errorf("Probe err = %v, want nil", perr)

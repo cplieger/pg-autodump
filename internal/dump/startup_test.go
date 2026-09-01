@@ -59,9 +59,7 @@ func TestDueForStartupDump(t *testing.T) {
 	})
 
 	t.Run("root-level dump file is ignored", func(t *testing.T) {
-		// Dumps only ever live under per-server subdirs; a file at the
-		// DUMP_DIR root (e.g. a pre-per-server-layout leftover) is not an
-		// artifact of this app and must not suppress the startup dump.
+		// Dumps live under per-server subdirs; a root-level file is not this app's.
 		dir := t.TempDir()
 		writeWithMtime(t, filepath.Join(dir, "app.dump"), now.Add(-1*time.Hour))
 		if !DueForStartup(dir, interval, now) {
@@ -80,9 +78,7 @@ func TestDueForStartupDump(t *testing.T) {
 
 	t.Run("non-dump files are ignored", func(t *testing.T) {
 		dir := t.TempDir()
-		// A recent non-".dump" file inside a server subdir must not count as
-		// a recent dump (in a subdir so the suffix filter, not the root
-		// ignore, is what this case pins).
+		// In a subdir, so this pins the suffix filter, not the root ignore.
 		writeWithMtime(t, filepath.Join(mkSubdir(t, dir, "h_5432"), "notes.txt"), now.Add(-1*time.Hour))
 		if !DueForStartup(dir, interval, now) {
 			t.Fatal("only a non-dump file present: want due (no dump artifact)")

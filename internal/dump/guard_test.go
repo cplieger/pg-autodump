@@ -39,7 +39,7 @@ func TestGuardSingleFlightAndCancel(t *testing.T) {
 
 	t.Run("CancelInFlight is a no-op when idle", func(t *testing.T) {
 		var g Guard
-		g.CancelInFlight() // must not panic with no run in flight
+		g.CancelInFlight()
 	})
 
 	t.Run("release clears the cancel pointer", func(t *testing.T) {
@@ -57,9 +57,9 @@ func TestGuardSingleFlightAndCancel(t *testing.T) {
 func TestGuardWaitIdle(t *testing.T) {
 	t.Run("idle guard returns true even when ctx is already done", func(t *testing.T) {
 		var g Guard
-		// Deliberately pre-cancelled, not t.Context().
+		// Pre-cancelled: t.Context() would not be cancelled yet here.
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // drain budget already expired
+		cancel()
 		if !g.WaitIdle(ctx) {
 			t.Fatal("WaitIdle on an idle guard = false, want true (no run in flight, so the idle check precedes the ctx check)")
 		}
@@ -67,8 +67,6 @@ func TestGuardWaitIdle(t *testing.T) {
 
 	t.Run("returns true when the in-flight run finishes", func(t *testing.T) {
 		var g Guard
-		// A run whose done channel is already closed: the run finished, so
-		// WaitIdle must observe the closed channel and report idle.
 		ch := make(chan struct{})
 		close(ch)
 		g.done.Store(&ch)
@@ -84,9 +82,9 @@ func TestGuardWaitIdle(t *testing.T) {
 			t.Fatal("TryAcquire ok = false, want true")
 		}
 		defer release()
-		// Deliberately pre-cancelled, not t.Context().
+		// Pre-cancelled: t.Context() would not be cancelled yet here.
 		ctx, cancel := context.WithCancel(context.Background())
-		cancel() // drain budget expires while the run is still in flight
+		cancel()
 		if g.WaitIdle(ctx) {
 			t.Fatal("WaitIdle = true while a run is held and ctx is done, want false")
 		}

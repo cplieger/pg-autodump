@@ -72,7 +72,6 @@ func TestStageAndReplace(t *testing.T) {
 					t.Fatal("target was not replaced on success")
 				}
 			} else if string(got) != known {
-				// A failed dump never overwrites the known-good file.
 				t.Fatalf("known-good backup was clobbered on failure: got %q", got)
 			}
 		})
@@ -93,13 +92,10 @@ func TestStageAndReplaceContextTimeout(t *testing.T) {
 	}
 }
 
-// A context cancelled after a successful verify -- so the cancel lands on
-// pending.Commit -- classifies as killed/timeout, not rename_failed. atomicfile's
-// Commit checks ctx.Err() at the top of its temp-side barrier and returns a
-// context-wrapped error on cancel; the Commit branch must treat that as a ctx
-// cancel rather than a filesystem rename fault (which would send an operator
-// chasing a phantom disk/permissions problem during what was really a
-// timeout/shutdown).
+// A cancel landing on pending.Commit must classify as killed/timeout, not
+// rename_failed: atomicfile's Commit checks ctx.Err() at the top of its
+// temp-side barrier and returns a context-wrapped error, which must not be
+// mistaken for a filesystem rename fault.
 func TestStageAndReplaceCommitContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -121,10 +117,8 @@ func TestStageAndReplaceCommitContextCancel(t *testing.T) {
 	}
 }
 
-// A context cancel landing while VerifyTOC runs must classify as killed/timeout,
-// not truncated: the run was aborted, the staged file is not proven corrupt. The
-// discriminator sub-test pins that a verify error under a live context still
-// classifies as truncated, so only the cancel branch flips the reason.
+// A cancel landing while VerifyTOC runs must classify as killed/timeout, not
+// truncated: the run was aborted, the staged file is not proven corrupt.
 func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 	t.Run("cancel during verify is killed not truncated", func(t *testing.T) {
 		dir := t.TempDir()
@@ -165,29 +159,23 @@ func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 	})
 }
 
-// A context cancel that lands before the temp file is created (atomicfile checks
-// ctx at NewPendingFile time) must classify as killed/timeout, not the generic
-// ReasonOther: the run was aborted, not a temp-create fault.
+// A cancel landing before atomicfile creates the temp file must classify as
+// killed/timeout, not the generic ReasonOther.
 func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 	dir := t.TempDir()
-	// Deliberately pre-cancelled, not t.Context().
+	// Pre-cancelled: t.Context() would not be dead before stageAndReplace runs.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // dead ctx before stageAndReplace: NewPendingFile sees it first
+	cancel()
 	res := stageAndReplace(ctx, &fakePG{}, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 	if res.Reason != ReasonKilled {
 		t.Fatalf("reason = %q, want killed (a cancel at temp-create must not be ReasonOther)", res.Reason)
 	}
 }
 
-// When the target cannot be replaced for a real filesystem reason while the
-// context is still live, stageAndReplace must classify the outcome as
-// rename_failed -- not killed/timeout and not ok. Pre-creating the target as a
-// directory is the deterministic way to reach it: atomicfile refuses a
-// non-regular write target up front (ErrNotRegular at NewPendingFile) rather
-// than staging a whole dump for a rename that cannot succeed, so this arrives
-// at the temp-create gate. The reason word is the same either way, which is the
-// point -- the operator fact is "the prior dump is intact and the new one could
-// not be put in place", not which syscall noticed.
+// A real filesystem failure under a live context must classify as
+// rename_failed. Pre-creating the target as a directory reaches this: atomicfile
+// refuses a non-regular write target (ErrNotRegular) at the temp-create gate,
+// same reason word as a Commit-time rename failure would give.
 func TestStageAndReplaceCommitRenameFailedLiveCtx(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.Mkdir(filepath.Join(dir, "app.dump"), 0o755); err != nil {
@@ -206,7 +194,7 @@ func TestStageAndReplaceCommitRenameFailedLiveCtx(t *testing.T) {
 }
 
 // A non-context dump error with a zero exit code classifies as ReasonOther
-// carrying the dump error text, distinct from the size/verify path.
+// carrying the dump error text.
 func TestStageAndReplaceDumpErrorExitZero(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -224,8 +212,6 @@ func TestStageAndReplaceDumpErrorExitZero(t *testing.T) {
 	}
 }
 
-// A temp file that cannot be created in a missing directory (with a live ctx)
-// classifies as ReasonOther with a non-empty "cannot create temp file" detail.
 func TestStageAndReplaceUnwritableDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-dir")
 	res := stageAndReplace(deadlineCtx(t), &fakePG{}, missing, "app.dump",
@@ -238,8 +224,6 @@ func TestStageAndReplaceUnwritableDir(t *testing.T) {
 	}
 }
 
-// stageAndReplace classifies an empty stderr tail as a generic line and a
-// non-empty tail as an annotated line.
 func TestStderrDetail(t *testing.T) {
 	t.Parallel()
 	if got := stderrDetail(""); got != "dump failed (pg_dump exited non-zero)" {

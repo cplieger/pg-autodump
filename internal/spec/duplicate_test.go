@@ -2,11 +2,8 @@ package spec
 
 import "testing"
 
-// ParseSpecs marks the second of two specs that collide on host:port:dbname as
-// a Duplicate (the dedup key excludes the user), keeping the first. The flag is
-// what makes invalidResult report a "duplicate" reason rather than a generic
-// "invalid", so it must be set on the colliding spec and left false on both the
-// keeper and a format-invalid token.
+// ParseSpecs marks the second of two specs colliding on host:port:dbname as
+// Duplicate (the dedup key excludes the user), keeping the first.
 func TestParseSpecsMarksDuplicateFlag(t *testing.T) {
 	specs := Parse("host:db:user host:db:user2 nope")
 	if len(specs) != 3 {

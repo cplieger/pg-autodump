@@ -39,12 +39,11 @@ version=$2
 shift 2
 [ -n "$dep" ] && [ -n "$version" ] || usage
 
-# The version is interpolated into the sed EXPRESSION below, and GNU sed's `e`
-# flag and `e` command execute the pattern space as a shell command, so a
-# version carrying `|` and `;` is arbitrary code execution here. It also reaches
-# curl as part of a URL, where `{}`/`[]` trigger curl's own URL globbing.
-# The value is not ours: it is whatever version a third-party datasource
-# reports, so constrain it to the shape a version has before any use.
+# The version is interpolated into a sed expression below, and GNU sed's `e`
+# flag/command execute the pattern space as a shell command, so a version
+# carrying `|`/`;` is arbitrary code execution here; it also reaches curl as
+# part of a URL, where `{}`/`[]` trigger curl's own globbing. Constrain it to
+# the shape a version has before any use.
 case $version in
   *[!A-Za-z0-9._+~-]*)
     printf 'repin: refusing version with unexpected characters: %s\n' "$version" >&2
@@ -59,11 +58,10 @@ if [ $# -eq 0 ]; then
 fi
 
 tmp=$(mktemp -d)
-# staged is the in-place rewrite target beside the Dockerfile, tracked here so
-# the trap can remove it: it lives OUTSIDE $tmp by necessity (a rename must be
-# same-filesystem), so the mktemp -d cleanup cannot reach it, and an interrupt
-# between the copy and the rename would otherwise leave it in the working tree
-# for Renovate to carry into a branch.
+# staged is the in-place rewrite target beside the Dockerfile; it lives
+# OUTSIDE $tmp because a rename must be same-filesystem, so the mktemp -d
+# cleanup cannot reach it, and an interrupt between copy and rename would
+# otherwise leave it in the working tree for Renovate to commit.
 staged=
 cleanup() {
   rm -rf "$tmp"
@@ -72,20 +70,16 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-# resolve_target prints the real path of $1, following symlinks.
+# resolve_target prints the real path of $1, following symlinks: the rewrite
+# below commits by rename, which must land beside the actual file, and a
+# Dockerfile reached through a symlink must be updated at its target rather
+# than replaced by a regular file.
 #
-# It matters because the rewrite below commits by RENAME, which must land beside
-# the actual file, and because a Dockerfile reached through a symlink has to be
-# updated at its TARGET rather than replaced by a regular file — silently
-# breaking whatever the symlink was arranged for.
-#
-# Neither realpath nor readlink is in POSIX (realpath arrived only in
-# POSIX.1-2024) and this script is `#!/bin/sh` synced across every repo, so both
-# are probed rather than assumed. With neither available a SYMLINKED Dockerfile
-# fails closed: the rewrite commits by rename, so returning the unresolved path
-# would turn a tracked symlink into a regular file, and a warning does not
-# preserve the arrangement the symlink exists for. An ordinary file still uses
-# the path as given, which needs no resolver.
+# Neither realpath nor readlink is POSIX (realpath arrived only in
+# POSIX.1-2024) and this script is synced across every repo, so both are
+# probed. With neither available, a symlinked Dockerfile fails closed (a
+# rename would turn the symlink into a regular file); an ordinary file uses
+# the path as given.
 resolve_target() {
   if command -v realpath >/dev/null 2>&1; then
     realpath "$1"
@@ -192,23 +186,15 @@ for dockerfile in "$@"; do
       exit 1
     fi
 
-    # Replace atomically. '>' truncates the target before the first byte lands,
-    # so a killed postUpgradeTask or an ENOSPC leaves a truncated Dockerfile in
-    # the branch Renovate commits. Stage beside the TARGET (the mktemp -d above
-    # is a different filesystem, so a rename out of it cannot work) and rename
-    # over it; copying the original first carries its mode across the replace,
-    # which `cp -p` does portably where `chmod --reference` is GNU-only.
+    # Replace atomically. '>' truncates the target before the first byte
+    # lands, so a killed task or ENOSPC would leave a truncated Dockerfile.
+    # Stage beside the TARGET (mktemp -d above is a different filesystem) and
+    # rename over it; `cp -p` carries the original's mode across the replace.
     #
-    # mktemp, not a name built from $$: it creates the file with O_EXCL under an
-    # unpredictable name, so nothing can be sitting at the path when the copy opens
-    # it -- a $$-derived name is guessable and `rm -f` then `cp -p` reopens by path,
-    # which is a window a symlink planted there turns into a write through it. The
-    # rename still commits, and `cp -p` still carries the original's mode across the
-    # replace (verified: cp -p sets the source's mode on an existing destination),
-    # which is why mktemp's own 0600 does not leak into the committed file. A
-    # leftover matches neither postUpgradeTasks fileFilter (Dockerfile,
-    # **/Dockerfile), so it can never be committed. shell.md, "Temp files and atomic
-    # writes".
+    # mktemp, not a $$-derived name: it creates the file with O_EXCL under an
+    # unpredictable name, closing the window a symlink planted at a guessable
+    # path could otherwise turn into a write-through. A leftover matches
+    # neither postUpgradeTasks fileFilter, so it can never be committed.
     staged=$(mktemp "$dockerfile_target.repin.XXXXXX")
     cp -p "$dockerfile_target" "$staged"
     cat "$tmp/rewritten" >"$staged"

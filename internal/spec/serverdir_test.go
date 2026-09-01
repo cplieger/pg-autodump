@@ -27,12 +27,10 @@ func TestServerDir(t *testing.T) {
 	}
 }
 
-// Distinct (host, port) identities must map to distinct directories, and an
-// IPv6 directory must never equal a hostname/IPv4 directory: the '@' prefix
-// (which the host grammar can never produce) keeps the two namespaces disjoint,
-// so the h-f3 silent overwrite cannot reappear in IPv6 form.
+// The '@' prefix (which the host grammar can never produce) keeps the IPv6
+// and hostname/IPv4 namespaces disjoint, so distinct identities never collide.
 func TestServerDirDisjointAndInjective(t *testing.T) {
-	seen := map[string]string{} // dir -> identity label
+	seen := map[string]string{}
 	add := func(label, host string, port int) {
 		t.Helper()
 		dir := ServerDir(host, port)
@@ -46,7 +44,6 @@ func TestServerDirDisjointAndInjective(t *testing.T) {
 	add("h2:5432", "h2", 5432)
 	add("ipv6 a", "2001:db8::1", 5432)
 	add("ipv6 b", "2001:db8::2", 5432)
-	// A hostname that dash-encodes like the IPv6 body but lacks the '@' prefix.
 	add("hostname lookalike", "2001-db8--1", 5432)
 
 	if ServerDir("2001:db8::1", 5432) == ServerDir("2001-db8--1", 5432) {
@@ -57,8 +54,8 @@ func TestServerDirDisjointAndInjective(t *testing.T) {
 // The port is recovered as the trailing digit run, so a host whose name ends in
 // digits never aliases another (host, port) pair.
 func TestServerDirPortDigitsUnambiguous(t *testing.T) {
-	a := ServerDir("h1", 5432) // "h1_5432"
-	b := ServerDir("h", 15432) // "h_15432"
+	a := ServerDir("h1", 5432)
+	b := ServerDir("h", 15432)
 	if a == b {
 		t.Fatalf("ServerDir collision: %q == %q", a, b)
 	}

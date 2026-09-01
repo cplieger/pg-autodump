@@ -11,11 +11,8 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// reclaimedMsg is the message of ReclaimOrphans's reclaim line, the scope for
-// the capture assertions below.
 const reclaimedMsg = "reclaimed stale temp files"
 
-// writeFile creates a file with marker content, failing the test on error.
 func writeFile(t *testing.T, path string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
@@ -24,9 +21,8 @@ func writeFile(t *testing.T, path string) {
 }
 
 // Crash-orphaned atomicfile temps are reclaimed from the per-server
-// subdirectories — where the app stages dump temps — while committed dumps are
-// left alone. The pre-fix behavior scanned only the root, so a temp orphaned
-// inside <host>_<port>/ accumulated forever on the backup volume.
+// subdirectories where the app stages dump temps; committed dumps are left
+// alone.
 func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "dbhost_5432")
@@ -49,15 +45,11 @@ func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 	}
 }
 
-// The DUMP_DIR root is scanned too, because it is where obs.Preflight's
-// writability probe lands and the probe is now an atomicfile-shaped temp: a
-// directory that accepts a write but denies the unlink leaks one there, and
-// this sweep is the only thing that can reclaim it. This REPLACES the earlier
-// assertion that a root-level ".atomicfile-<digits>.tmp" is left alone — that
-// rested on "files at the DUMP_DIR root are never the app's", which the probe
-// made false. The narrowness the old assertion was really protecting is pinned
-// instead by the operator's own root files below, which must survive: only
-// atomicfile's exact shape is eligible, at the root as in a subdir.
+// The DUMP_DIR root is scanned too: obs.Preflight's writability probe lands
+// there as an atomicfile-shaped temp, and a directory that accepts a write but
+// denies the unlink leaks one that only this sweep can reclaim. Only
+// atomicfile's exact temp shape is eligible; an operator's own root files
+// must survive.
 func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
 	dir := t.TempDir()
 	leakedProbe := filepath.Join(dir, atomicfile.TempName())
@@ -80,10 +72,9 @@ func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
 	}
 }
 
-// A file that merely resembles a temp (non-digit middle) and a DIRECTORY named
-// like a temp are never reclaimed, even inside a scanned server subdir: only
-// atomicfile's exact ".atomicfile-<digits>.tmp" shape for regular files is
-// eligible.
+// A file that only resembles a temp (non-digit middle) and a directory named
+// like one are never reclaimed: only atomicfile's exact
+// ".atomicfile-<digits>.tmp" shape for regular files is eligible.
 func TestReclaimOrphansLeavesNonTemps(t *testing.T) {
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "dbhost_5432")
@@ -107,9 +98,8 @@ func TestReclaimOrphansLeavesNonTemps(t *testing.T) {
 	}
 }
 
-// A missing DUMP_DIR is tolerated: the scan is best-effort (the preflight and
-// the dumps themselves surface a broken volume) and must not panic or create
-// anything.
+// A missing DUMP_DIR is tolerated: the scan is best-effort and must not panic
+// or create anything.
 func TestReclaimOrphansMissingDirIsNoop(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist")
 	ReclaimOrphans(t.Context(), dir, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -118,11 +108,8 @@ func TestReclaimOrphansMissingDirIsNoop(t *testing.T) {
 	}
 }
 
-// The reclaim is reported through the logger the CALLER supplied, and the line
-// carries how many temps were removed. That count is the operator's only record
-// that orphans were accumulating in a directory this app stages a dump into
-// every cycle, so it must reach the caller's own logger rather than whatever the
-// process default happens to be.
+// The reclaim count reaches the caller's own supplied logger, not a process
+// default: it is the operator's only record that orphans were accumulating.
 func TestReclaimOrphansReportsTheReclaimToTheSuppliedLogger(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -145,11 +132,8 @@ func TestReclaimOrphansReportsTheReclaimToTheSuppliedLogger(t *testing.T) {
 	}
 }
 
-// A sweep with nothing to reclaim says nothing at all. Both lines are operator
-// signals — the Info one says orphans were accumulating, the Warn one says they
-// could not be removed and the volume is filling — so a cycle that reclaimed
-// zero temps and failed on none must stay silent, or every clean run reports a
-// problem it does not have.
+// A sweep with nothing to reclaim stays silent, or every clean run would
+// report a problem it does not have.
 func TestReclaimOrphansCleanSweepIsSilent(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -167,10 +151,8 @@ func TestReclaimOrphansCleanSweepIsSilent(t *testing.T) {
 	}
 }
 
-// A directory the sweep could read reports no cleanup failure, and the counts it
-// returns are the outcome the caller sums into the reclaim line. reclaimDir's
-// Warn names a dump directory the sweep could not walk, which is a volume-level
-// fault an operator is expected to act on; a readable one must not produce it.
+// A readable directory reports no cleanup failure; reclaimDir's Warn is
+// reserved for a directory the sweep could not walk.
 func TestReclaimDirReadableDirReportsCleanCounts(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -187,19 +169,14 @@ func TestReclaimDirReadableDirReportsCleanCounts(t *testing.T) {
 	}
 }
 
-// A temp the sweep SEES and cannot unlink is reported, not silently dropped.
-// This is the only outcome of the three that reaches an operator here:
-// obs.Preflight's ladder probes the DUMP_DIR root only, so a per-server
-// subdirectory that takes a create and refuses an unlink is outside its reach,
-// and dumps keep succeeding because a dump commits with a rename. It also does
-// not self-clear: atomicfile counts ENOENT on either the lstat or the remove as
-// neither removed nor failed, so a benign race with a concurrent preflight
-// probe cannot produce this count.
-//
-// The sticky bit is what separates "cannot unlink" from "cannot write": on a +t
-// directory only the file's owner may unlink, while anyone with write
-// permission may still create. Root bypasses that check, so the test skips
-// rather than asserting a condition the kernel will not produce for it.
+// A temp the sweep sees and cannot unlink is reported, not silently dropped:
+// obs.Preflight's ladder only probes the DUMP_DIR root, so a per-server
+// subdirectory that refuses an unlink is outside its reach. atomicfile counts
+// ENOENT on either the lstat or the remove as neither removed nor failed, so a
+// benign race cannot produce this count. The sticky bit is what separates
+// "cannot unlink" from "cannot write" (only the file's owner may unlink); root
+// bypasses that check, so the test skips rather than asserting a condition the
+// kernel will not produce for it.
 func TestReclaimOrphansReportsUnreclaimableTemps(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the sticky-bit unlink restriction this case needs")
@@ -211,8 +188,7 @@ func TestReclaimOrphansReportsUnreclaimableTemps(t *testing.T) {
 	}
 	orphan := filepath.Join(sub, ".atomicfile-789.tmp")
 	writeFile(t, orphan)
-	// r-x only: the entry is listable, so the temp is a candidate, and the
-	// unlink is denied.
+	// r-x: the entry is listable (a candidate) but the unlink is denied.
 	if err := os.Chmod(sub, 0o500); err != nil {
 		t.Fatalf("chmod: %v", err)
 	}
@@ -230,11 +206,10 @@ func TestReclaimOrphansReportsUnreclaimableTemps(t *testing.T) {
 	}
 }
 
-// The flat sweep can never report Unreadable, which is why ReclaimOrphans does
-// not read it: atomicfile increments that counter only for a path BELOW the
-// swept directory, and every sweep here is one directory deep. A subdirectory
-// nobody can enter is therefore invisible to this sweep rather than counted,
-// and the guard against that is the per-server loop visiting each one directly.
+// The flat sweep can never report Unreadable: atomicfile increments that
+// counter only for a path below the swept directory, and every sweep here is
+// one directory deep. The per-server loop visiting each subdirectory directly
+// is what actually guards against an unreadable one going unnoticed.
 func TestReclaimDirUnreadableSubdirIsNotCounted(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses the directory-mode restriction this case needs")

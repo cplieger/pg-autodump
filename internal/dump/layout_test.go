@@ -28,9 +28,9 @@ func orchestratorFor(t *testing.T, dir string, keep int, specs []spec.DBSpec) *O
 	})
 }
 
-// Two databases sharing a name on different hosts must not collide: each lands
-// under its own <host>_<port>/ subdirectory, so both backups survive. This is
-// the h-f3 silent-overwrite regression test.
+// Two databases sharing a name on different hosts land under separate
+// <host>_<port>/ subdirectories, so both backups survive (the h-f3 silent
+// -overwrite regression).
 func TestRunHostQualifiedNoCollision(t *testing.T) {
 	dir := t.TempDir()
 	specs := []spec.DBSpec{
@@ -51,8 +51,7 @@ func TestRunHostQualifiedNoCollision(t *testing.T) {
 	}
 }
 
-// The same database name on the same host but two ports (two containers) also
-// stays distinct.
+// The same database name on the same host but two ports also stays distinct.
 func TestRunHostQualifiedPortDisambiguation(t *testing.T) {
 	dir := t.TempDir()
 	specs := []spec.DBSpec{
@@ -93,14 +92,11 @@ func TestRunHostQualifiedIPv6(t *testing.T) {
 	}
 }
 
-// A relative DUMP_DIR still produces dumps. The orchestrator resolves the
-// configured directory to an absolute path once, at construction, because the
-// per-server custody check refuses a relative one: a verdict about
-// "dumps/h_5432" is a statement about wherever the process happens to be
-// standing, which nothing stops another goroutine from changing between the
-// check and the write. Operators have never been required to configure an
-// absolute path, so without that resolution every database in the run would
-// fail mkdir_failed.
+// A relative DUMP_DIR still produces dumps. The orchestrator resolves it to
+// an absolute path once, at construction: the per-server custody check
+// refuses a relative one, since a verdict about "dumps/h_5432" is a statement
+// about wherever the process happens to be standing, which nothing stops
+// another goroutine from changing between the check and the write.
 func TestRunRelativeDumpDirStillWritesDumps(t *testing.T) {
 	base := t.TempDir()
 	t.Chdir(base)
@@ -116,9 +112,9 @@ func TestRunRelativeDumpDirStillWritesDumps(t *testing.T) {
 	}
 }
 
-// When the per-server subdirectory cannot be created (here a regular file
-// occupies its path), that database fails with reason mkdir_failed and a detail
-// naming the directory, and other databases in the run are unaffected.
+// When the per-server subdirectory cannot be created (a regular file occupies
+// its path), that database fails with mkdir_failed and a detail naming the
+// directory; other databases in the run are unaffected.
 func TestRunMkdirFailedIsPerDB(t *testing.T) {
 	dir := t.TempDir()
 	// Occupy "h1_5432" with a regular file so MkdirAll fails for that server.
@@ -167,8 +163,8 @@ func TestRunRetentionIsolatedPerServer(t *testing.T) {
 		{Host: "h1", Port: 5432, DBName: "app", User: "u"},
 		{Host: "h2", Port: 5432, DBName: "app", User: "u"},
 	}
-	// keep=2: each server keeps its 2 newest (fresh 2026 dump + newest 2020),
-	// pruning exactly the 2 oldest 2020 copies in EACH subdir independently.
+	// keep=2: each server keeps its 2 newest, pruning exactly the 2 oldest
+	// 2020 copies in each subdir independently.
 	res := orchestratorFor(t, dir, 2, specs).Run(deadlineCtx(t))
 	for i, r := range res {
 		if r.Reason != ReasonOK {
@@ -191,14 +187,10 @@ func TestRunRetentionIsolatedPerServer(t *testing.T) {
 	}
 }
 
-// requireSetgidWidensMkdir makes parent setgid and proves the kernel really does
-// store a mode mkdir did not ask for underneath it, skipping the caller
-// otherwise. It is the witness that keeps the create-path custody tests below
-// honest: on a filesystem that honours every mode request, a test that creates a
-// directory and finds it 0700 cannot tell a VERIFIED create from an unverified
-// one, and would pass just as happily against the os.MkdirAll it replaced.
-// Linux propagates S_ISGID from a setgid parent to a new subdirectory, which is
-// a real widening produced by the kernel rather than a mock.
+// requireSetgidWidensMkdir makes the parent setgid and proves the kernel
+// widens a mkdir's mode underneath it, skipping the caller otherwise: without
+// this witness, a test cannot distinguish a verified create from an
+// unverified one on a filesystem that honours every mode request.
 func requireSetgidWidensMkdir(t *testing.T, parent string) {
 	t.Helper()
 	if err := os.Chmod(parent, 0o700|os.ModeSetgid); err != nil {
@@ -218,11 +210,9 @@ func requireSetgidWidensMkdir(t *testing.T, parent string) {
 	}
 }
 
-// The per-server directory that receives a full pg_dump must come out owner-only
-// as MEASURED, not as requested. os.MkdirAll(dir, 0o700) asked for 0700 and
-// never looked at what it got, so on a filesystem storing something wider the
-// directory holding every row of every dumped database was born
-// group-accessible, from a call that reported success.
+// The per-server directory receiving a full pg_dump must come out owner-only
+// as MEASURED, not as requested: os.MkdirAll(dir, 0o700) never checked what
+// the filesystem actually stored.
 func TestEnsureServerDirVerifiesTheModeItCreated(t *testing.T) {
 	parent := t.TempDir()
 	requireSetgidWidensMkdir(t, parent)
@@ -265,45 +255,36 @@ func TestRunVerifiesTheServerDirModeItCreated(t *testing.T) {
 	}
 }
 
-// A pre-existing server directory carrying group access is REFUSED, not adopted
-// and not chmod'd into compliance: dumping into it would publish the database to
-// whoever already had access, and repairing a directory this process did not
-// create would take over a name another principal may own. The failure is the
-// per-DB mkdir_failed reason, so the operator sees it per database rather than
-// losing the whole run.
-// TestEnsureServerDirRepairsItsOwnGroupAccessibleOutput pins the migration
-// contract. An earlier release created these per-server directories with a plain
-// MkdirAll(0o700), so on a widening dataset they are already sitting at 0770 —
-// and the library's default rule, never repair a pre-existing directory, would
-// refuse every one of them and fail every database with mkdir_failed on the
-// first run after the upgrade. WithRepairOwnedDir narrows them instead.
+// A pre-existing server directory carrying group access is refused, not
+// adopted or repaired: dumping into it would publish the database, and
+// repairing a directory this process did not create would take over a name
+// another principal may own.
 //
-// This is not a weakening: EnsurePrivateDir has already proved the directory is
-// owned by our own euid before the repair is considered, and a directory cannot
-// be planted under another uid's ownership. What it costs is that a deliberately
-// group-readable per-server directory would be narrowed — which is the right
-// trade here and NOT at the cycle dir, whose comment says so: that one is on
-// ephemeral tmpfs where no legacy mode can exist, so it still refuses.
+// This test pins the migration contract instead: an earlier release created
+// these directories with a plain MkdirAll(0o700), so on a widening dataset
+// they may already sit at 0770, and the default refuse-on-preexisting rule
+// would fail every database with mkdir_failed on the first run after
+// upgrade. WithRepairOwnedDir narrows them instead — sound because
+// EnsurePrivateDir has already proved the directory is owned by our own
+// euid. This trade is right here and NOT at the cycle dir (ephemeral tmpfs,
+// no legacy mode can exist), which still refuses.
 func TestEnsureServerDirRepairsItsOwnGroupAccessibleOutput(t *testing.T) {
 	parent := t.TempDir()
 	dir := filepath.Join(parent, spec.ServerDir("h1", 5432))
 	if err := os.Mkdir(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	// Mkdir applies umask; force the wide mode explicitly.
-	if err := os.Chmod(dir, 0o750); err != nil {
+	if err := os.Chmod(dir, 0o750); err != nil { // Mkdir applies umask; force the wide mode explicitly
 		t.Fatal(err)
 	}
 	if err := orchestratorFor(t, parent, 1, nil).ensureServerDir(dir); err != nil {
-		t.Fatalf("a 0750 directory this app itself created was refused: %v; "+
-			"every database would fail with mkdir_failed on the first run after upgrade", err)
+		t.Fatalf("a 0750 directory this app itself created was refused: %v", err)
 	}
 	fi, err := os.Lstat(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if fi.Mode().Perm() != 0o700 {
-		t.Fatalf("mode = %v, want 0700: the pre-existing directory was adopted without being repaired",
-			fi.Mode().Perm())
+		t.Fatalf("mode = %v, want 0700 (the pre-existing directory must be repaired)", fi.Mode().Perm())
 	}
 }

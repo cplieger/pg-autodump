@@ -30,10 +30,7 @@ func TestClassify(t *testing.T) {
 	}
 }
 
-// BodyDetail keeps raw pg_dump/pg_restore stderr out of the response body: the
-// execution-tool failure reasons (pg_error, truncated, other) render as the
-// bare reason word, while safe reasons render their Detail (falling back to the
-// reason word when Detail is empty). The full detail still reaches the logs.
+// stderr must never reach the response body; logs only.
 func TestResultBodyDetail(t *testing.T) {
 	for _, r := range []Reason{ReasonPGError, ReasonTruncated, ReasonOther} {
 		res := Result{Reason: r, Detail: "dump failed: FATAL secret-schema does not exist"}

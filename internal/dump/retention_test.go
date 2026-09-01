@@ -30,9 +30,7 @@ func TestDumpFileName(t *testing.T) {
 	}
 }
 
-// dumpFileName must be sortable by name == sortable by time, so prune can sort
-// lexically. Two timestamps an hour apart must keep their chronological order
-// under a plain string sort.
+// dumpFileName must be sortable by name == sortable by time, so prune can sort lexically.
 func TestDumpFileNameLexicallySortable(t *testing.T) {
 	t.Parallel()
 	older := dumpFileName("app", 2, time.Date(2026, 6, 13, 1, 0, 0, 0, time.UTC))
@@ -52,7 +50,6 @@ func TestPruneOldDumps(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// Five timestamped copies for "app", oldest first.
 	stamps := []string{
 		"app.20260101T000000Z.dump",
 		"app.20260102T000000Z.dump",
@@ -63,10 +60,9 @@ func TestPruneOldDumps(t *testing.T) {
 	for _, s := range stamps {
 		write(s)
 	}
-	// Decoys that must never be touched: a bare stable file, a prefix-colliding
-	// db, and an unrelated file.
-	write("app.dump")                      // bare stable file (keep<=1 scheme)
-	write("appdata.20260101T000000Z.dump") // different db that shares a prefix
+	// Decoys that must never be touched: a bare stable file, a prefix-colliding db, and an unrelated file.
+	write("app.dump")
+	write("appdata.20260101T000000Z.dump")
 	write("notes.txt")
 
 	removed, err := pruneOldDumps(dir, "app", 2)
@@ -78,10 +74,10 @@ func TestPruneOldDumps(t *testing.T) {
 	}
 
 	mustExist := []string{
-		"app.20260104T000000Z.dump", // newest two kept
+		"app.20260104T000000Z.dump",
 		"app.20260105T000000Z.dump",
-		"app.dump",                      // bare file untouched
-		"appdata.20260101T000000Z.dump", // prefix-collision db untouched
+		"app.dump",
+		"appdata.20260101T000000Z.dump",
 		"notes.txt",
 	}
 	for _, n := range mustExist {
@@ -120,9 +116,7 @@ func TestPruneOldDumpsNoopWhenUnderLimit(t *testing.T) {
 
 func TestPruneOldDumpsSkipsDirectories(t *testing.T) {
 	dir := t.TempDir()
-	// A directory whose name matches the "<dbname>.<ts>.dump" pattern and sorts
-	// oldest. The IsDir guard must skip it, so prune never counts or removes a
-	// directory as a dump artifact.
+	// A directory matching the dump-file pattern; the IsDir guard must skip it.
 	matchingDir := filepath.Join(dir, "app.20260101T000000Z.dump")
 	if err := os.Mkdir(matchingDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -145,14 +139,13 @@ func TestPruneOldDumpsSkipsDirectories(t *testing.T) {
 	}
 }
 
-// The matcher requires a name strictly longer than "<dbname>." + ".dump", so
-// the degenerate "app..dump" (empty timestamp) is NOT counted as a retained
-// copy. With two real copies at keep=2 the correct behaviour removes nothing.
+// The matcher requires a name strictly longer than "<dbname>." + ".dump", so the
+// degenerate "app..dump" (empty timestamp) is NOT counted as a retained copy.
 func TestPruneOldDumpsIgnoresEmptyTimestampName(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	files := []string{
-		"app..dump", // degenerate: len == len("app.")+len(".dump"), must be ignored
+		"app..dump",
 		"app.20260103T000000Z.dump",
 		"app.20260104T000000Z.dump",
 	}
@@ -201,12 +194,11 @@ func TestPruneOldDumpsRemoveError(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A read-only dir makes os.Remove of its entries fail (EACCES) for a non-root
-	// process, exercising removeDumps's error arm and pruneOldDumps's error return.
+	// Read-only dir: os.Remove fails EACCES for a non-root process.
 	if err := os.Chmod(dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // so t.TempDir cleanup can recurse
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) // t.TempDir cleanup must recurse
 
 	removed, err := pruneOldDumps(dir, "app", 1)
 	if err == nil {

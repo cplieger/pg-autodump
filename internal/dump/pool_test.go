@@ -52,9 +52,9 @@ func TestRunPoolCancelSkips(t *testing.T) {
 		{Host: "h", Port: 5432, DBName: "a", User: "u"},
 		{Host: "h", Port: 5432, DBName: "b", User: "u"},
 	}
-	// Deliberately pre-cancelled, not t.Context().
+	// Pre-cancelled: t.Context() would not be cancelled yet here.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled: nothing should dispatch
+	cancel()
 
 	results := runPool(ctx, 2, specs, func(_ context.Context, s *spec.DBSpec) Result {
 		t.Errorf("dumpOne called for %q despite cancelled context", s.DBName)
@@ -67,10 +67,8 @@ func TestRunPoolCancelSkips(t *testing.T) {
 	}
 }
 
-// runPool's in-dispatch cancel arm: with concurrency 1, spec[0]'s worker holds the only
-// semaphore slot and blocks; cancelling while spec[1]'s dispatch is parked in the select
-// must leave spec[1] ReasonSkipped (never dumped), distinct from the already-cancelled
-// pre-check that TestRunPoolCancelSkips covers.
+// Covers cancellation while a dispatch is parked waiting for a semaphore slot,
+// distinct from the already-cancelled case in TestRunPoolCancelSkips.
 func TestRunPoolCancelMidDispatch(t *testing.T) {
 	specs := []spec.DBSpec{
 		{Host: "h", Port: 5432, DBName: "a", User: "u"},
@@ -83,9 +81,9 @@ func TestRunPoolCancelMidDispatch(t *testing.T) {
 	results := runPool(ctx, 1, specs, func(_ context.Context, s *spec.DBSpec) Result {
 		dumped.Store(s.DBName, true)
 		if s.DBName == "a" {
-			close(entered) // signal the slot is held
-			cancel()       // cancel while spec[1]'s dispatch select is parked
-			<-ctx.Done()   // hold the slot until cancellation has propagated
+			close(entered)
+			cancel()
+			<-ctx.Done()
 		}
 		return Result{DBName: s.DBName, Reason: ReasonOK}
 	})

@@ -12,12 +12,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// Orchestrator.Run emits exactly one "dump cycle complete" heartbeat per cycle
-// with an accurate total/ok/failed tally, whichever entry point (server
-// trigger or one-shot run) drove it. The README's alerting section documents a
-// Loki absence rule keyed on this line, so its text and tally are a contract.
-// The fake succeeds for db names starting with "ok" and fails otherwise, so
-// one run yields an asymmetric mix that discriminates the tally.
+// The README's alerting section keys a Loki absence rule on this line's text and tally.
 func TestOrchestratorRunHeartbeatTally(t *testing.T) {
 	var buf bytes.Buffer
 	fake := &fakePG{

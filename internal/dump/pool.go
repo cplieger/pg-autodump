@@ -7,21 +7,18 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// runPool dumps every valid spec using a bounded pool of n workers
-// (n is clamped to [1, len(specs)] by the caller). Results are written into a
-// fixed-size slice indexed by spec position: no shared map, no lock on the
-// result set, and deterministic ordering regardless of completion order.
+// runPool dumps every valid spec using a bounded pool of n workers (n is
+// clamped to [1, len(specs)] by the caller). Results are written into a
+// fixed-size slice indexed by spec position, so ordering is deterministic
+// regardless of completion order.
 //
-// There is no per-host serialization. The common topology is one Postgres
-// server with several databases; serializing per host would force that case
-// fully serial and defeat the feature. Postgres handles concurrent dumps of
-// distinct databases fine, and the global cap is the operator's single knob
-// for the load placed on the server(s) and the backup volume during the run.
+// No per-host serialization: the common topology is one Postgres server with
+// several databases, and serializing per host would force that case fully
+// serial. The global cap n is the operator's single knob for load.
 //
-// Cancellation: when ctx is done the dispatcher stops handing out work and
-// waits for in-flight workers to unwind. Indices never dispatched keep their
-// pre-filled ReasonSkipped result, so the taxonomy stays closed and every spec
-// yields exactly one Result.
+// On cancellation the dispatcher stops handing out work and waits for
+// in-flight workers to unwind; undispatched indices keep their pre-filled
+// ReasonSkipped result, so every spec yields exactly one Result.
 func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(context.Context, *spec.DBSpec) Result) []Result {
 	results := make([]Result, len(specs))
 	for i := range specs {
@@ -32,8 +29,8 @@ func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(conte
 	var wg sync.WaitGroup
 
 	for i := range specs {
-		// Priority cancel check: select picks randomly among ready cases, so
-		// without this an already-cancelled run could still dispatch work.
+		// select picks randomly among ready cases, so without this priority
+		// check an already-cancelled run could still dispatch work.
 		if ctx.Err() != nil {
 			wg.Wait()
 			return results

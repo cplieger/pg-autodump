@@ -1,12 +1,10 @@
 // Package pg is the external boundary over the pg_dump / pg_restore / psql
-// command-line tools. It implements dump.PGTool so the orchestrator depends on
-// the narrow interface it defines, not on os/exec directly. Every invocation
-// builds an explicit []string argv (never a shell string) and runs under a
-// context whose deadline is enforced here, so "every external call is bounded"
-// holds at the boundary rather than by convention.
+// command-line tools. It implements dump.PGTool. Every invocation builds an
+// explicit []string argv (never a shell string) under a context whose
+// deadline is enforced here.
 //
-// The argv construction and exit-code handling follow patterns proven in
-// orgrim/pg_back (BSD-2-Clause); see CREDITS. The connect-vs-auth probe
+// argv construction and exit-code handling follow patterns from
+// orgrim/pg_back (BSD-2-Clause; see CREDITS). The connect-vs-auth probe
 // (dial-then-psql) is original to this project.
 package pg
 
@@ -29,8 +27,7 @@ import (
 )
 
 // ErrNoDeadline is returned by every boundary method when handed a context
-// without a deadline, enforcing Property 3 (every external call is bounded) at
-// the boundary instead of trusting callers.
+// without a deadline.
 var ErrNoDeadline = errors.New("pg: context has no deadline")
 
 // stderrCap bounds captured pg_dump/psql stderr so a chatty tool cannot flood
@@ -39,25 +36,21 @@ const stderrCap = 2048
 
 // newCommand builds every child process this package spawns (pg_dump,
 // pg_restore, psql): the scheduler library's graceful cancellation (SIGTERM,
-// then a DefaultGrace window before os/exec escalates to SIGKILL), the child
-// in its OWN process group, and a Cancel that targets that whole group. The
-// caller wires Stdout/Stderr/Env on the returned command.
+// then a grace window before SIGKILL), the child in its own process group,
+// and a Cancel that targets that whole group.
 var newCommand scheduler.CommandRunner = func() scheduler.CommandRunner {
 	base := scheduler.NewCommandRunner(scheduler.DefaultGrace)
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		cmd := base(ctx, name, args...)
-		// Setpgid is what makes the shutdown drain hold, under any init above
-		// this daemon. A group-forwarding init (dumb-init, `tini -g`) forwards
-		// a docker-stop SIGTERM to the daemon's entire group, TERMing an
-		// in-flight pg_dump in the same instant as the daemon and leaving the
-		// drain to observe a corpse. That shipped to prod once in a sibling
-		// scheduler. Its own group means the child only receives what the
-		// daemon sends it.
+		// Setpgid is what makes the shutdown drain hold under a
+		// group-forwarding init (dumb-init, `tini -g`): without it, a
+		// docker-stop SIGTERM TERMs an in-flight pg_dump in the same instant
+		// as the daemon, leaving the drain to observe a corpse.
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Cancel = func() error {
-			// The whole group, not the head: pg_dump --format=custom is
+			// The whole group, not just the head: pg_dump --format=custom is
 			// single-process today, but --format=directory --jobs=N forks
-			// workers a direct-child Cancel would silently under-kill.
+			// workers a direct-child Cancel would under-kill.
 			err := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
@@ -114,10 +107,8 @@ func BinariesPresent() error {
 }
 
 // Dump streams a network custom-format pg_dump for c into w. pg_dump is a
-// local child process, so ctx cancellation reaches it directly (SIGTERM, then
-// the runner's grace window — see newCommand) and Postgres tears down the
-// server backend when the client TCP connection drops. Returns the process
-// exit code and a bounded stderr tail.
+// local child process, so ctx cancellation reaches it directly. Returns the
+// process exit code and a bounded stderr tail.
 func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int, stderrTail string, err error) {
 	if _, ok := ctx.Deadline(); !ok {
 		return 0, "", ErrNoDeadline
@@ -141,14 +132,11 @@ func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int
 	return code, strings.TrimSpace(errBuf.String()), runErr
 }
 
-// VerifyTOC runs a local `pg_restore --list` against the custom-format file at
-// path: no network, no daemon. It reads the archive header and table of
-// contents at the front of the archive, confirming the file is a well-formed
-// custom-format archive; it does NOT re-read the trailing data section, so it
-// is a structural check, not a full-restore validation. Data-stream
-// completeness is guaranteed by pg_dump's exit code (gated before this check
-// in stageAndReplace); VerifyTOC is the secondary guard that rejects a
-// non-archive or header-truncated file. Returns nil iff the TOC is readable.
+// VerifyTOC runs a local `pg_restore --list` against the custom-format file
+// at path: no network, no daemon. It is a structural check (archive header +
+// TOC readable), not a full-restore validation — data-stream completeness is
+// already guaranteed by pg_dump's exit code, gated before this check in
+// stageAndReplace. Returns nil iff the TOC is readable.
 func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return ErrNoDeadline
@@ -172,12 +160,11 @@ func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	return nil
 }
 
-// Probe classifies one database before a dump is attempted. It separates
-// connect from auth without matching stderr: a TCP dial that fails is a
-// definitive connect_error; if the dial succeeds but the authenticated psql
-// round-trip fails, the server is reachable so the fault is auth/database
-// (auth_error). On success it reads server_version_num and reports
-// version_mismatch when the shipped client major is older than the server.
+// Probe classifies one database before a dump is attempted, separating
+// connect from auth without matching stderr: a failed TCP dial is
+// connect_error; a dial success with a failed psql round-trip is auth_error.
+// On success it reports version_mismatch when the shipped client major is
+// older than the server.
 func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		return 0, dump.FailNone, ErrNoDeadline
@@ -208,19 +195,18 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 	cmd.Stderr = &errBuf
 	code, rerr := run(cmd)
 	if rerr != nil || code != 0 {
-		// A ctx timeout/cancel killed psql: report it as a context error so
-		// classify() maps it to timeout/killed, never a spurious auth_error.
+		// A ctx timeout/cancel killed psql: report it so classify() maps it
+		// to timeout/killed, never a spurious auth_error.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return 0, dump.FailNone, ctxErr
 		}
-		// psql could not be started (fork failure, vanished binary): an
-		// environment fault, not auth. Surface the exec error so classify()
-		// maps it to ReasonOther, mirroring the Dump path's exit-0-with-error branch.
+		// psql could not be started at all (fork failure, vanished binary):
+		// an environment fault, not auth.
 		if rerr != nil {
 			return 0, dump.FailNone, rerr
 		}
-		// Dial succeeded => host is up; a non-zero psql exit is auth / missing
-		// database, not reachability. Surface the bounded psql stderr.
+		// Dial succeeded, so the host is up; a non-zero psql exit is
+		// auth/missing database, not reachability.
 		detail := strings.TrimSpace(errBuf.String())
 		if detail == "" {
 			detail = "psql probe exited " + strconv.Itoa(code)
@@ -238,10 +224,9 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 	return serverMajor, dump.FailNone, nil
 }
 
-// childEnv builds the child environment: the parent env plus PGPASSFILE (so
-// pg_dump/psql resolve the password from the mounted .pgpass) and PGOPTIONS
-// carrying the server-side statement_timeout. No secret is ever placed here or
-// on the command line.
+// childEnv builds the child environment: parent env plus PGPASSFILE and
+// PGOPTIONS carrying the server-side statement_timeout. No secret is ever
+// placed here or on the command line.
 func (t *Tool) childEnv() []string {
 	env := append(os.Environ(), "PGPASSFILE="+t.pgPassFile)
 	if t.stmtTimeout > 0 {
@@ -252,9 +237,8 @@ func (t *Tool) childEnv() []string {
 }
 
 // clientMajorCached resolves the shipped pg_dump major version once, caching
-// the result. On any failure it caches 0 so the version comparison is skipped
-// (never a false version_mismatch). Its sole caller (Probe) has already
-// enforced that ctx carries a deadline, so the version exec is bounded by it.
+// the result. Any failure caches 0 so the version comparison is skipped
+// (never a false version_mismatch).
 func (t *Tool) clientMajorCached(ctx context.Context) int {
 	t.clientOnce.Do(func() {
 		out, err := newCommand(ctx, t.dumpBin, "--version").Output()
@@ -286,10 +270,9 @@ func parseMajor(versionLine string) int {
 }
 
 // run executes cmd and returns the process exit code with a nil error, or a
-// non-nil error for failures that are not a clean non-zero exit (binary not
-// found, context cancellation before start). A signal-killed process (e.g. ctx
-// timeout) yields an ExitError with code -1 and a nil run error; the caller
-// distinguishes that case via ctx.Err().
+// non-nil error for a failure that is not a clean non-zero exit. A
+// signal-killed process (e.g. ctx timeout) yields an ExitError with code -1
+// and a nil run error; the caller distinguishes that via ctx.Err().
 func run(cmd *exec.Cmd) (int, error) {
 	err := cmd.Run()
 	if err == nil {

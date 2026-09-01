@@ -10,52 +10,34 @@ import (
 	"github.com/cplieger/atomicfile/v3"
 )
 
-// reclaimAllOrphans is the maxAge passed to atomicfile.CleanupStaleTemps when
-// every leftover temp is known to be an orphan: the smallest positive age
-// ("older than ~now") reaps them all, while a non-positive age would make
-// CleanupStaleTemps no-op.
+// reclaimAllOrphans is the maxAge for atomicfile.CleanupStaleTemps when every
+// leftover temp is known to be an orphan: the smallest positive age reaps
+// them all, while a non-positive age would make CleanupStaleTemps a no-op.
 const reclaimAllOrphans = time.Nanosecond
 
 // ReclaimOrphans removes crash-orphaned temp files under dumpDir: every
-// first-level per-server subdirectory — where dump temps stage
-// (stageAndReplace targets <host>_<port>/ and atomicfile creates its temp in
-// the target's own directory) — and the DUMP_DIR root itself, which holds
-// exactly one class of the app's own artifact: the writability probe
-// obs.Preflight leaves behind when the directory accepts a write but denies the
-// unlink. Both scans reap only what atomicfile recognises as its own temp
-// (".atomicfile-<digits>.tmp", regular files), so an operator's own files at the
-// root — dumps, notes, anything merely prefix-alike — are never touched.
+// first-level per-server subdirectory (where dump temps stage) and the
+// DUMP_DIR root itself (where obs.Preflight's writability probe can leave one
+// behind). Both scans reap only atomicfile's own temp shape
+// (".atomicfile-<digits>.tmp", regular files), so an operator's own files are
+// never touched.
 //
-// It MUST only be called while no dump can be in flight — at the start of a
+// MUST only be called while no dump can be in flight — at the start of a
 // cycle with the cross-process cycle lock held, or at startup with the lock
-// momentarily acquired — because every temp it sees is then a crash orphan
-// (graceful failure paths run pending.Cleanup() themselves). A concurrently
-// running preflight probe is the one benign exception: losing its own temp to
-// this sweep reads as an already-removed file, which atomicfile counts as a
-// clean removal. Best-effort: unreadable directories are skipped and per-file
-// failures are handled inside CleanupStaleTemps; only the outcome is logged
-// here.
+// momentarily acquired — because every temp it sees is then a crash orphan.
+// Best-effort: unreadable directories are skipped.
 //
-// Two outcomes are reported, because they are different operator problems.
-// Removed is the reclaim, at Info. Unreclaimed (atomicfile's SweepResult.Failed)
-// is a temp the sweep SAW and could not unlink, which means orphans are
-// accumulating in a directory this app stages a dump into every cycle. It does
-// not self-clear — a benign race is not counted, since atomicfile treats ENOENT
-// on either the lstat or the remove as neither removed nor failed — and nothing
-// else here reports it: obs.Preflight's ladder probes the DUMP_DIR ROOT only, so
-// a per-server subdirectory that takes a create and refuses an unlink is outside
-// its reach, and dumps keep succeeding because a dump commits with a rename.
-// SweepResult.Unreadable is deliberately not read: it is only ever incremented
-// below the swept directory and every sweep here is flat, so it is a structural
-// zero.
+// Unreclaimed (SweepResult.Failed) means a temp was seen but could not be
+// unlinked, so orphans are accumulating in a directory this app stages a
+// dump into every cycle; nothing else reports this, since obs.Preflight's
+// ladder probes only the DUMP_DIR root. SweepResult.Unreadable is not read:
+// every sweep here is flat, so it is a structural zero.
 func ReclaimOrphans(ctx context.Context, dumpDir string, log *slog.Logger) {
 	if log == nil {
 		log = slog.Default()
 	}
 	entries, err := os.ReadDir(dumpDir)
 	if err != nil {
-		// A missing or unreadable DUMP_DIR is surfaced by the preflight and by
-		// the dumps themselves; the reclaim scan stays best-effort.
 		return
 	}
 	total, unreclaimed := reclaimDir(ctx, dumpDir, log)

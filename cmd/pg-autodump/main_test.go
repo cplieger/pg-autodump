@@ -25,8 +25,8 @@ func TestLocalAddr(t *testing.T) {
 		{"wildcard_v4", "0.0.0.0:9847", "127.0.0.1:9847"},
 		{"wildcard_v6", "[::]:9847", "127.0.0.1:9847"},
 		// An explicit host is preserved verbatim: localhost and ::1 both
-		// resolve to loopback, so dialing them is correct, and preserving an
-		// IPv6-only-loopback host is the whole point of the fix.
+		// resolve to loopback, and preserving an IPv6-only-loopback host is
+		// the point of the fix.
 		{"host_and_port", "localhost:5432", "localhost:5432"},
 		{"bare_port_no_colon", "9847", "127.0.0.1:9847"},
 		{"loopback_v6_only", "[::1]:9847", "[::1]:9847"},
@@ -42,17 +42,10 @@ func TestLocalAddr(t *testing.T) {
 	}
 }
 
-// triggerTimeout is pure (cfg -> duration) but lives in main.go (the
-// untestable composition root) and has no test. Pin its wave math so a
-// regression in the ceil-division, the max(concurrency,1) guard, the
-// min(probeCap, DumpTimeout) selection, or the coalesced-cycle multiplier is
-// caught: an off-by-one wave or a flipped min/max makes `trigger` either
-// falsely time out a real multi-database dump (exit 1 while the dump still
-// succeeds) or wait far too long. Values traced against
-// internal/dump.dumpOne's per-DB ceiling (min(dump.ProbeTimeoutCap,
+// triggerTimeout is pure but lives in main.go and has no direct test. Values
+// traced against internal/dump.dumpOne's per-DB ceiling (min(ProbeTimeoutCap,
 // DumpTimeout) probe + DumpTimeout dump), the pool's clamp(concurrency,1,len)
-// wave count, and the (1 + cycleQueueCapacity) cycles the handler may run
-// before responding (its own cycle plus queued rerun demand).
+// wave count, and the (1 + cycleQueueCapacity) cycles the handler may run.
 func TestTriggerTimeout(t *testing.T) {
 	specs := func(n int) []spec.DBSpec {
 		s := make([]spec.DBSpec, n)
@@ -65,17 +58,15 @@ func TestTriggerTimeout(t *testing.T) {
 		nSpecs      int
 		want        time.Duration
 	}{
-		// 0 specs still bills one wave so the trigger waits out the handler's
-		// own work: 1 wave * 2 cycles * (300s+min(10s,300s)) + 30s slack.
+		// 0 specs still bills one wave: 1 wave * 2 cycles * (300s+min(10s,300s)) + 30s.
 		{"no specs floors at one wave", 300 * time.Second, 2, 0, 650 * time.Second},
-		// ceil(2/2)=1 wave: 1*2*310s + 30s.
+		// ceil(2/2)=1 wave.
 		{"specs fit one wave", 300 * time.Second, 2, 2, 650 * time.Second},
-		// ceil(3/2)=2 waves: 2*2*310s + 30s.
+		// ceil(3/2)=2 waves.
 		{"specs span two waves", 300 * time.Second, 2, 3, 1270 * time.Second},
-		// concurrency<1 is coerced to 1, so 3 specs => 3 waves: 3*2*310s + 30s.
+		// concurrency<1 coerced to 1: 3 specs => 3 waves.
 		{"zero concurrency coerced to one", 300 * time.Second, 0, 3, 1890 * time.Second},
-		// DumpTimeout below the probe cap selects DumpTimeout for the probe:
-		// perDB = 5s + min(10s,5s) = 10s; 1*2*10s + 30s.
+		// DumpTimeout below the probe cap selects DumpTimeout for the probe.
 		{"dump timeout below probe cap", 5 * time.Second, 2, 1, 50 * time.Second},
 	}
 	for _, tc := range cases {
@@ -96,10 +87,9 @@ func TestRunUnknownSubcommand(t *testing.T) {
 	}
 }
 
-// A fatal configuration (a DUMP_DIR with a ".." component) aborts startup with
-// exit code 1 before anything runs, rather than silently relocating backups to
-// the default directory. The serve, run, and trigger subcommands all load
-// config, so all three must refuse to start.
+// A fatal DUMP_DIR (a ".." component) aborts startup with exit code 1 for
+// all three subcommands, rather than silently relocating backups to the
+// default directory.
 func TestRunAbortsOnFatalDumpDir(t *testing.T) {
 	env := func(k string) string {
 		if k == "DUMP_DIR" {
@@ -114,11 +104,10 @@ func TestRunAbortsOnFatalDumpDir(t *testing.T) {
 	}
 }
 
-// exitForRun maps the one-shot cycle outcome to the process exit code. The
-// contract: 0 iff the invocation's own run was fully ok OR its demand was
-// queued/discarded for the active runner; a gated start (shutdown first) and
-// an infrastructure failure that ran nothing exit 1; a coordination error
-// AFTER a successful run does not fail the run.
+// exitForRun maps the one-shot cycle outcome to the process exit code: 0 iff
+// the invocation's own run was fully ok OR its demand was queued/discarded
+// for the active runner; a gated start or an infrastructure failure exits 1;
+// a coordination error after a successful run does not fail the run.
 func TestExitForRun(t *testing.T) {
 	okRes := []dump.Result{{Reason: dump.ReasonOK}, {Reason: dump.ReasonOK}}
 	mixedRes := []dump.Result{{Reason: dump.ReasonOK}, {Reason: dump.ReasonPGError}}
@@ -153,14 +142,10 @@ func TestExitForRun(t *testing.T) {
 	}
 }
 
-// requireSetgidWidensMkdir makes parent setgid and proves the kernel really does
-// store a mode mkdir did not ask for underneath it, skipping the caller
-// otherwise. It is the witness that keeps the create-path custody test below
-// honest: on a filesystem that honours every mode request, a test that creates a
-// directory and finds it 0700 cannot tell a VERIFIED create from an unverified
-// one, and would pass just as happily against the os.MkdirAll it replaced.
-// Linux propagates S_ISGID from a setgid parent to a new subdirectory, which is
-// a real widening produced by the kernel rather than a mock.
+// requireSetgidWidensMkdir makes the parent setgid and proves the kernel
+// widens a mkdir's mode underneath it, skipping the caller otherwise: without
+// this witness, a test cannot distinguish a verified create from an
+// unverified one on a filesystem that honours every mode request.
 func requireSetgidWidensMkdir(t *testing.T, parent string) {
 	t.Helper()
 	if err := os.Chmod(parent, 0o700|os.ModeSetgid); err != nil {
@@ -180,11 +165,9 @@ func requireSetgidWidensMkdir(t *testing.T, parent string) {
 	}
 }
 
-// The cycle directory holds the flock that is the only thing keeping the
-// resident server and an exec'd `pg-autodump run` from dumping at the same
-// moment, and it sits in the one directory another principal on the host can
-// also write. So its mode must be owner-only as MEASURED: os.MkdirAll asked for
-// 0700 and never looked at what the filesystem stored.
+// The cycle directory holds the flock serializing the resident server against
+// an exec'd `pg-autodump run`, so its mode must be owner-only as MEASURED,
+// not merely requested — os.MkdirAll never checks what the filesystem stored.
 func TestEnsureCycleDirVerifiesTheModeItCreated(t *testing.T) {
 	parent := t.TempDir()
 	requireSetgidWidensMkdir(t, parent)
@@ -203,9 +186,9 @@ func TestEnsureCycleDirVerifiesTheModeItCreated(t *testing.T) {
 	}
 }
 
-// A symlink planted at the cycle-directory path is refused rather than followed.
-// os.MkdirAll resolves it and reports success, which would relocate the cycle
-// lock onto a file the planter controls and let two dump cycles run at once.
+// A symlink planted at the cycle-directory path is refused, not followed:
+// os.MkdirAll would resolve it and relocate the cycle lock onto a file the
+// planter controls.
 func TestEnsureCycleDirRefusesSymlink(t *testing.T) {
 	base := t.TempDir()
 	target := filepath.Join(base, "target")

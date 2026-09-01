@@ -31,10 +31,10 @@ func dumpFileName(dbname string, keep int, t time.Time) string {
 
 // pruneOldDumps keeps the newest keep timestamped dumps for dbname in dir and
 // removes the rest, returning the number removed. It matches only
-// "<dbname>.<ts>.dump" files (never the bare "<dbname>.dump" a keep<=1 run
-// writes), so switching keep down never deletes the stable file out from under
-// a collector. Best-effort: a remove error is returned for logging but does not
-// undo the prior removals.
+// "<dbname>.<ts>.dump" files, never the bare "<dbname>.dump" a keep<=1 run
+// writes, so switching keep down never deletes the stable file out from
+// under a collector. Best-effort: a remove error is returned for logging but
+// does not undo the prior removals.
 func pruneOldDumps(dir, dbname string, keep int) (int, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -50,8 +50,8 @@ func pruneOldDumps(dir, dbname string, keep int) (int, error) {
 
 // timestampedDumpNames returns the names of the timestamped dump files for
 // dbname in entries ("<dbname>.<ts>.dump"), skipping directories and the bare
-// stable "<dbname>.dump" a keep<=1 run writes. A name must be strictly longer
-// than "<dbname>." + ".dump" so a degenerate empty-timestamp name never counts.
+// stable "<dbname>.dump". A name must be strictly longer than
+// "<dbname>." + ".dump" so a degenerate empty-timestamp name never counts.
 func timestampedDumpNames(entries []os.DirEntry, dbname string) []string {
 	prefix := dbname + "."
 	const suffix = ".dump"
@@ -73,9 +73,9 @@ func timestampedDumpNames(entries []os.DirEntry, dbname string) []string {
 	return names
 }
 
-// removeDumps deletes each named file under dir, returning the number removed
-// and the first remove error. Best-effort: a remove error does not stop the
-// loop or undo the prior removals (mirroring pruneOldDumps's contract).
+// removeDumps deletes each named file under dir, returning the number
+// removed and the first remove error. Best-effort: does not stop the loop or
+// undo prior removals.
 func removeDumps(dir string, names []string) (int, error) {
 	removed := 0
 	var firstErr error
@@ -95,46 +95,27 @@ func removeDumps(dir string, names []string) (int, error) {
 // streams a network pg_dump into a temp file in dir (via atomicfile, so the
 // temp shares dir's filesystem and the replace is an atomic rename), verifies
 // the result locally, and only then commits to fileName. On any failure it
-// discards the temp and leaves any existing file untouched.
-//
-// Steps:
-//  1. open an atomicfile pending write (mode 0600) in dir;
-//     target is not a regular file            -> rename_failed (prior intact);
-//     ctx already ended                       -> discard, timeout/killed
-//  2. pg.Dump(ctx, conn, pending)            — network pg_dump, local child
-//  3. ctx timeout/cancel                      -> discard, timeout/killed
-//  4. exit != 0                               -> discard, classify -> pg_error
-//  5. size == 0                               -> discard, empty
-//  6. pg.VerifyTOC(temp) fails                -> discard, truncated (local);
-//     ctx ended mid-verify                    -> discard, timeout/killed
-//  7. pending.Commit fails                    -> discard, rename_failed (prior intact);
-//     ctx ended mid-commit                    -> discard, timeout/killed
-//  8. otherwise                               -> ok (bytes)
+// discards the temp and leaves any existing file untouched: a ctx
+// cancellation always wins over the gate's own failure (timeout/killed), and
+// only a clean pg_dump exit, non-empty file, and readable TOC reach Commit.
 func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn) Result {
 	target := filepath.Join(dir, fileName)
 
 	pending, err := atomicfile.NewPendingFile(ctx, target, atomicfile.WithMode(0o600))
 	if err != nil {
-		// A target occupied by a directory, FIFO, device node or socket is
-		// refused here rather than at Commit: atomicfile validates the write
-		// target up front so a whole dump is not staged for a rename that
-		// cannot succeed. The operator fact is the same one Commit used to
-		// report -- the prior dump is intact and the new one could not be put
-		// in place -- so it classifies as rename_failed. Routing it to
-		// ReasonOther would file it under "cannot create temp file", which
-		// names the wrong thing: the temp is fine, the destination is not.
+		// A target occupied by a directory, FIFO, device, or socket is
+		// refused here rather than at Commit; the prior dump is intact and
+		// this classifies as rename_failed, not a generic temp-create fault
+		// (ReasonOther would misname the destination problem as a temp one).
 		if errors.Is(err, atomicfile.ErrNotRegular) {
 			return Result{
 				Reason: ReasonRenameFailed,
 				Detail: "target is not a regular file: " + err.Error(),
 			}
 		}
-		// A ctx cancel/deadline at temp-create time is a killed/timeout, not a
-		// generic temp-create fault: atomicfile checks ctx before opening the
-		// temp and returns a context-wrapped error on cancel. abortOr mirrors
-		// the VerifyTOC/Commit gates so every gate classifies a cancellation
-		// uniformly; a live-ctx failure (e.g. an unwritable dir) still falls
-		// through to ReasonOther.
+		// A ctx cancel/deadline at temp-create time is killed/timeout, not a
+		// generic fault; abortOr mirrors the VerifyTOC/Commit gates so every
+		// gate classifies a cancellation uniformly.
 		return abortOr(ctx, &Result{Reason: ReasonOther, Detail: "cannot create temp file: " + err.Error()})
 	}
 	committed := false
@@ -188,17 +169,16 @@ func stderrDetail(tail string) string {
 
 // ctxAbortResult builds the Result for a context cancellation/deadline
 // detected at a stageAndReplace gate, so every gate classifies a cancelled
-// run uniformly as killed/timeout (classify ignores the exit code once a
-// ctx error is present).
+// run uniformly as killed/timeout.
 func ctxAbortResult(ctxErr error) Result {
 	reason := classify(0, ctxErr, FailNone)
 	return Result{Reason: reason, Detail: string(reason)}
 }
 
 // abortOr returns a ctx-abort Result when ctx has been cancelled or has
-// expired, otherwise the supplied fallback Result. It collapses the shared "a
-// context cancellation wins over the operation-specific failure" branch at the
-// temp-create, verify, and commit gates so each gate stays a single statement.
+// expired, otherwise the supplied fallback Result. Collapses the shared
+// "cancellation wins over the operation-specific failure" branch at the
+// temp-create, verify, and commit gates.
 func abortOr(ctx context.Context, fallback *Result) Result {
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return ctxAbortResult(ctxErr)

@@ -2,14 +2,12 @@ package dump
 
 import "syscall"
 
-// statfsFreeKB returns the free space (in KB) available to an unprivileged user
-// on the filesystem backing dir, via statfs. It is the Orchestrator's default
-// disk-space probe (held behind the o.freeSpace seam so the low-space decision
-// can be exercised at exact thresholds without depending on the live
-// filesystem, whose free space drifts between reads).
+// statfsFreeKB returns the free space (in KB) available to an unprivileged
+// user on the filesystem backing dir, via statfs. It is the Orchestrator's
+// default disk-space probe, held behind the o.freeSpace seam so the
+// low-space decision can be tested at exact thresholds.
 //
-// Linux-only via syscall.Statfs, consistent with the rest of the module
-// (atomicfile is Linux-only by design).
+// Linux-only via syscall.Statfs, consistent with the rest of the module.
 func statfsFreeKB(dir string) (int64, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(dir, &st); err != nil {

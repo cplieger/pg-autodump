@@ -50,9 +50,6 @@ func TestParseSpecsIPv6(t *testing.T) {
 	}
 }
 
-// Different spellings of one IPv6 address canonicalize to a single identity, so
-// they dedup to one spec (the second is marked Duplicate) and would map to one
-// artifact path rather than two redundant backups.
 func TestParseSpecsIPv6Canonicalization(t *testing.T) {
 	specs := Parse("[2001:DB8::1]:5432:app:ro [2001:db8:0:0:0:0:0:1]:5432:app:ro")
 	if len(specs) != 2 {
@@ -69,8 +66,6 @@ func TestParseSpecsIPv6Canonicalization(t *testing.T) {
 	}
 }
 
-// A bracketed IPv4 and the equivalent bare IPv4 are the same identity: they
-// canonicalize to the same host and collapse to one spec.
 func TestParseSpecsBracketedIPv4UnifiesWithBare(t *testing.T) {
 	specs := Parse("[192.0.2.1]:5432:app:ro 192.0.2.1:5432:app:ro")
 	if len(specs) != 2 {
@@ -84,8 +79,7 @@ func TestParseSpecsBracketedIPv4UnifiesWithBare(t *testing.T) {
 	}
 }
 
-// A host whose <host>_<port> directory name would exceed the filesystem
-// component limit is rejected at parse as invalid, never failed mid-run.
+// Rejected at parse, not mid-run: the <host>_<port> pair becomes a directory name.
 func TestParseSpecsOverlongHostRejected(t *testing.T) {
 	long := strings.Repeat("a", 260)
 	specs := Parse(long + ":5432:app:ro")

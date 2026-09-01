@@ -1,15 +1,10 @@
 // Command pg-autodump is the composition root. With no argument it runs the
-// HTTP server; `pg-autodump run` performs exactly one dump cycle and exits
-// (for scheduler-owned deployments); `pg-autodump health` runs the file-marker
-// probe for the Docker HEALTHCHECK; `pg-autodump trigger` POSTs to the local
-// server's /dump (for exec-based schedulers such as Ofelia). The two exec
-// trigger paths deliberately differ on a busy cycle: `trigger` requires the
-// resident server and inherits its skip-mode contract (429, the demand is
-// dropped — the next tick provides freshness), while `run` requires no server
-// and queues its demand (exit 0, the active runner owes it a cycle that
-// starts after the request arrived). Pick per deployment; they are not
-// interchangeable. main is the only place that calls config.Load, builds the
-// slog handler, wires dependencies, and decides fatal-vs-recover.
+// HTTP server; `pg-autodump run` performs exactly one dump cycle and exits;
+// `pg-autodump health` runs the file-marker probe for the Docker HEALTHCHECK;
+// `pg-autodump trigger` POSTs to the local server's /dump. `trigger` and `run`
+// differ on a busy cycle: `trigger` gets 429 (demand dropped, next tick covers
+// it) while `run` queues its demand and exits 0 (the active runner owes it a
+// cycle). Pick per deployment; they are not interchangeable.
 package main
 
 import (
@@ -39,8 +34,7 @@ import (
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }
 
-// run dispatches the subcommand. It returns a process exit code so main stays a
-// one-liner and the dispatch is unit-testable.
+// run dispatches the subcommand and returns a process exit code.
 func run(args []string, getenv func(string) string) int {
 	var sub string
 	if len(args) > 1 {
@@ -62,26 +56,22 @@ func run(args []string, getenv func(string) string) int {
 	}
 }
 
-// cycleDir holds the cross-process cycle-coordination files
-// (scheduler.Exclusive's cycle.lock and cycle.queued). It lives under /tmp —
-// already a required-writable tmpfs for the health marker — and whichever entry
-// point starts first establishes it 0700 through ensureCycleDir; the server and
-// any exec'd `pg-autodump run` share it because they run as the same container
+// cycleDir holds the cross-process cycle-coordination files under /tmp
+// (already a required-writable tmpfs for the health marker); the server and
+// any exec'd `pg-autodump run` share it since they run as the same container
 // user.
 const cycleDir = "/tmp/pg-autodump"
 
-// cycleQueueCapacity is scheduler.Exclusive's rerun-queue depth (the library
-// default of 1, restated as a named constant because the trigger client's
-// worst-case wait model bills one extra coalesced cycle per queue slot).
+// cycleQueueCapacity is scheduler.Exclusive's rerun-queue depth, restated as a
+// named constant because triggerTimeout bills one extra coalesced cycle per
+// queue slot.
 const cycleQueueCapacity = 1
 
-// newCycleExclusive builds the cross-process cycle coordinator shared by the
-// resident server and exec'd one-shot runs: at most one dump cycle runs at a
-// time per container, and a `run` request arriving mid-cycle queues (depth
-// cycleQueueCapacity) for the active runner instead of overlapping. The gate
-// stops queued reruns (and a not-yet-started initial run) once shutdown is
-// signalled; an in-flight run is never interrupted by the gate — the drain
-// path owns cancellation.
+// newCycleExclusive builds the cross-process cycle coordinator: at most one
+// dump cycle runs at a time per container, and a `run` request arriving
+// mid-cycle queues (depth cycleQueueCapacity) instead of overlapping. The gate
+// stops queued reruns once shutdown is signalled; an in-flight run is never
+// interrupted here — the drain path owns cancellation.
 func newCycleExclusive(ctx context.Context, log *slog.Logger) (*scheduler.Exclusive, error) {
 	if err := ensureCycleDir(cycleDir, log); err != nil {
 		return nil, err
@@ -91,29 +81,14 @@ func newCycleExclusive(ctx context.Context, log *slog.Logger) (*scheduler.Exclus
 }
 
 // ensureCycleDir establishes dir as an owner-only directory and PROVES it came
-// out that way, before scheduler.Exclusive puts the cycle lock inside it. dir is
-// a parameter rather than the cycleDir constant so tests can exercise the
-// custody rules against a temp directory.
-//
-// This one lives under /tmp — the only directory in this container another
-// principal can also write — and that makes two failures reachable here that
-// os.MkdirAll cannot see. The mode it takes is a request, not a result: on a
-// filesystem carrying an inheritable group-write ACL the kernel stores 0770 for
-// a 0o700 mkdir (measured on a ZFS nfs4acl dataset) and MkdirAll returns nil
-// having never looked at what it got. And MkdirAll resolves symlinks and reports
-// success, so a link planted at this path before first start silently relocates
-// the cycle lock — and that lock is the only thing keeping the resident server
-// and an exec'd `pg-autodump run` from dumping at the same moment, which is two
-// pg_dump processes staging over one another's output. Unlike the dump
-// directory, what leaks through a wide mode here is not database contents; it is
-// control over the mutual exclusion. EnsurePrivateDir has the kernel refuse the
-// link, refuses a foreign owner or an already-group-accessible pre-existing
-// directory, and repairs then re-stats one it created itself.
-//
-// It is a single level, so the parent keeps a plain MkdirAll at the same 0700.
-// In every real deployment that call finds /tmp already there — it is the
-// container's tmpfs and a documented precondition, since the health marker needs
-// it too — and it stays so the parent is established rather than assumed.
+// out that way, before scheduler.Exclusive puts the cycle lock inside it. dir
+// is a parameter (not the cycleDir constant) so tests can target a temp
+// directory. /tmp is shared with other principals in this container, so
+// os.MkdirAll's mode is only a request (a group-write ACL on the filesystem
+// can store 0770 for a 0o700 mkdir) and it also follows a planted symlink;
+// EnsurePrivateDir has the kernel refuse the link and refuses a foreign or
+// already-group-accessible pre-existing directory. A wide mode here would
+// leak control over the cross-process cycle lock, not dump contents.
 func ensureCycleDir(dir string, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return fmt.Errorf("create cycle dir parent %s: %w", filepath.Dir(dir), err)
@@ -124,8 +99,8 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 	return nil
 }
 
-// newOrchestrator wires the dump orchestrator from validated config. Shared by
-// the serve and run subcommands so the two entry points can never drift.
+// newOrchestrator wires the dump orchestrator from validated config, shared by
+// serve and run so the two entry points never drift.
 func newOrchestrator(cfg *config.Config, log *slog.Logger) *dump.Orchestrator {
 	return dump.New(&dump.Params{
 		PG:          pg.New(cfg.PGPassFile, cfg.StmtTimeout),
@@ -139,12 +114,12 @@ func newOrchestrator(cfg *config.Config, log *slog.Logger) *dump.Orchestrator {
 	})
 }
 
-// runServer runs the serve subcommand (the default with no argument). It builds
+// runServer runs the serve subcommand (the default with no argument): builds
 // the slog handler, loads config, sets the health marker from the startup
 // preflight, wires the cycle lock, dump orchestrator, and HTTP server,
 // reclaims crash-orphaned temp dumps, optionally starts the built-in ticker,
 // then serves until a signal and drains any in-flight dump within
-// ShutdownTimeout. It returns the process exit code.
+// ShutdownTimeout.
 func runServer(getenv func(string) string) int {
 	slogx.Setup(slogx.Options{})
 	log := slog.Default()
@@ -192,8 +167,8 @@ func runServer(getenv func(string) string) int {
 		Log:       log,
 	})
 
-	// Bind the listener up front so a port-in-use error surfaces synchronously
-	// here rather than asynchronously after serving has started.
+	// Bind up front so a port-in-use error surfaces synchronously here rather
+	// than asynchronously after serving has started.
 	var lc net.ListenConfig
 	ln, err := lc.Listen(ctx, "tcp", cfg.ListenAddr)
 	if err != nil {
@@ -208,14 +183,13 @@ func runServer(getenv func(string) string) int {
 	log.Info("pg-autodump listening",
 		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
 
-	// webhttp.Run drains the HTTP server within ShutdownTimeout, then invokes the
-	// teardown below with a context bounded by the same deadline. A built-in
-	// ticker dump holds no HTTP connection Shutdown can see, so drainGuard waits
-	// for the single-flight guard to go idle within the remaining budget; if it
-	// does not, it cancels the in-flight run and lets pg_dump unwind cleanly.
-	// The pre-drain phase flips the health marker red strictly BEFORE the drain
-	// begins, so a probe reports unready during the drain window (the marker is
-	// a FILE read by the healthcheck CLI, which listener closure does not cover).
+	// webhttp.Run drains the HTTP server within ShutdownTimeout, then invokes
+	// the teardown below with a context bounded by the same deadline. A
+	// built-in ticker dump holds no HTTP connection Shutdown can see, so
+	// drainInFlightDump waits for the guard to go idle separately. The
+	// pre-drain hook flips the health marker red strictly before the drain
+	// begins, since the marker is a FILE the healthcheck reads, not covered
+	// by listener closure.
 	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownTimeout, log),
 		webhttp.WithShutdownGrace(cfg.ShutdownTimeout),
 		webhttp.WithPreDrain(func(context.Context) {
@@ -231,13 +205,12 @@ func runServer(getenv func(string) string) int {
 // runOnce implements `pg-autodump run`: exactly one signal-aware dump cycle,
 // coordinated with any resident server (or concurrent run) through the
 // cross-process cycle lock, exiting 0 only when every configured database
-// dumped ok. When a cycle is already in flight the run's demand is queued
-// (depth cycleQueueCapacity) and the process exits 0 immediately — the active
-// runner executes the queued cycle when its current run finishes, and the
-// per-database results land in that process's log stream. No HTTP listener is
-// bound and the health marker is not touched; DUMP_INTERVAL, LISTEN_ADDR,
-// AUTH_TOKEN, and SHUTDOWN_TIMEOUT are ignored, because scheduling, transport,
-// and drain belong to the invoking scheduler.
+// dumped ok. When a cycle is already in flight the demand queues (depth
+// cycleQueueCapacity) and the process exits 0 immediately; the per-database
+// results land in the active runner's log stream. No HTTP listener is bound
+// and the health marker is not touched; DUMP_INTERVAL, LISTEN_ADDR,
+// AUTH_TOKEN, and SHUTDOWN_TIMEOUT are ignored — scheduling, transport, and
+// drain belong to the invoking scheduler.
 func runOnce(getenv func(string) string) int {
 	slogx.Setup(slogx.Options{})
 	log := slog.Default()
@@ -265,10 +238,9 @@ func runOnce(getenv func(string) string) int {
 	}
 	orch := newOrchestrator(&cfg, log)
 
-	// Capture the first execution's results: they are this invocation's own
-	// run. The closure can run again for demand queued by OTHER processes
-	// (consume loop / handoff); those cycles report through their own log
-	// lines and never change this process's exit code.
+	// Capture the first execution's results as this invocation's own run; the
+	// closure may run again for demand queued by OTHER processes, which
+	// report through their own log lines and never change this exit code.
 	var results []dump.Result
 	ran := false
 	outcome, exErr := cycle.Run(func() error {
@@ -283,10 +255,8 @@ func runOnce(getenv func(string) string) int {
 
 // exitForRun maps a one-shot cycle's outcome to the process exit code: 0 iff
 // the invocation's own run reported ok for every configured database, or its
-// demand was queued/discarded behind an in-flight cycle (the active runner
-// owes it a run that starts after it arrived; log-and-exit-0 is the intended
-// requester behavior). A gated start (shutdown signalled first) and a cycle
-// infrastructure failure exit 1.
+// demand was queued/discarded behind an in-flight cycle. A gated start
+// (shutdown signalled first) and a cycle infrastructure failure exit 1.
 func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, ran bool, log *slog.Logger) int {
 	switch outcome {
 	case scheduler.OutcomeQueued, scheduler.OutcomeDiscarded:
@@ -300,8 +270,8 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 		log.Warn("shutdown signalled before the run started; nothing dumped")
 		return 1
 	case scheduler.OutcomeNone, scheduler.OutcomeRan, scheduler.OutcomeRanQueued, scheduler.OutcomeSkipped:
-		// Fall through to the ran/results accounting below. OutcomeSkipped is
-		// unreachable from queue-mode Run; it is listed for switch completeness.
+		// OutcomeSkipped is unreachable from queue-mode Run; listed for
+		// switch completeness.
 	}
 	if !ran {
 		log.Error("cycle coordination failed; nothing ran", "err", exErr)
@@ -319,9 +289,9 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 }
 
 // drainInFlightDump returns a webhttp.Run teardown callback that waits for any
-// in-flight ticker dump to finish within the remaining drain budget and, if it
-// does not, cancels it and lets it unwind so pg_dump is killed cleanly and the
-// staged temp is removed. HTTP requests are already drained by the time it runs.
+// in-flight ticker dump to finish within the remaining drain budget and, if
+// it does not, cancels it so pg_dump is killed cleanly and its staged temp
+// removed. HTTP requests are already drained by the time it runs.
 func drainInFlightDump(guard *dump.Guard, grace time.Duration, log *slog.Logger) func(context.Context) {
 	return func(drainCtx context.Context) {
 		if !guard.WaitIdle(drainCtx) {
@@ -338,12 +308,11 @@ func drainInFlightDump(guard *dump.Guard, grace time.Duration, log *slog.Logger)
 	}
 }
 
-// reclaimAtStartup reclaims crash-orphaned temp dumps before serving, but only
-// while briefly holding the cross-process cycle lock: an exec'd `pg-autodump
-// run` may already be dumping in another process, and its live temp must never
-// be reaped. A busy (or unusable) lock skips the reclaim — every dump cycle
-// reclaims again with the lock held (dump.Orchestrator.Run), so skipping here
-// defers the cleanup, never leaks it.
+// reclaimAtStartup reclaims crash-orphaned temp dumps before serving, while
+// briefly holding the cross-process cycle lock so a live temp from an
+// already-dumping exec'd `pg-autodump run` is never reaped. A busy or
+// unusable lock skips the reclaim; every dump cycle reclaims again with the
+// lock held, so skipping here defers the cleanup, never leaks it.
 func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 	lock, ok, err := scheduler.TryLock(filepath.Join(cycleDir, scheduler.ExclusiveLockName))
 	if err != nil || !ok {
@@ -353,17 +322,13 @@ func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 	dump.ReclaimOrphans(ctx, dumpDir, log)
 }
 
-// runTicker drives the optional built-in scheduler (DUMP_INTERVAL). A deployment
-// can leave this off and trigger externally via a scheduler (e.g. Ofelia).
+// runTicker drives the optional built-in scheduler (DUMP_INTERVAL).
 func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
-	// The ticker's first fire is one full interval after start and its clock
-	// resets on every restart, so a deployment that restarts more often than
-	// DUMP_INTERVAL could go a long time with no backups. Fire once at startup
-	// to close that gap, but only when no existing dump is newer than one
-	// interval, so a restart that already has a fresh dump does not re-dump (a
-	// crash/restart loop must not become a dump loop). The run goes through the
-	// shared single-flight guard, so it is cancelled by the same drain path as
-	// any other run on shutdown.
+	// The ticker's first fire is one interval after start and its clock
+	// resets on every restart, so a restart-heavy deployment could go a long
+	// time with no backups without this: fire once at startup, but only when
+	// no existing dump is newer than one interval, so a restart with an
+	// already-fresh dump does not re-dump.
 	if dump.DueForStartup(dumpDir, interval, time.Now()) && ctx.Err() == nil {
 		switch _, ok, err := trigger.Run(); {
 		case err != nil:
@@ -375,11 +340,10 @@ func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trig
 		}
 	}
 
-	// scheduler.RunLoop drives the recurring ticks. No FireOnStart: the startup
-	// dump above is conditional (DueForStartup), unlike an unconditional
-	// fire-on-start. RunLoop re-checks ctx before each tick — so a pending tick
-	// racing a fresh SIGTERM never launches a run the drain then abandons — and
-	// returns when ctx is cancelled.
+	// scheduler.RunLoop drives the recurring ticks; no FireOnStart, since the
+	// startup dump above is already conditional. It re-checks ctx before each
+	// tick so a pending tick racing a fresh SIGTERM never launches a run the
+	// drain then abandons.
 	scheduler.RunLoop(ctx, func(context.Context) {
 		if _, ok, err := trigger.Run(); err != nil {
 			log.Error("scheduled dump failed; cycle coordination error", "err", err)
@@ -389,9 +353,9 @@ func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trig
 	}, scheduler.LoopOptions{Interval: interval})
 }
 
-// runTrigger POSTs to the local server's /dump and mirrors its body to stdout,
-// exiting non-zero if the run reported any failure. Used by exec-based
-// schedulers that prefer `docker exec <c> pg-autodump trigger` over an HTTP call.
+// runTrigger POSTs to the local server's /dump and mirrors its body to
+// stdout, exiting non-zero on any reported failure. Used by exec-based
+// schedulers that prefer `docker exec <c> pg-autodump trigger` over HTTP.
 func runTrigger(getenv func(string) string) int {
 	cfg, warns, err := config.Load(getenv)
 	for _, w := range warns {
@@ -402,12 +366,9 @@ func runTrigger(getenv func(string) string) int {
 		return 1
 	}
 	url := "http://" + localAddr(cfg.ListenAddr) + "/dump"
-	// Bound the trigger on the server's worst-case total dump time, NOT on
-	// SHUTDOWN_TIMEOUT (a drain knob the operator may set low for unrelated
-	// reasons). The server dumps Specs in ceil(len/concurrency) serial waves,
-	// each database bounded by DumpTimeout plus the reachability probe cap, so
-	// a flat DumpTimeout+slack would falsely time out a multi-database run and
-	// make `trigger` report exit 1 while the dump is still succeeding.
+	// Bound on the server's worst-case total dump time, not SHUTDOWN_TIMEOUT
+	// (a drain knob the operator may set low for unrelated reasons): a flat
+	// DumpTimeout+slack would falsely time out a multi-database run.
 	timeout := triggerTimeout(&cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -432,23 +393,20 @@ func runTrigger(getenv func(string) string) int {
 	return 0
 }
 
-// triggerHTTPSlack covers connection setup, the handler's bookkeeping, and the
-// retention prune that runs after the dumps, on top of the modeled dump time.
+// triggerHTTPSlack covers connection setup, handler bookkeeping, and the
+// post-dump retention prune, on top of the modeled dump time.
 const triggerHTTPSlack = 30 * time.Second
 
-// triggerTimeout estimates the worst-case time POST /dump can legitimately take
-// so `trigger` blocks long enough for a real dump to finish but is never
-// unbounded. The server dumps cfg.Specs in ceil(len/concurrency) serial waves;
-// each database is bounded by min(dump.ProbeTimeoutCap, DumpTimeout) for the
-// probe plus DumpTimeout for the dump itself. Before the response is written
-// the server also executes any rerun demand exec'd runs queued during the
-// cycle (at most cycleQueueCapacity), so the modeled dump time is billed
-// (1 + cycleQueueCapacity) times, plus fixed HTTP/handler slack.
+// triggerTimeout estimates the worst-case time POST /dump can legitimately
+// take, so `trigger` waits out a real dump without blocking forever. Specs
+// dump in ceil(len/concurrency) serial waves; each database is bounded by
+// min(ProbeTimeoutCap, DumpTimeout) for the probe plus DumpTimeout for the
+// dump. The server also executes any rerun demand queued during the cycle
+// (at most cycleQueueCapacity) before responding, so the modeled dump time is
+// billed (1 + cycleQueueCapacity) times.
 func triggerTimeout(cfg *config.Config) time.Duration {
 	concurrency := max(cfg.DumpConcurrency, 1)
-	// At least one wave even when no specs are configured, so the trigger
-	// still waits out the handler's own work.
-	waves := 1
+	waves := 1 // at least one wave even with no specs configured
 	if n := len(cfg.Specs); n > 0 {
 		waves = (n + concurrency - 1) / concurrency
 	}
@@ -457,21 +415,18 @@ func triggerTimeout(cfg *config.Config) time.Duration {
 	return time.Duration(waves*cycles)*perDB + triggerHTTPSlack
 }
 
-// localAddr turns a listen address into the dial target for the trigger's POST /dump on
-// the same port. A wildcard or unspecified bind (":9847", "0.0.0.0:9847", "[::]:9847")
-// and an unparseable value map to 127.0.0.1; an explicit host (loopback or otherwise) is
-// preserved, so a listener bound to a specific address is dialed where it actually bound.
+// localAddr turns a listen address into the trigger's dial target on the same
+// port. A wildcard/unspecified bind and an unparseable value map to
+// 127.0.0.1; an explicit host is preserved as-is.
 func localAddr(listen string) string {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		// No port (e.g. a bare "9847") or otherwise unparseable: treat the
-		// whole string as the port and dial IPv4 loopback.
+		// No port (e.g. a bare "9847"): treat the whole string as the port.
 		return net.JoinHostPort("127.0.0.1", listen)
 	}
-	// A wildcard or unspecified bind is reachable on loopback, so dial IPv4
-	// loopback. An explicit loopback host is preserved as-is, so an
-	// IPv6-only-loopback listener (LISTEN_ADDR="[::1]:port") is dialed on ::1
-	// rather than on 127.0.0.1 (which it never bound).
+	// A wildcard/unspecified bind is reachable on loopback; an explicit
+	// loopback host (e.g. "[::1]") is preserved so it dials the address it
+	// actually bound rather than always 127.0.0.1.
 	switch host {
 	case "", "0.0.0.0", "::":
 		host = "127.0.0.1"

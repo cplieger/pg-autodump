@@ -23,11 +23,9 @@ func TestDirWritable(t *testing.T) {
 		}
 	})
 
-	// The probe leaves nothing behind on the happy path. Asserted by reading the
-	// directory rather than by globbing a probe name: the name is now
-	// atomicfile's temp shape, not this app's, and the property that matters is
-	// that DUMP_DIR is clean afterwards. (TestDirWritableProbeNameIsReclaimable
-	// covers the name contract itself.)
+	// The probe leaves nothing behind on the happy path; asserted by reading
+	// the directory rather than globbing a probe name, since the name is now
+	// atomicfile's temp shape.
 	t.Run("probe file is removed after a successful check", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := dirWritable(dir); err != nil {
@@ -42,10 +40,8 @@ func TestDirWritable(t *testing.T) {
 		}
 	})
 
-	// A directory that refuses a create fails the preflight, and the error names
-	// the stage so the log distinguishes "cannot create" from the teardown
-	// stages below it. The old probe returned the bare os error here; the stage
-	// name is the new information a reader gets.
+	// The error names the stage so the log distinguishes "cannot create"
+	// from the teardown stages below it.
 	t.Run("unwritable directory fails and names the stage", func(t *testing.T) {
 		if os.Geteuid() == 0 {
 			t.Skip("root bypasses directory write permissions")
@@ -70,14 +66,11 @@ func TestDirWritable(t *testing.T) {
 	})
 }
 
-// TestDirWritableProbeNameIsReclaimable pins the coupling the old probe got
-// wrong twice over: the preflight's probe file must be a name the app's own
-// stale-temp sweep reclaims. The old ".pg-autodump-writable-*" satisfied
-// nothing, so a probe leaked by a directory that denies unlink stayed on the
-// backup volume forever. Asserting on atomicfile.TempName/IsPackageTemp is the
-// closest an app-side test can get to the shape dirWritable creates, since a
-// successful probe deliberately leaves nothing to inspect; the reclaim half is
-// pinned in internal/dump (TestReclaimOrphansReapsRootProbeLeftovers).
+// The preflight's probe file must be a name the app's own stale-temp sweep
+// reclaims (atomicfile.TempName/IsPackageTemp), unlike the retired
+// ".pg-autodump-writable-*" name, which the sweep never recognized. The
+// reclaim half is pinned in internal/dump
+// (TestReclaimOrphansReapsRootProbeLeftovers).
 func TestDirWritableProbeNameIsReclaimable(t *testing.T) {
 	name := atomicfile.TempName()
 	if !atomicfile.IsPackageTemp(name) {

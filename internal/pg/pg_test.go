@@ -13,9 +13,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/dump"
 )
 
-// TestNewCommand pins the child shape this package shares with
-// docker-renovate-scheduler: graceful cancellation (Cancel set, WaitDelay
-// grace) and the child leading its own process group.
+// The child shape (Cancel, WaitDelay, Setpgid) is shared with docker-renovate-scheduler.
 func TestNewCommand(t *testing.T) {
 	t.Parallel()
 	cmd := newCommand(t.Context(), "sleep", "1")
@@ -33,10 +31,8 @@ func TestNewCommand(t *testing.T) {
 	}
 }
 
-// TestNewCommand_ChildRunsInOwnProcessGroup proves the OS honors Setpgid: a
-// spawned child's process group must differ from the daemon's (here: the test
-// process's), so a group-directed SIGTERM at PID 1 cannot reach it. This is
-// the behavioral half of the Setpgid pin in TestNewCommand.
+// Proves the OS honors Setpgid: the child's process group must differ from
+// the test process's, or a group-directed SIGTERM at PID 1 would reach it.
 func TestNewCommand_ChildRunsInOwnProcessGroup(t *testing.T) {
 	t.Parallel()
 	cmd := newCommand(t.Context(), "sleep", "2")
@@ -64,17 +60,12 @@ func TestNewCommand_ChildRunsInOwnProcessGroup(t *testing.T) {
 	}
 }
 
-// TestNewCommand_CancelSignalsTheWholeGroup is the behavioral half of the
-// group-directed cancel: a cancellation must reach every member of the child's
-// process group, not just the child itself, so a pg client that forked a worker
-// stops with its leader instead of keeping a Postgres connection and a staged
-// temp file alive after the dump was abandoned.
+// Cancellation must reach every member of the child's process group, not just
+// the child, so a forked worker dies with its leader.
 //
-// The lingering member is a DIRECT child of the test binary that JOINS the
-// child's group, so this test owns it and observes its death at an instant it
-// controls. A descendant forked inside the child cannot serve: it is orphaned
-// the moment the group leader exits, so whether it is ever collected depends on
-// the ambient reaper rather than on the code under test.
+// The lingering member is a direct child of the test binary that joins the
+// child's group, so the test observes its death at an instant it controls; a
+// descendant forked inside the child would orphan at leader exit instead.
 func TestNewCommand_CancelSignalsTheWholeGroup(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithCancel(t.Context())
@@ -236,9 +227,7 @@ func TestPGToolRejectsDeadlinelessContext(t *testing.T) {
 	}
 }
 
-// New configures a positive TCP dial timeout (5s). The dial is what separates a
-// definitive connect_error from a slow host, so a dropped or zeroed dial timeout
-// would change how an unreachable host is bounded relative to the dump budget.
+// The dial timeout is what separates a definitive connect_error from a slow host.
 func TestNewConfiguresDialTimeout(t *testing.T) {
 	if got := New("/secrets/.pgpass", 5*time.Second).dialTimeout; got != 5*time.Second {
 		t.Errorf("New(...).dialTimeout = %v, want 5s", got)

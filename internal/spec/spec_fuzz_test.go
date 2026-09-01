@@ -7,10 +7,7 @@ import (
 	"unicode"
 )
 
-// FuzzParse asserts the untrusted-input invariants: Parse never
-// panics, yields exactly one DBSpec per whitespace token, and any spec that is
-// NOT marked Invalid satisfies the full grammar (so it is safe to pass to
-// pg_dump). This is the boundary between operator config and a process argv.
+// Any spec not marked Invalid must satisfy the full grammar (safe for pg_dump argv).
 func FuzzParse(f *testing.F) {
 	seeds := []string{
 		"", "   ", "host:db:user", "host:5432:db:user",
@@ -50,10 +47,7 @@ func assertSafeHost(t *testing.T, v string) {
 	if v == "" {
 		t.Fatalf("valid spec has empty host")
 	}
-	// A bracketed IPv6/IPv4 literal is stored canonical and may contain ':' (and
-	// '.' for embedded IPv4). net.ParseIP accepts only IP syntax — no '/', no
-	// '..', no shell metacharacters — so a parseable IP is path-safe (ServerDir
-	// further replaces ':' with '-' and prefixes '@').
+	// net.ParseIP accepts only IP syntax, so a parseable literal is path-safe despite its ':'.
 	if ip := net.ParseIP(v); ip != nil {
 		return
 	}

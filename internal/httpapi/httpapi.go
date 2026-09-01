@@ -25,13 +25,11 @@ const readHeaderTimeout = 10 * time.Second
 
 // Trigger runs one dump under the in-process single-flight guard and the
 // cross-process cycle lock (scheduler.Exclusive). The run context is derived
-// from context.Background(), NOT the HTTP request, so a trigger client that
-// disconnects (a short wget firing a long backup) never cancels the dump; only
-// shutdown cancels it, via the guard. The cycle lock extends single-flight
-// across processes: an exec'd `pg-autodump run` can never dump concurrently
-// with the server, and a rerun request it queues while the server's cycle runs
-// is executed by the server before Run returns (depth-1 coalescing — queued
-// demand is owed a run that starts after it arrived).
+// from context.Background(), not the HTTP request, so a client disconnect
+// never cancels the dump — only shutdown does, via the guard. The cycle lock
+// extends single-flight across processes: an exec'd `pg-autodump run` can
+// never dump concurrently with the server, and a rerun it queues mid-cycle is
+// executed by the server before Run returns (depth-1 coalescing).
 type Trigger struct {
 	guard *dump.Guard
 	cycle *scheduler.Exclusive
@@ -106,40 +104,25 @@ func NewServer(d *Deps) *http.Server {
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
 
-	// Access logging (with request-id and the spoof-proof client_ip) + panic
-	// recovery + baseline security headers all come from webhttp; the /healthz
-	// probe is skipped so routine liveness checks do not flood the log. Chain
-	// is outermost-first: the auth-failure throttle sits OUTSIDE Logging (the
-	// composition the preset documents) so a flooding client burning bad
-	// bearer tokens is answered 429 without writing an access line per
-	// attempt — bounding the log-flood vector is the throttle's whole job;
-	// the failures inside the preset's burst still log through the inner 401
-	// path. Then webhttp's canonical order: Logging outermost (its access line
-	// records the final status; client_ip is the bare socket peer — no proxy
-	// fronts this sidecar), Recoverer inside it (a recovered panic is logged
-	// as its 500), and SecurityHeaders innermost — its nosniff /
-	// X-Frame-Options: DENY / Referrer-Policy baseline is set before the
-	// handler runs, so it survives even onto a recovered 500. No CSP or HSTS:
-	// this is a plain-HTTP, non-browser, text/plain control endpoint, so
-	// nosniff is the header that earns its keep (the framing/referrer defaults
-	// are harmless standardization).
+	// Chain is outermost-first. The auth-failure throttle sits outside Logging
+	// so a client flooding bad bearer tokens is answered 429 without writing
+	// an access line per attempt; failures inside its burst still log through
+	// the inner 401 path. Then webhttp's canonical order: Logging (client_ip
+	// is the bare socket peer — no proxy fronts this sidecar), Recoverer, then
+	// SecurityHeaders innermost so its baseline survives onto a recovered 500.
+	// No CSP/HSTS: a plain-HTTP, non-browser, text/plain control endpoint.
 	handler := webhttp.Chain(mux,
 		authFailureLimiter(d.AuthToken),
-		// /healthz uses ProbeLogLevel: healthy probes log at Debug (out of the
-		// shipped stream), a failing probe at Warn/Error with its status and
-		// request id. Skipping the route entirely, as an earlier version did,
-		// hid the failure signal along with the noise.
+		// /healthz uses ProbeLogLevel: healthy probes log at Debug, a failing
+		// probe at Warn/Error with its status and request id.
 		webhttp.Logging(webhttp.WithLogger(log), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP()),
 		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
 		webhttp.SecurityHeaders(),
 	)
 
-	// webhttp.NewServer supplies the streaming-safe defaults (MaxHeaderBytes
-	// 1 MiB, WriteTimeout unset). WriteTimeout stays unset on purpose: a dump
-	// run holds the response open for minutes. ReadHeaderTimeout (the slowloris
-	// guard), ReadTimeout, and the 60s IdleTimeout are supplied explicitly to
-	// pin the previous bounds. No Addr is set: webhttp.Run serves the listener
-	// main binds, and http.Server.Serve ignores http.Server.Addr.
+	// webhttp.NewServer supplies streaming-safe defaults (MaxHeaderBytes 1 MiB,
+	// WriteTimeout unset — a dump run holds the response open for minutes).
+	// ReadHeaderTimeout, ReadTimeout and IdleTimeout are pinned explicitly.
 	return webhttp.NewServer(handler,
 		webhttp.WithReadHeaderTimeout(readHeaderTimeout),
 		webhttp.WithReadTimeout(readHeaderTimeout),
@@ -186,25 +169,15 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 	})
 }
 
-// authFailureLimiter throttles repeated FAILED bearer attempts against
-// POST /dump through webhttp's FailedAuthRateLimit preset, which owns the
-// tuning (the burst, the refill cadence, and the "too_many_auth_failures" 429
-// code) so the services guarding this same shape cannot drift; the human
-// message stays here because the credential is a bearer and naming it is what
-// makes the refusal legible. Only requests that would fail auth draw a token
-// (a valid bearer is never throttled, even mid-flood; other routes and methods
-// pass untouched), and over-budget bad-bearer requests are answered 429 with a
-// Retry-After hint BEFORE reaching the access logger or the handler, bounding
-// the line-per-attempt log flood a network-exposed bind would otherwise allow
-// at wire speed. Verification cost per rejected request is one SHA-256, so the
-// bounded vector is the log flood, not CPU.
+// authFailureLimiter throttles repeated failed bearer attempts against
+// POST /dump via webhttp's FailedAuthRateLimit preset (burst/refill/429 code
+// owned there so this and any sibling service cannot drift). A valid bearer
+// is never throttled; over-budget bad-bearer requests are answered 429 before
+// reaching the access logger or handler, bounding the log-flood vector.
 //
-// Open mode (no configured token) disables the throttle entirely, matching
-// authMiddleware's documented no-op. The bypass is load-bearing, not
-// decoration: the preset has no non-positive "off" contract, and the verifier
-// fails closed on an empty configured secret, so without it every
-// unauthenticated request to a deliberately unauthenticated endpoint would
-// read as a failed attempt and be throttled.
+// Open mode (no configured token) disables the throttle: the verifier fails
+// closed on an empty secret, so without this bypass every unauthenticated
+// request to a deliberately open endpoint would read as a failed attempt.
 func authFailureLimiter(token string) webhttp.Middleware {
 	if token == "" {
 		return func(next http.Handler) http.Handler { return next }
@@ -228,17 +201,12 @@ func presentsValidBearer(verify webhttp.StaticTokenVerifier, r *http.Request) bo
 	return strings.HasPrefix(h, prefix) && verify.Verify(strings.TrimPrefix(h, prefix))
 }
 
-// authMiddleware enforces a bearer token when one is configured; it is a no-op
-// when the token is empty (documented open mode). Verification is delegated to
-// webhttp's static-token verifier, built ONCE here so the configured token is
-// pre-hashed: each request hashes only the presented value and compares
-// fixed-length SHA-256 digests in constant time, so neither the compare's
-// short-circuit nor the per-call hashing leaks anything about the configured
-// token (a raw ConstantTimeCompare short-circuits on length mismatch, making
-// the token's LENGTH timing-observable even though its content is not). The
-// verifier also fails closed on an empty configured secret, so if the open-mode
-// bypass above it were ever removed, an unset token would reject every request
-// rather than matching an empty presented credential.
+// authMiddleware enforces a bearer token when one is configured; a no-op when
+// the token is empty (documented open mode). The verifier is built once so
+// the configured token is pre-hashed: each request hashes only the presented
+// value and compares fixed-length digests in constant time, so neither the
+// compare nor the per-call hashing leaks the configured token's length or
+// content. It also fails closed on an empty configured secret.
 func authMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next

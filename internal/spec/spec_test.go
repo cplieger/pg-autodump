@@ -91,10 +91,7 @@ func TestParseSpecsNeverDropsTokens(t *testing.T) {
 	}
 }
 
-// Port boundary values 1 and 65535 are both valid. The validation guard
-// `port < 1 || port > 65535` has two boundary mutants: `port < 1` -> `port <= 1`
-// would reject port 1, and `port > 65535` -> `port >= 65535` would reject port
-// 65535. Both extremes must parse as valid with the exact port preserved.
+// Ports 1 and 65535 are both valid boundary values for the port guard.
 func TestParseSpecsPortBoundaries(t *testing.T) {
 	low := Parse("host:1:db:user")
 	if len(low) != 1 || low[0].Invalid != "" {
@@ -113,12 +110,9 @@ func TestParseSpecsPortBoundaries(t *testing.T) {
 	}
 }
 
-// The per-server subdirectory name (ServerDir, "<host>_<port>") must fit one
-// filesystem path component, capped at maxServerDirLen (255). The guard is
-// `len(ServerDir) > 255` (strict), so a host whose ServerDir is exactly 255
-// bytes is the largest still accepted and must parse VALID; one byte over is
-// rejected. With the default port 5432 (4 digits) and the "_" separator, a
-// 250-char host yields a 255-byte ServerDir and a 251-char host a 256-byte one.
+// ServerDir ("<host>_<port>") is capped at maxServerDirLen (255), inclusive.
+// With default port 5432 and the "_" separator, a 250-char host yields exactly
+// 255 bytes and a 251-char host yields 256.
 func TestParseSpecsServerDirLengthBoundary(t *testing.T) {
 	atLimit := Parse(strings.Repeat("a", 250) + ":db:user")
 	if len(atLimit) != 1 {

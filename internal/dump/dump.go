@@ -15,6 +15,7 @@ import (
 
 	"github.com/cplieger/atomicfile/v3"
 	"github.com/cplieger/pg-autodump/internal/spec"
+	"github.com/cplieger/scheduler/v4"
 )
 
 // ProbeTimeoutCap bounds the per-database reachability probe so a dead host
@@ -45,6 +46,7 @@ type Orchestrator struct {
 	log         *slog.Logger
 	now         func() time.Time
 	freeSpace   func(string) (int64, error) // injectable disk-space probe; defaults to statfsFreeKB
+	stamp       *scheduler.Stamp
 	dumpDir     string
 	specs       []spec.DBSpec
 	dumpTimeout time.Duration
@@ -67,12 +69,14 @@ func New(p *Params) *Orchestrator {
 	if log == nil {
 		log = slog.Default()
 	}
+	dir := absDumpDir(p.DumpDir)
 	return &Orchestrator{
 		pg:          p.PG,
 		log:         log,
 		now:         now,
 		freeSpace:   statfsFreeKB,
-		dumpDir:     absDumpDir(p.DumpDir),
+		stamp:       scheduler.NewStamp(StampPath(dir)),
+		dumpDir:     dir,
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,
 		concurrency: p.Concurrency,
@@ -100,8 +104,10 @@ func absDumpDir(dir string) string {
 // assumes it is the only dump run in flight (its production callers hold the
 // in-process guard and the cross-process cycle lock), so it first reclaims
 // crash-orphaned temp files — every temp visible at cycle start is an
-// orphan. On completion it emits a single "dump cycle complete" heartbeat;
-// the README's alerting section documents the Loki absence rule keyed on it.
+// orphan. On completion it emits a single "dump cycle complete" heartbeat
+// (the README's alerting section documents the Loki absence rule keyed on
+// it) and records the cycle outcome for the next boot's startup-dump
+// decision.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()
@@ -136,8 +142,23 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 		}
 	}
 	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
+	o.recordCycle(failedN == 0)
 
 	return results
+}
+
+// recordCycle persists the cycle outcome for the next boot's startup-dump
+// decision: success only when every configured database dumped and verified,
+// so a partially failed cycle leaves the startup dump due. Single writer by
+// operational contract: every caller runs inside the cross-process Exclusive
+// cycle lock, so the server and an exec'd `pg-autodump run` never record
+// concurrently. A failed write costs one redundant future startup dump,
+// never the cycle's own result.
+func (o *Orchestrator) recordCycle(ok bool) {
+	if err := o.stamp.Record(ok); err != nil {
+		o.log.Warn("cannot record the cycle outcome; next boot fires a startup dump",
+			"path", StampPath(o.dumpDir), "err", err)
+	}
 }
 
 // dumpOne probes one database, then (on success) stages, verifies, and

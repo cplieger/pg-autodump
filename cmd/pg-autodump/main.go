@@ -177,7 +177,7 @@ func runServer(getenv func(string) string) int {
 	}
 
 	if cfg.DumpInterval > 0 {
-		go runTicker(ctx, cfg.DumpDir, cfg.DumpInterval, trigger, log)
+		go runTicker(ctx, scheduler.NewStamp(dump.StampPath(cfg.DumpDir)), cfg.DumpInterval, trigger, log)
 	}
 
 	log.Info("pg-autodump listening",
@@ -323,18 +323,23 @@ func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL).
-func runTicker(ctx context.Context, dumpDir string, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
+func runTicker(ctx context.Context, stamp *scheduler.Stamp, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
 	// The ticker's first fire is one interval after start and its clock
 	// resets on every restart, so a restart-heavy deployment could go a long
-	// time with no backups without this: fire once at startup, but only when
-	// no existing dump is newer than one interval, so a restart with an
-	// already-fresh dump does not re-dump.
-	if dump.DueForStartup(dumpDir, interval, time.Now()) && ctx.Err() == nil {
+	// time with no backups without this: fire once at startup, unless the
+	// cycle record inherited from the previous container proves a fully
+	// successful cycle within one interval. A partially failed cycle records
+	// failed, so the boot retries until one cycle fully succeeds.
+	if !stamp.Due(interval, time.Now(), scheduler.RetryFailed) {
+		rec, _ := stamp.Last()
+		log.Info("startup dump skipped; the last cycle fully succeeded within one interval",
+			"last_success", rec.Time, "interval", interval)
+	} else if ctx.Err() == nil {
 		switch _, ok, err := trigger.Run(); {
 		case err != nil:
 			log.Error("startup dump failed; cycle coordination error", "err", err)
 		case ok:
-			log.Info("startup dump complete (no dump within one interval at boot)")
+			log.Info("startup dump complete (no fully successful cycle within one interval at boot)")
 		default:
 			log.Warn("startup dump skipped; a run is already in progress")
 		}

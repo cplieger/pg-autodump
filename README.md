@@ -136,7 +136,7 @@ docker run --rm \
 | `DUMP_DIR` | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value with a `..` path component is **fatal**: startup aborts rather than silently relocate backups to the default. Names that merely contain dots (`/dumps/a..b`) are fine. | `/dumps` | No |
 | `DUMP_TIMEOUT` | Per-dump seconds (min 10). | `300` | No |
 | `DUMP_CONCURRENCY` | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume. | `2` | No |
-| `DUMP_INTERVAL` | Built-in timer cadence (Go duration). On startup it runs one dump only when no existing dump is newer than one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger. | `24h` | No |
+| `DUMP_INTERVAL` | Built-in timer cadence (Go duration). On startup it runs one dump unless the [last-run record](#the-startup-dump-and-the-last-run-record) shows a fully successful cycle within one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger. | `24h` | No |
 | `DUMP_KEEP` | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool). | `7` | No |
 | `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables. | `1048576` | No |
 | `AUTH_TOKEN` | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback. | `""` | No |
@@ -150,7 +150,7 @@ docker run --rm \
 | Mount | Description |
 | --- | --- |
 | `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used. |
-| `/dumps` | Output directory; verified dumps under a per-server `<host>_<port>/` subdirectory (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). |
+| `/dumps` | Output directory; verified dumps under a per-server `<host>_<port>/` subdirectory (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). A one-line `.pg-autodump-last-run` record sits at the root; harmless if your backup tool collects it. |
 
 ### Endpoints
 
@@ -178,6 +178,24 @@ dumps against another's. **Upgrading from a flat layout:** root-level
 `<host>_<port>/`, and the first start after upgrading runs a dump immediately
 (timer on). Remove the old flat files at your convenience; a versioning
 collector begins a fresh chain at the new paths.
+
+### The startup dump and the last-run record
+
+The built-in timer's first fire is one interval after start and its clock
+resets on every restart, so pg-autodump fires one dump at startup unless the
+previous cycle both fully succeeded and completed within one interval. The
+decision reads a one-line record at `DUMP_DIR/.pg-autodump-last-run`, written
+after every completed cycle whatever triggered it (timer, HTTP, `trigger`, or
+a one-shot `run`).
+
+- Only a cycle in which **every** configured database dumped and verified
+  records a success. A cycle with any failed database records a failure, and
+  a failure never suppresses the startup dump: a restart retries the whole
+  cycle until one fully succeeds. Dumps are verify-before-replace, so the
+  retries cost work, never data.
+- When `/dumps` is not persisted, the record does not survive a container
+  recreate and every start fires one dump, which is also the cold-start
+  behavior.
 
 ## Alerting
 
@@ -224,24 +242,30 @@ groups:
       - alert: PgAutodumpCycleMissing
         expr: |
           absent_over_time(
-            {container="pg-autodump"} |= `dump cycle complete` [26h]
+            {container="pg-autodump"} |= `dump cycle complete` [50h]
           )
         for: 0m
         labels:
           severity: warning
         annotations:
-          summary: "pg-autodump: no dump cycle completed in 26h"
+          summary: "pg-autodump: no dump cycle completed in 50h"
           description: >
-            No "dump cycle complete" heartbeat in 26h. With the default 24h
-            timer (or a daily external trigger) backups have silently
+            No "dump cycle complete" heartbeat in 50h. Backups have silently
             stopped: the container may be down, the timer disabled, or every
-            trigger failing before a dump starts. Size the window to ~2x your
-            dump cadence.
+            trigger failing before a dump starts. The window covers the
+            longest legal gap under the built-in 24h timer, not the cadence:
+            a restart shortly before the next tick inherits the last cycle's
+            record, skips its startup dump, and fires one full interval
+            after boot, so two heartbeats can legally sit just under
+            2x DUMP_INTERVAL apart, plus the cycle's own runtime. With an
+            external daily trigger instead, ~26h detects a missed day.
 ```
 
 Thresholds and the `severity` label are starting points; adjust the `[15m]` /
-`[26h]` windows and the `container` selector to your deployment (the absence
-window tracks your cadence, not the failure window), and route by whatever
+`[50h]` windows and the `container` selector to your deployment (the absence
+window tracks the longest legal gap: about 2x `DUMP_INTERVAL` plus a cycle's
+runtime under the built-in timer, or your trigger cadence plus slack under an
+external scheduler), and route by whatever
 labels your Alertmanager uses. If your scheduler already alerts on a missing
 scheduled run (as an exec-based scheduler like Ofelia can), the absence rule is
 redundant; keep whichever vantage point you trust more.

@@ -346,16 +346,21 @@ func runTicker(ctx context.Context, stamp *scheduler.Stamp, interval time.Durati
 	}
 
 	// scheduler.RunLoop drives the recurring ticks; no FireOnStart, since the
-	// startup dump above is already conditional. It re-checks ctx before each
-	// tick so a pending tick racing a fresh SIGTERM never launches a run the
-	// drain then abandons.
+	// startup dump above is already conditional, and FirstDelay phases the
+	// first tick from the recorded previous cycle so a restart neither adds a
+	// dump nor delays the cadence. It re-checks ctx before each tick so a
+	// pending tick racing a fresh SIGTERM never launches a run the drain then
+	// abandons.
 	scheduler.RunLoop(ctx, func(context.Context) {
 		if _, ok, err := trigger.Run(); err != nil {
 			log.Error("scheduled dump failed; cycle coordination error", "err", err)
 		} else if !ok {
 			log.Warn("scheduled dump skipped; a run is already in progress")
 		}
-	}, scheduler.LoopOptions{Interval: interval})
+	}, scheduler.LoopOptions{
+		Interval:   interval,
+		FirstDelay: stamp.Remaining(interval, time.Now(), scheduler.RetryFailed),
+	})
 }
 
 // runTrigger POSTs to the local server's /dump and mirrors its body to

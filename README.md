@@ -181,12 +181,13 @@ collector begins a fresh chain at the new paths.
 
 ### The startup dump and the last-run record
 
-The built-in timer's first fire is one interval after start and its clock
-resets on every restart, so pg-autodump fires one dump at startup unless the
-previous cycle both fully succeeded and completed within one interval. The
-decision reads a one-line record at `DUMP_DIR/.pg-autodump-last-run`, written
-after every completed cycle whatever triggered it (timer, HTTP, `trigger`, or
-a one-shot `run`).
+The built-in timer keeps its phase across restarts: its first fire lands one
+interval after the previous completed cycle, read from the record below, so a
+restart neither adds a dump nor delays the next one. At startup pg-autodump
+additionally fires one immediate dump unless the previous cycle both fully
+succeeded and completed within one interval. The decision reads a one-line
+record at `DUMP_DIR/.pg-autodump-last-run`, written after every completed
+cycle whatever triggered it (timer, HTTP, `trigger`, or a one-shot `run`).
 
 - Only a cycle in which **every** configured database dumped and verified
   records a success. A cycle with any failed database records a failure, and
@@ -242,28 +243,27 @@ groups:
       - alert: PgAutodumpCycleMissing
         expr: |
           absent_over_time(
-            {container="pg-autodump"} |= `dump cycle complete` [50h]
+            {container="pg-autodump"} |= `dump cycle complete` [26h]
           )
         for: 0m
         labels:
           severity: warning
         annotations:
-          summary: "pg-autodump: no dump cycle completed in 50h"
+          summary: "pg-autodump: no dump cycle completed in 26h"
           description: >
-            No "dump cycle complete" heartbeat in 50h. Backups have silently
+            No "dump cycle complete" heartbeat in 26h. Backups have silently
             stopped: the container may be down, the timer disabled, or every
             trigger failing before a dump starts. The window covers the
-            longest legal gap under the built-in 24h timer, not the cadence:
-            a restart shortly before the next tick inherits the last cycle's
-            record, skips its startup dump, and fires one full interval
-            after boot, so two heartbeats can legally sit just under
-            2x DUMP_INTERVAL apart, plus the cycle's own runtime. With an
-            external daily trigger instead, ~26h detects a missed day.
+            longest legal gap under the built-in 24h timer: the schedule
+            keeps its phase across restarts (the record on /dumps carries
+            it), so two heartbeats sit at most one DUMP_INTERVAL plus the
+            cycle's own runtime apart. With an external daily trigger, 26h
+            likewise detects a missed day.
 ```
 
 Thresholds and the `severity` label are starting points; adjust the `[15m]` /
-`[50h]` windows and the `container` selector to your deployment (the absence
-window tracks the longest legal gap: about 2x `DUMP_INTERVAL` plus a cycle's
+`[26h]` windows and the `container` selector to your deployment (the absence
+window tracks the longest legal gap: about one `DUMP_INTERVAL` plus a cycle's
 runtime under the built-in timer, or your trigger cadence plus slack under an
 external scheduler), and route by whatever
 labels your Alertmanager uses. If your scheduler already alerts on a missing

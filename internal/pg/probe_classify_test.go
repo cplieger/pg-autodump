@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -31,6 +32,25 @@ func fakePsqlBin(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return p
+}
+
+// fakeClientPATH stages a stand-in for every required client binary in one
+// directory and puts that directory on PATH, so BinariesRunnable resolves the
+// fakes. bodies maps a binary name to its script; any name it omits gets one
+// that succeeds.
+func fakeClientPATH(t *testing.T, bodies map[string]string) {
+	t.Helper()
+	dir := t.TempDir()
+	for _, bin := range requiredBins {
+		body, ok := bodies[bin]
+		if !ok {
+			body = "#!/bin/sh\nprintf 'fake (PostgreSQL) 18.6\\n'\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, bin), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", dir)
 }
 
 // Probe separates a connect failure from an auth failure by dialing the host
@@ -267,11 +287,85 @@ func TestVerifyTOCRunErrorMissingBinary(t *testing.T) {
 	}
 }
 
-func TestBinariesPresent(t *testing.T) {
-	t.Run("missing binaries on PATH errors", func(t *testing.T) {
+// A pg client that is present but cannot execute must never be classified as an
+// auth failure. With the TCP dial already successful, the loader exits psql 127
+// ("symbol not found") when its libpq is missing, and reason=auth_error would
+// send whoever reads the dump-failure alert to the dbdumper_ro password instead
+// of to the image, which is where the fault is.
+func TestProbeNonExecutableClientIsNotAuth(t *testing.T) {
+	for _, code := range []int{126, 127} {
+		t.Run("psql exits "+strconv.Itoa(code), func(t *testing.T) {
+			l, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = l.Close() }()
+			_, portStr, _ := net.SplitHostPort(l.Addr().String())
+			port, _ := strconv.Atoi(portStr)
+
+			tool := New("/secrets/.pgpass", 5*time.Second)
+			tool.psqlBin = fakePsqlBin(t, "#!/bin/sh\n"+
+				"echo 'Error relocating /usr/bin/psql: PQconnectdbParams: symbol not found' >&2\n"+
+				"exit "+strconv.Itoa(code)+"\n")
+
+			_, kind, perr := tool.Probe(probeTestCtx(t), dump.Conn{Host: "127.0.0.1", Port: port, DBName: "db", User: "u"})
+			if kind == dump.FailAuth {
+				t.Fatalf("Probe kind = FailAuth for a psql that exited %d; a client the image cannot "+
+					"execute must not be reported as an authentication problem", code)
+			}
+			if kind != dump.FailNone {
+				t.Fatalf("Probe kind = %v, want FailNone (an environment fault, like the unstartable-psql arm)", kind)
+			}
+			if perr == nil || !strings.Contains(perr.Error(), "symbol not found") {
+				t.Fatalf("Probe err = %v, want the loader's relocation error surfaced for the operator log", perr)
+			}
+		})
+	}
+}
+
+// The health preflight must prove the client binaries RUN, not merely that they
+// resolve: a client whose libpq is missing keeps its execute bit and exits 127
+// with a relocation error, which exec.LookPath cannot see.
+func TestBinariesRunnable(t *testing.T) {
+	brokenLibpq := "#!/bin/sh\n" +
+		"echo 'Error relocating /usr/bin/pg_dump: PQclear: symbol not found' >&2\nexit 127\n"
+
+	t.Run("clients that run return nil", func(t *testing.T) {
+		fakeClientPATH(t, nil)
+		if err := BinariesRunnable(probeTestCtx(t)); err != nil {
+			t.Fatalf("BinariesRunnable() = %v, want nil when every client runs", err)
+		}
+	})
+
+	t.Run("a present client that cannot execute is rejected", func(t *testing.T) {
+		fakeClientPATH(t, map[string]string{"pg_dump": brokenLibpq})
+		// The premise of the whole case: the broken client still resolves, so a
+		// LookPath check passes and only running it can tell.
+		if _, err := exec.LookPath("pg_dump"); err != nil {
+			t.Fatalf("setup: pg_dump does not resolve on PATH (%v), so this case would pass for the wrong reason", err)
+		}
+		err := BinariesRunnable(probeTestCtx(t))
+		if err == nil {
+			t.Fatal("BinariesRunnable() = nil for a client that exits 127; an image that cannot dump would report healthy")
+		}
+		if !strings.Contains(err.Error(), "pg_dump") {
+			t.Errorf("BinariesRunnable() error = %q, want it to name the client that failed", err)
+		}
+		if !strings.Contains(err.Error(), "symbol not found") {
+			t.Errorf("BinariesRunnable() error = %q, want it to carry the loader's own diagnosis", err)
+		}
+	})
+
+	t.Run("missing clients on PATH error", func(t *testing.T) {
 		t.Setenv("PATH", "")
-		if err := BinariesPresent(); err == nil {
-			t.Fatal("BinariesPresent() = nil with empty PATH, want a missing-binary error")
+		if err := BinariesRunnable(probeTestCtx(t)); err == nil {
+			t.Fatal("BinariesRunnable() = nil with an empty PATH, want a missing-binary error")
+		}
+	})
+
+	t.Run("a context without a deadline is refused", func(t *testing.T) {
+		if err := BinariesRunnable(t.Context()); err != ErrNoDeadline {
+			t.Errorf("BinariesRunnable(no-deadline ctx) = %v, want ErrNoDeadline", err)
 		}
 	})
 }

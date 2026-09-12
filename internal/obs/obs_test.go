@@ -11,14 +11,14 @@ import (
 
 func TestDirWritable(t *testing.T) {
 	t.Run("writable directory returns nil", func(t *testing.T) {
-		if err := dirWritable(t.TempDir()); err != nil {
+		if err := dirWritable(t.Context(), t.TempDir()); err != nil {
 			t.Errorf("dirWritable(tempdir) = %v, want nil", err)
 		}
 	})
 
 	t.Run("missing directory returns an error", func(t *testing.T) {
 		missing := filepath.Join(t.TempDir(), "does-not-exist")
-		if err := dirWritable(missing); err == nil {
+		if err := dirWritable(t.Context(), missing); err == nil {
 			t.Errorf("dirWritable(%q) = nil, want an error for a missing directory", missing)
 		}
 	})
@@ -28,7 +28,7 @@ func TestDirWritable(t *testing.T) {
 	// atomicfile's temp shape.
 	t.Run("probe file is removed after a successful check", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := dirWritable(dir); err != nil {
+		if err := dirWritable(t.Context(), dir); err != nil {
 			t.Fatalf("dirWritable: %v", err)
 		}
 		entries, err := os.ReadDir(dir)
@@ -52,7 +52,7 @@ func TestDirWritable(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-		err := dirWritable(dir)
+		err := dirWritable(t.Context(), dir)
 		if err == nil {
 			t.Fatal("dirWritable(read-only dir) = nil, want an error")
 		}

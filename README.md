@@ -155,7 +155,7 @@ docker run --rm \
 ### Endpoints
 
 - `POST /dump`: run all dumps. `200` if every database succeeded, `500` if any failed, `429` if a run is already in progress **or** repeated bad bearer attempts have engaged the failed-auth throttle (over-budget attempts get the 429 with a `Retry-After` hint before reaching the handler; a valid token is never throttled), `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: <detail>` line per database; for an execution-tool failure (`pg_error` / `truncated` / `other`) the line carries only the reason word. The raw `pg_dump`/`pg_restore` stderr is logged, not returned, so an open endpoint never discloses schema or object names.
-- `GET /healthz`: `200 ok` / `503 unhealthy`. Reflects liveness preconditions (client binaries present, `/dumps` writable, `DB_SPECS` non-empty), **not** per-host database reachability, so a transiently-down database never flips the container unhealthy.
+- `GET /healthz`: `200 ok` / `503 unhealthy`. Reflects liveness preconditions (client binaries run, `/dumps` writable, `DB_SPECS` non-empty), **not** per-host database reachability, so a transiently-down database never flips the container unhealthy.
 
 ### On-disk layout
 
@@ -238,8 +238,10 @@ groups:
             affected database's backup is now stale. reasons:
             connect_error/auth_error/pg_error = misconfig or database down;
             timeout = exceeded the DUMP_TIMEOUT budget; truncated/empty =
-            bad/partial dump. (A graceful-shutdown cancel logs reason=killed
-            at level=WARN and does not trip this alert.)
+            bad/partial dump; other = an environment fault, such as a shipped
+            pg client the image can no longer execute. (A graceful-shutdown
+            cancel logs reason=killed at level=WARN and does not trip this
+            alert.)
       - alert: PgAutodumpCycleMissing
         expr: |
           absent_over_time(
@@ -272,7 +274,7 @@ redundant; keep whichever vantage point you trust more.
 
 ## Healthcheck
 
-The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand, a file-marker probe: no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (the client binaries resolve, `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump`, not liveness.
+The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand, a file-marker probe: no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (each client binary runs — `pg_dump --version` and its siblings are executed, so a client that cannot load `libpq` fails the gate rather than reporting healthy — `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump`, not liveness.
 
 ## The backup role
 

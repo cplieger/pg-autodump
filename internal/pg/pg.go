@@ -34,6 +34,16 @@ var ErrNoDeadline = errors.New("pg: context has no deadline")
 // logs or the HTTP body.
 const stderrCap = 2048
 
+// exitCannotExecute and exitCommandNotFound are the shell and dynamic-loader
+// convention for "the file is there and cannot be run": musl's loader exits 127
+// on an unresolved symbol, which is what a pg client whose libpq is missing
+// does. psql uses neither code for an authentication failure, which is what
+// makes them safe to read as an image fault.
+const (
+	exitCannotExecute   = 126
+	exitCommandNotFound = 127
+)
+
 // newCommand builds every child process this package spawns (pg_dump,
 // pg_restore, psql): the scheduler library's graceful cancellation (SIGTERM,
 // then a grace window before SIGKILL), the child in its own process group,
@@ -76,8 +86,8 @@ type Tool struct {
 }
 
 // requiredBins are the PostgreSQL client binaries the image must ship and the
-// health preflight verifies; New() and BinariesPresent share this single list so
-// the two can never drift.
+// health preflight verifies; New() and BinariesRunnable share this single list
+// so the two can never drift.
 var requiredBins = []string{"pg_dump", "pg_restore", "psql"}
 
 // New builds a Tool. pgPassFile is exported into each child as PGPASSFILE;
@@ -95,12 +105,37 @@ func New(pgPassFile string, stmtTimeout time.Duration) *Tool {
 
 var _ dump.PGTool = (*Tool)(nil)
 
-// BinariesPresent reports whether pg_dump, pg_restore, and psql resolve on
-// PATH. The health probe calls it; a missing binary is an image/build error.
-func BinariesPresent() error {
+// BinariesRunnable reports whether pg_dump, pg_restore, and psql resolve on
+// PATH and actually execute, by running each one's --version. The health
+// preflight calls it; any failure is an image/build error. Requires a context
+// with a deadline, like every other method here.
+//
+// Resolving the binaries with exec.LookPath is not enough: it proves the
+// execute bit and says nothing about whether the binary links. An apk revision
+// or base-digest bump that leaves the clients in place without their libpq
+// keeps every LookPath green while musl's loader exits the process 127 with
+// "symbol not found", so the container would report healthy and fail every
+// dump.
+func BinariesRunnable(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		return ErrNoDeadline
+	}
 	for _, bin := range requiredBins {
-		if _, err := exec.LookPath(bin); err != nil {
-			return errors.New("required binary not found on PATH: " + bin)
+		cmd := newCommand(ctx, bin, "--version")
+		cmd.Stdout = io.Discard
+		var errBuf boundedBuffer
+		errBuf.max = stderrCap
+		cmd.Stderr = &errBuf
+		code, err := run(cmd)
+		if err != nil {
+			return errors.New("required client binary " + bin + " could not be started: " + err.Error())
+		}
+		if code != 0 {
+			detail := strings.TrimSpace(errBuf.String())
+			if detail == "" {
+				detail = bin + " --version exited " + strconv.Itoa(code)
+			}
+			return errors.New("required client binary " + bin + " does not run: " + detail)
 		}
 	}
 	return nil
@@ -195,23 +230,8 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 	cmd.Stderr = &errBuf
 	code, rerr := run(cmd)
 	if rerr != nil || code != 0 {
-		// A ctx timeout/cancel killed psql: report it so classify() maps it
-		// to timeout/killed, never a spurious auth_error.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return 0, dump.FailNone, ctxErr
-		}
-		// psql could not be started at all (fork failure, vanished binary):
-		// an environment fault, not auth.
-		if rerr != nil {
-			return 0, dump.FailNone, rerr
-		}
-		// Dial succeeded, so the host is up; a non-zero psql exit is
-		// auth/missing database, not reachability.
-		detail := strings.TrimSpace(errBuf.String())
-		if detail == "" {
-			detail = "psql probe exited " + strconv.Itoa(code)
-		}
-		return 0, dump.FailAuth, errors.New(detail)
+		kind, perr := probeFailure(ctx, code, rerr, strings.TrimSpace(errBuf.String()))
+		return 0, kind, perr
 	}
 
 	serverNum, _ := strconv.Atoi(strings.TrimSpace(outBuf.String()))
@@ -222,6 +242,37 @@ func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, erro
 				strconv.Itoa(serverMajor) + " (bump the pg-autodump image)")
 	}
 	return serverMajor, dump.FailNone, nil
+}
+
+// probeFailure classifies a psql probe that did not exit cleanly. The TCP dial
+// has already succeeded, so the host is up and what remains is telling an
+// environment fault from a real authentication or missing-database failure.
+// stderr is the bounded psql stderr tail, already trimmed.
+func probeFailure(ctx context.Context, code int, rerr error, stderr string) (dump.FailKind, error) {
+	// A ctx timeout/cancel killed psql: report it so classify() maps it to
+	// timeout/killed, never a spurious auth_error.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return dump.FailNone, ctxErr
+	}
+	// psql could not be started at all (fork failure, vanished binary): an
+	// environment fault, not auth.
+	if rerr != nil {
+		return dump.FailNone, rerr
+	}
+	detail := stderr
+	if detail == "" {
+		detail = "psql probe exited " + strconv.Itoa(code)
+	}
+	// The loader's own verdict: the file was there and could not be run. Also
+	// an environment fault, and it must never read as auth — an operator sent
+	// to the dbdumper_ro password by reason=auth_error never looks at the
+	// image, which is where the fault is.
+	if code == exitCannotExecute || code == exitCommandNotFound {
+		return dump.FailNone, errors.New(detail)
+	}
+	// A non-zero psql exit on a reachable host is auth or a missing database,
+	// not reachability.
+	return dump.FailAuth, errors.New(detail)
 }
 
 // childEnv builds the child environment: parent env plus PGPASSFILE and

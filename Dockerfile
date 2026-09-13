@@ -43,6 +43,30 @@ SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 ARG TINI_VERSION
 ARG TINI_SHA256_AMD64
 ARG TINI_SHA256_ARM64
+# ---------------------------------------------------------------------------
+# Embedded SBOM fragment, emitted at the tail of the fetch RUN below: the purl
+# names the resolved release asset and carries the sha256 that same RUN
+# verified, and both are shell variables local to it.
+# Syft inventories the final image from Alpine's APK database, Go-binary
+# buildinfo, and known binary classifiers, so the upstream-fetched tini static
+# binary is invisible to the signed release SBOM and to vulnerability scanners
+# (the Go binary and the postgresql18-client apk ARE visible — the Go module
+# graph is pg-autodump's own supply chain and needs no syft config beyond the
+# defaults). Generate a CycloneDX fragment from the same Renovate-tracked ARGs
+# the fetch uses — a Renovate bump keeps the SBOM correct with zero extra
+# maintenance — and ship it in the runtime image where Syft's sbom-cataloger
+# picks it up. The cataloger is enabled centrally by the release pipeline
+# (cplieger/ci); no per-repo .syft.yaml is needed.
+# purl: pkg:github/krallin/tini@<tag>?download_url=<asset>&checksum=sha256:<pin>
+# describes the exact bytes the build verified. Name, version and CPE are
+# arch-independent (one upstream release), but the asset and its pin are not,
+# so the fragment is PER-ARCH: each image's SBOM covers the binary that image
+# ships. Nothing needs the two to be byte-identical, since each arch builds
+# natively on its own runner and the multi-arch manifest points at two distinct
+# images. CPE vendor:product is tini_project:tini per the NVD CPE dictionary
+# (its entries reference krallin/tini; there is no krallin:tini vendor), e.g.
+# https://nvd.nist.gov/products/cpe/detail/084AA5DA-AE01-43E0-957F-78FC06932C08/
+# ---------------------------------------------------------------------------
 RUN case "$(uname -m)" in \
       x86_64)  TINI_ARCH=amd64 TINI_SHA256="${TINI_SHA256_AMD64}" ;; \
       aarch64) TINI_ARCH=arm64 TINI_SHA256="${TINI_SHA256_ARM64}" ;; \
@@ -55,31 +79,8 @@ RUN case "$(uname -m)" in \
       exit 1; \
     }; } \
     && chmod 755 /tini \
-    && /tini --version
-
-# ---------------------------------------------------------------------------
-# Embedded SBOM fragment. Syft inventories the final image from Alpine's APK
-# database, Go-binary buildinfo, and known binary classifiers, so the
-# upstream-fetched tini static binary is invisible to the signed release SBOM
-# and to vulnerability scanners (the Go binary and the postgresql18-client
-# apk ARE visible — the Go module graph is pg-autodump's own supply chain and
-# needs no syft config beyond the defaults). Generate a CycloneDX fragment
-# from the same Renovate-tracked version ARG the fetch uses — a Renovate bump
-# keeps the SBOM correct with zero extra maintenance — and ship it in the
-# runtime image where Syft's sbom-cataloger picks it up. The cataloger is
-# enabled centrally by the release pipeline (cplieger/ci); no per-repo
-# .syft.yaml is needed.
-# The amd64/arm64 fetches share this ONE version (only the integrity pins are
-# per-arch), so a single component row covers both arches and the fragment is
-# byte-identical across the multi-arch manifest.
-# purl: pkg:github/krallin/tini@<tag> — the real provenance (the GitHub
-# release asset fetched above); the per-arch SHA256 pins stay out of the purl
-# because they differ per binary. CPE vendor:product is tini_project:tini per
-# the NVD CPE dictionary (its entries reference krallin/tini; there is no
-# krallin:tini vendor), e.g.
-# https://nvd.nist.gov/products/cpe/detail/084AA5DA-AE01-43E0-957F-78FC06932C08/
-# ---------------------------------------------------------------------------
-RUN cat > /tini.cdx.json <<EOF
+    && /tini --version \
+    && cat > /tini.cdx.json <<EOF
 {
   "bomFormat": "CycloneDX",
   "specVersion": "1.5",
@@ -90,7 +91,7 @@ RUN cat > /tini.cdx.json <<EOF
       "type": "application",
       "name": "tini",
       "version": "${TINI_VERSION#v}",
-      "purl": "pkg:github/krallin/tini@${TINI_VERSION}",
+      "purl": "pkg:github/krallin/tini@${TINI_VERSION}?download_url=https://github.com/krallin/tini/releases/download/${TINI_VERSION}/tini-static-${TINI_ARCH}&checksum=sha256:${TINI_SHA256}",
       "cpe": "cpe:2.3:a:tini_project:tini:${TINI_VERSION#v}:*:*:*:*:*:*:*"
     }
   ]

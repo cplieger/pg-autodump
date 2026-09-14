@@ -29,7 +29,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/pg"
 	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
-	"github.com/cplieger/webhttp/v2"
+	"github.com/cplieger/webhttp/v3"
 )
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }

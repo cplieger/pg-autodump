@@ -18,7 +18,7 @@ import (
 	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/pathinside/v2"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/webhttp/v2"
+	"github.com/cplieger/webhttp/v3"
 )
 
 // Defaults for every tunable. Exported so tests and docs share one source.

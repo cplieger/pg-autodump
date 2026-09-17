@@ -3,10 +3,7 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/size.json)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)
-[![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/coverage.json)](https://github.com/cplieger/pg-autodump/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/mutation.json)](https://github.com/cplieger/pg-autodump/issues?q=label%3Agremlins-tracker)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13215/badge)](https://www.bestpractices.dev/projects/13215)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/pg-autodump/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/pg-autodump)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/pg-autodump/releases)
 
 <!-- hub-overview BEGIN -->

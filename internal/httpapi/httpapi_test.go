@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
 	"github.com/cplieger/scheduler/v4"
@@ -207,6 +208,103 @@ func TestHealthz(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/healthz status = %d, want 200", rec.Code)
+	}
+}
+
+// newHealthTestServer wires the orchestrator's health sink and /healthz onto
+// one real marker. Production wires a health.Latch over that marker in
+// runServer, which this fixture does not cover.
+func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Marker) {
+	t.Helper()
+	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	orch := dump.New(&dump.Params{
+		PG:          pg,
+		Logger:      discard(),
+		Health:      marker,
+		DumpDir:     t.TempDir(),
+		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
+		DumpTimeout: 30 * time.Second,
+		Concurrency: 1,
+	})
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
+	return NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()}), marker
+}
+
+func healthz(t *testing.T, srv *http.Server) int {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	return rec.Code
+}
+
+// A POST /dump over zero configured databases dumped nothing: 500, a body that
+// says so, and the marker removed, so an empty DB_SPECS cannot read as a
+// successful cycle.
+func TestDumpNoDatabasesReturns500(t *testing.T) {
+	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	orch := dump.New(&dump.Params{
+		PG:          &stubPG{},
+		Logger:      discard(),
+		Health:      marker,
+		DumpDir:     t.TempDir(),
+		DumpTimeout: 30 * time.Second,
+		Concurrency: 1,
+	})
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
+	srv := NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()})
+	marker.Set(true)
+
+	rec := post(t, srv, "")
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("POST /dump with no databases: status = %d, want 500", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "no databases configured") {
+		t.Errorf("POST /dump with no databases: body = %q, want it to say no databases are configured", body)
+	}
+	if marker.CheckHealthy() {
+		t.Error("marker present after a cycle over zero databases; want it removed")
+	}
+}
+
+// A POST /dump whose cycle has a failed database answers 500 AND marks the
+// container unhealthy: the marker the boot left behind is removed and
+// /healthz turns 503.
+func TestDumpFailureMarksUnhealthy(t *testing.T) {
+	srv, marker := newHealthTestServer(t, &stubPG{exit: 1})
+	marker.Set(true)
+
+	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /dump status = %d, want 500", rec.Code)
+	}
+	if marker.CheckHealthy() {
+		t.Error("marker present after a failed cycle; want it removed")
+	}
+	if got := healthz(t, srv); got != http.StatusServiceUnavailable {
+		t.Errorf("/healthz after a failed cycle = %d, want 503", got)
+	}
+}
+
+// Health follows the most recent cycle: a fully successful POST /dump after a
+// failed one restores the marker without a restart.
+func TestDumpSuccessAfterFailureRestoresHealth(t *testing.T) {
+	pg := &stubPG{exit: 1}
+	srv, marker := newHealthTestServer(t, pg)
+	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failing POST /dump status = %d, want 500", rec.Code)
+	}
+	if marker.CheckHealthy() {
+		t.Fatal("marker present after the failed cycle; the recovery test needs an unhealthy start")
+	}
+
+	pg.exit = 0
+	if rec := post(t, srv, ""); rec.Code != http.StatusOK {
+		t.Fatalf("recovering POST /dump status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
+	}
+	if !marker.CheckHealthy() {
+		t.Error("marker absent after a fully successful cycle; want it restored")
+	}
+	if got := healthz(t, srv); got != http.StatusOK {
+		t.Errorf("/healthz after the recovering cycle = %d, want 200", got)
 	}
 }
 

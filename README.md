@@ -147,8 +147,8 @@ docker run --rm \
 
 ### Endpoints
 
-- `POST /dump`: run all dumps. `200` if every database succeeded, `500` if any failed, `429` if a run is already in progress **or** repeated bad bearer attempts have engaged the failed-auth throttle (over-budget attempts get the 429 with a `Retry-After` hint before reaching the handler; a valid token is never throttled), `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: <detail>` line per database; for an execution-tool failure (`pg_error` / `truncated` / `other`) the line carries only the reason word. The raw `pg_dump`/`pg_restore` stderr is logged, not returned, so an open endpoint never discloses schema or object names.
-- `GET /healthz`: `200 ok` / `503 unhealthy`. Reflects liveness preconditions (client binaries run, `/dumps` writable, `DB_SPECS` non-empty), **not** per-host database reachability, so a transiently-down database never flips the container unhealthy.
+- `POST /dump`: run all dumps. `200` if every database succeeded, `500` if any failed or none is configured (the body then reads `no databases configured`), `429` if a run is already in progress **or** repeated bad bearer attempts have engaged the failed-auth throttle (over-budget attempts get the 429 with a `Retry-After` hint before reaching the handler; a valid token is never throttled), `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: <detail>` line per database; for an execution-tool failure (`pg_error` / `truncated` / `other`) the line carries only the reason word. The raw `pg_dump`/`pg_restore` stderr is logged, not returned, so an open endpoint never discloses schema or object names.
+- `GET /healthz`: `200 ok` / `503 unhealthy`. The same marker the Docker healthcheck reads: healthy when the most recent cycle fully succeeded (see [Healthcheck](#healthcheck)).
 
 ### On-disk layout
 
@@ -186,10 +186,14 @@ cycle whatever triggered it (timer, HTTP, `trigger`, or a one-shot `run`).
   records a success. A cycle with any failed database records a failure, and
   a failure never suppresses the startup dump: a restart retries the whole
   cycle until one fully succeeds. Dumps are verify-before-replace, so the
-  retries cost work, never data.
+  retries cost work, never data. A cycle cut short by a shutdown records
+  nothing, so the previous cycle's record stands: a redeploy that lands
+  mid-cycle neither loses the timer's phase nor boots the container unhealthy.
 - When `/dumps` is not persisted, the record does not survive a container
   recreate and every start fires one dump, which is also the cold-start
-  behavior.
+  behavior. A record the container can read but not rewrite is ignored with
+  a warning, so with the built-in timer the startup dump fires and the
+  container boots unhealthy until it succeeds.
 
 ## Alerting
 
@@ -267,7 +271,7 @@ redundant; keep whichever vantage point you trust more.
 
 ## Healthcheck
 
-The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand, a file-marker probe: no shell, `curl`, or open port is needed in the image. The main process writes the marker once liveness preconditions hold (each client binary runs — `pg_dump --version` and its siblings are executed, so a client that cannot load `libpq` fails the gate rather than reporting healthy — `/dumps` is writable, `DB_SPECS` is non-empty); a transiently-down database does **not** flip the container unhealthy, because per-host reachability is a per-dump concern reported in `POST /dump`, not liveness.
+The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand, a file-marker probe: no shell, `curl`, or open port is needed in the image. Healthy means the most recent dump cycle fully succeeded, whatever triggered it (the timer, `POST /dump`, `trigger`, or a `run` exec'd into the container). Unhealthy means a database failed to dump or the cycle could not start (a client binary that cannot run, an unwritable `/dumps`, an empty `DB_SPECS`), and it stays that way until a cycle fully succeeds. The reason is in the log: the per-database `level=ERROR` line the [Alerting](#alerting) rule keys on, the `level=ERROR` preflight line, or, after a restart, the `pg-autodump listening` line and the `booting unhealthy` warning that name the recorded last cycle; a caller also sees it as the `500` response or the non-zero `run` exit code. At boot, health follows the [last-run record](#the-startup-dump-and-the-last-run-record): with the built-in timer the container boots healthy only when the record shows a fully successful cycle within one interval, and is unhealthy while the startup dump runs otherwise; with `DUMP_INTERVAL=off` it boots unhealthy when the record's last cycle failed, and healthy otherwise (a fresh deployment has nothing to report until its first trigger). Size `healthcheck.start_period` for the time that startup dump may take with your database count: the image bakes `6m` (one default `DUMP_TIMEOUT` wave plus slack), a healthy probe inside the window ends it early, and a container still dumping is reported `unhealthy` only after it. A restart does not fix a failing dump: the same cycle runs again against the same database. With the built-in timer the `health` subcommand also fails when the marker is older than two intervals plus one worst-case cycle, so a timer that stopped firing is caught; `GET /healthz` reads the marker's presence only.
 
 ## The backup role
 

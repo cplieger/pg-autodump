@@ -1,5 +1,5 @@
 // Package obs wires startup observability to pg-autodump's domain: a preflight
-// check used to decide the health-marker state at boot.
+// check that gates the health marker at boot and a one-shot run's cycle.
 package obs
 
 import (
@@ -19,15 +19,12 @@ import (
 // wedged client binary cannot hold up the boot indefinitely.
 const preflightTimeout = 30 * time.Second
 
-// Preflight reports whether the liveness preconditions hold: the client
+// Preflight reports whether a dump cycle can start at all: the client
 // binaries run, the dump directory is writable, and DB_SPECS lists at least one
-// entry. It deliberately does NOT probe per-host database reachability (that is
-// a per-dump, per-DB concern), so a transiently-down database never flips the
-// container unhealthy. Returns nil when healthy, else a reason for the log.
-//
-// It owns its own deadline: both callers are boot gates that run before the
-// process installs its signal handler, so there is no caller context to
-// inherit.
+// entry. Per-host database reachability is the cycle's own per-database
+// verdict, not a precondition. It owns its own deadline: both callers are boot
+// gates that run before the process installs its signal handler, so there is
+// no caller context to inherit.
 func Preflight(dumpDir string, specs []spec.DBSpec) error {
 	ctx, cancel := context.WithTimeout(context.Background(), preflightTimeout)
 	defer cancel()

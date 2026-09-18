@@ -170,8 +170,8 @@ RUN TINI_EXPECTED_VERSION="${TINI_VERSION:?}" sh /tmp/tests/smoke.sh \
 FROM base AS final
 COPY --from=test /tmp/tests-passed /tmp/tests-passed
 
-# Liveness via the binary's own probe (file marker): no shell, no curl, no port.
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=15s \
+# Health via the binary's own probe (file marker): no shell, no curl, no port.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=6m \
     CMD ["/usr/local/bin/pg-autodump", "health"]
 
 # Default command is the server; `health` and `trigger` are the other verbs.

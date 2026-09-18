@@ -72,15 +72,18 @@ func tickerFixture(t *testing.T, dir string, buf *syncBuffer) (*httpapi.Trigger,
 	return httpapi.NewTrigger(&dump.Guard{}, cycle, orch, log), pgf, log
 }
 
-// startTicker runs runTicker in a goroutine with a 24h interval (so no tick
-// fires during the test) and returns a stop func that cancels and joins it.
-func startTicker(t *testing.T, stamp *scheduler.Stamp, trig *httpapi.Trigger, log *slog.Logger) (stop func()) {
+// startTicker reads the record in dir as the server does at boot, then runs
+// runTicker in a goroutine with a 24h interval (so no tick fires during the
+// test) and returns a stop func that cancels and joins it.
+func startTicker(t *testing.T, dir string, trig *httpapi.Trigger, log *slog.Logger) (stop func()) {
 	t.Helper()
+	const interval = 24 * time.Hour
+	rec := readStartupRecord(dump.StampPath(dir), interval, time.Now(), log)
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		runTicker(ctx, stamp, 24*time.Hour, trig, log)
+		runTicker(ctx, rec, interval, trig, log)
 	}()
 	return func() {
 		cancel()
@@ -118,7 +121,7 @@ func TestRunTickerFiresStartupDumpWithNoRecord(t *testing.T) {
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 	stamp := scheduler.NewStamp(dump.StampPath(dir))
 
-	stop := startTicker(t, stamp, trig, log)
+	stop := startTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.OK
@@ -143,7 +146,7 @@ func TestRunTickerFiresStartupDumpWithStaleRecord(t *testing.T) {
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 	stamp := scheduler.NewStamp(dump.StampPath(dir))
 
-	stop := startTicker(t, stamp, trig, log)
+	stop := startTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.Time.After(seeded.Add(time.Hour))
@@ -171,7 +174,7 @@ func TestRunTickerSkipsStartupDumpAfterFreshSuccess(t *testing.T) {
 	var buf syncBuffer
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 
-	stop := startTicker(t, stamp, trig, log)
+	stop := startTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		return strings.Contains(buf.String(), "startup dump skipped; the last cycle fully succeeded within one interval")
 	}, "the startup-skip log line")
@@ -204,7 +207,7 @@ func TestRunTickerFiresStartupDumpAfterFailedCycleRecord(t *testing.T) {
 	var buf syncBuffer
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 
-	stop := startTicker(t, stamp, trig, log)
+	stop := startTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.OK

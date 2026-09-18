@@ -42,11 +42,12 @@ func TestLocalAddr(t *testing.T) {
 	}
 }
 
-// triggerTimeout is pure but lives in main.go and has no direct test. Values
-// traced against internal/dump.dumpOne's per-DB ceiling (min(ProbeTimeoutCap,
-// DumpTimeout) probe + DumpTimeout dump), the pool's clamp(concurrency,1,len)
-// wave count, and the (1 + cycleQueueCapacity) cycles the handler may run.
-func TestTriggerTimeout(t *testing.T) {
+// triggerTimeout's values are traced against internal/dump.dumpOne's per-DB
+// ceiling (min(ProbeTimeoutCap, DumpTimeout) probe + DumpTimeout dump), the
+// pool's clamp(concurrency,1,len) wave count, and the (1 + cycleQueueCapacity)
+// cycles the handler may run; cycleRuntime bills the one cycle the health
+// lease tolerates.
+func TestTriggerTimeoutAndCycleRuntime(t *testing.T) {
 	specs := func(n int) []spec.DBSpec {
 		s := make([]spec.DBSpec, n)
 		return s
@@ -56,25 +57,35 @@ func TestTriggerTimeout(t *testing.T) {
 		dumpTimeout time.Duration
 		concurrency int
 		nSpecs      int
-		want        time.Duration
+		wantTrigger time.Duration
+		wantCycle   time.Duration
 	}{
-		// 0 specs still bills one wave: 1 wave * 2 cycles * (300s+min(10s,300s)) + 30s.
-		{"no specs floors at one wave", 300 * time.Second, 2, 0, 650 * time.Second},
+		// 0 specs still bills one wave: 1 wave * (300s+min(10s,300s)) + 30s per cycle.
+		{"no_specs_floors_at_one_wave", 300 * time.Second, 2, 0, 650 * time.Second, 340 * time.Second},
 		// ceil(2/2)=1 wave.
-		{"specs fit one wave", 300 * time.Second, 2, 2, 650 * time.Second},
+		{"specs_fit_one_wave", 300 * time.Second, 2, 2, 650 * time.Second, 340 * time.Second},
 		// ceil(3/2)=2 waves.
-		{"specs span two waves", 300 * time.Second, 2, 3, 1270 * time.Second},
+		{"specs_span_two_waves", 300 * time.Second, 2, 3, 1270 * time.Second, 650 * time.Second},
 		// concurrency<1 coerced to 1: 3 specs => 3 waves.
-		{"zero concurrency coerced to one", 300 * time.Second, 0, 3, 1890 * time.Second},
+		{"zero_concurrency_coerced_to_one", 300 * time.Second, 0, 3, 1890 * time.Second, 960 * time.Second},
 		// DumpTimeout below the probe cap selects DumpTimeout for the probe.
-		{"dump timeout below probe cap", 5 * time.Second, 2, 1, 50 * time.Second},
+		{"dump_timeout_below_probe_cap", 5 * time.Second, 2, 1, 50 * time.Second, 40 * time.Second},
+		// An absurd but valid DUMP_TIMEOUT saturates instead of wrapping negative,
+		// which would expire the trigger's deadline immediately.
+		{"absurd_timeout_saturates", 5_000_000_000 * time.Second, 2, 1, maxDuration, 5_000_000_000*time.Second + 40*time.Second},
+		// Three serial waves of that timeout overflow the wave multiply itself.
+		{"absurd_timeout_many_waves_saturates", 5_000_000_000 * time.Second, 1, 3, maxDuration, maxDuration},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config.Config{DumpTimeout: tc.dumpTimeout, DumpConcurrency: tc.concurrency, Specs: specs(tc.nSpecs)}
-			if got := triggerTimeout(&cfg); got != tc.want {
+			if got := triggerTimeout(&cfg); got != tc.wantTrigger {
 				t.Errorf("triggerTimeout(dumpTimeout=%s, concurrency=%d, specs=%d) = %s, want %s",
-					tc.dumpTimeout, tc.concurrency, tc.nSpecs, got, tc.want)
+					tc.dumpTimeout, tc.concurrency, tc.nSpecs, got, tc.wantTrigger)
+			}
+			if got := cycleRuntime(&cfg); got != tc.wantCycle {
+				t.Errorf("cycleRuntime(dumpTimeout=%s, concurrency=%d, specs=%d) = %s, want %s",
+					tc.dumpTimeout, tc.concurrency, tc.nSpecs, got, tc.wantCycle)
 			}
 		})
 	}
@@ -123,6 +134,7 @@ func TestExitForRun(t *testing.T) {
 	}{
 		{"ran all ok", scheduler.OutcomeRan, nil, okRes, true, 0},
 		{"ran one failed", scheduler.OutcomeRan, nil, mixedRes, true, 1},
+		{"ran with no databases", scheduler.OutcomeRan, nil, nil, true, 1},
 		{"ran plus queued rerun all ok", scheduler.OutcomeRanQueued, nil, okRes, true, 0},
 		{"ran ok with late coordination error", scheduler.OutcomeRan, infraErr, okRes, true, 0},
 		{"queued behind in-flight cycle", scheduler.OutcomeQueued, nil, nil, false, 0},

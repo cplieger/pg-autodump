@@ -25,12 +25,21 @@ import (
 // two can never drift.
 const ProbeTimeoutCap = 10 * time.Second
 
+// HealthSink receives each cycle's verdict: true when every configured
+// database dumped and verified, false otherwise. Both *health.Marker and
+// *health.Latch satisfy it.
+type HealthSink interface {
+	Set(ok bool)
+}
+
 // Params configures an Orchestrator. The pg boundary is injected; the rest are
 // validated config values.
 type Params struct {
-	PG          PGTool
-	Logger      *slog.Logger
-	Now         func() time.Time // injectable clock; defaults to time.Now
+	PG     PGTool
+	Logger *slog.Logger
+	Now    func() time.Time // injectable clock; defaults to time.Now
+	// Health receives the verdict of every cycle; nil records no health.
+	Health      HealthSink
 	DumpDir     string
 	Specs       []spec.DBSpec
 	DumpTimeout time.Duration
@@ -47,6 +56,7 @@ type Orchestrator struct {
 	now         func() time.Time
 	freeSpace   func(string) (int64, error) // injectable disk-space probe; defaults to statfsFreeKB
 	stamp       *scheduler.Stamp
+	health      HealthSink
 	dumpDir     string
 	specs       []spec.DBSpec
 	dumpTimeout time.Duration
@@ -76,6 +86,7 @@ func New(p *Params) *Orchestrator {
 		now:         now,
 		freeSpace:   statfsFreeKB,
 		stamp:       scheduler.NewStamp(StampPath(dir)),
+		health:      p.Health,
 		dumpDir:     dir,
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,
@@ -104,10 +115,9 @@ func absDumpDir(dir string) string {
 // assumes it is the only dump run in flight (its production callers hold the
 // in-process guard and the cross-process cycle lock), so it first reclaims
 // crash-orphaned temp files — every temp visible at cycle start is an
-// orphan. On completion it emits a single "dump cycle complete" heartbeat
-// (the README's alerting section documents the Loki absence rule keyed on
-// it) and records the cycle outcome for the next boot's startup-dump
-// decision.
+// orphan. On completion it emits one "dump cycle complete" heartbeat (the
+// README's Loki absence rule keys on it) and, unless shutdown cancelled the
+// cycle, writes the CycleOK verdict to the last-run record and health sink.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()
@@ -142,18 +152,30 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 		}
 	}
 	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
-	o.recordCycle(failedN == 0)
+
+	// A cycle cut short by shutdown has no verdict to record: this ctx is
+	// cancelled only by the drain's CancelInFlight or a one-shot run's signal,
+	// and killed dumps are an expected operator action rather than a dump
+	// failure (see levelFor). Recording one would leave a container recreated
+	// mid-cycle unhealthy until the next trigger, so the previous cycle's
+	// verdict stands and the drain latch owns shutdown health.
+	if ctx.Err() != nil {
+		return results
+	}
+	ok := CycleOK(results)
+	o.recordCycle(ok)
+	if o.health != nil {
+		o.health.Set(ok)
+	}
 
 	return results
 }
 
 // recordCycle persists the cycle outcome for the next boot's startup-dump
-// decision: success only when every configured database dumped and verified,
-// so a partially failed cycle leaves the startup dump due. Single writer by
-// operational contract: every caller runs inside the cross-process Exclusive
-// cycle lock, so the server and an exec'd `pg-autodump run` never record
-// concurrently. A failed write costs one redundant future startup dump,
-// never the cycle's own result.
+// decision. Single writer by operational contract: every caller runs inside
+// the cross-process Exclusive cycle lock, so the server and an exec'd
+// `pg-autodump run` never record concurrently. A failed write costs one
+// redundant future startup dump, never the cycle's own result.
 func (o *Orchestrator) recordCycle(ok bool) {
 	if err := o.stamp.Record(ok); err != nil {
 		o.log.Warn("cannot record the cycle outcome; next boot fires a startup dump",

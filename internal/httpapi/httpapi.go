@@ -1,5 +1,5 @@
 // Package httpapi is the HTTP control surface: POST /dump (optional bearer
-// auth) and GET /healthz (liveness, via the health library). It owns no domain
+// auth) and GET /healthz (the health marker, via the health library). It owns no domain
 // logic; the dump run is driven through a Trigger that both the handler and the
 // optional built-in ticker share, so single-flight lives in exactly one place.
 package httpapi
@@ -131,10 +131,10 @@ func NewServer(d *Deps) *http.Server {
 }
 
 // dumpHandler runs one dump and writes one text line per database. Status is
-// 200 when every database produced "ok", else 500; a run already in progress
-// (in this process or an exec'd `pg-autodump run`) is 429, and a cycle-lock
-// infrastructure failure is a 500 with a generic body (the detail is logged).
-// The method-aware mux pattern returns 405 for non-POST.
+// 200 when the cycle fully succeeded (dump.CycleOK), else 500; a run already
+// in progress (in this process or an exec'd `pg-autodump run`) is 429, and a
+// cycle-lock infrastructure failure is a 500 with a generic body (the detail
+// is logged). The method-aware mux pattern returns 405 for non-POST.
 func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		results, ok, err := tr.Run()
@@ -149,16 +149,15 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 		}
 
 		var b strings.Builder
-		allOK := true
 		for _, r := range results {
 			fmt.Fprintf(&b, "%s/%s: %s\n", r.Host, r.DBName, r.BodyDetail())
-			if !r.OK() {
-				allOK = false
-			}
+		}
+		if len(results) == 0 {
+			b.WriteString("no databases configured\n")
 		}
 
 		status := http.StatusOK
-		if !allOK {
+		if !dump.CycleOK(results) {
 			status = http.StatusInternalServerError
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

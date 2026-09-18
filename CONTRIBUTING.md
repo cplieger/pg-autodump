@@ -65,9 +65,42 @@ If you add a new `internal/<pkg>/`, the `Dockerfile` builder must
 - **Classification is structural.** `dump.classify` maps exit code,
   `ctx.Err()`, and a typed `FailKind` from the boundary to a `Reason`.
   Never `strings.Contains(err.Error(), …)`.
-- **Liveness, not readiness.** Health checks binaries/dir/specs, never
-  per-host DB reachability, so a down database does not flap the
-  container.
+- **Health is the last cycle's verdict.** `dump.CycleOK` (at least one
+  database configured, every one dumped and verified) is the one verdict
+  behind the health marker, the last-run record, the `POST /dump` status
+  and the `run` exit code; `dump.Orchestrator.Run` writes it, so every
+  entry point (timer, `POST /dump`, an exec'd `run`) moves health through
+  one site, and a `run` whose preflight fails removes the marker too. The
+  server writes through `health.Latch`, so a cycle finishing during the
+  shutdown drain cannot restore healthy. Boot health is `bootHealthy` in
+  `cmd/pg-autodump`: the preflight, plus the last-run record read at boot
+  by `readStartupRecord` (fresh success in built-in mode; not a recorded
+  failure in external mode; a record the server cannot rewrite is
+  ignored). A cycle a shutdown cut short records nothing and leaves the
+  marker alone, so the drain's latch owns that state. `bootHealth` and
+  `beginDrain` are Go-tested in `cmd/pg-autodump/health_test.go`; the
+  resident server's own sink is proven by the image smoke's `trigger`
+  cycle, so keep that cycle going through the server.
+- **The image smoke test is the only place `pg_dump` runs for real.**
+  The Go tests drive `internal/pg` against shell fakes staged on `PATH` and
+  `internal/dump` against a fake `PGTool`; the shipped
+  `pg_dump`/`pg_restore`/`psql` binaries run only in the image smoke test.
+  `tests/image-smoke.conf`, run by CI through the
+  synced `tests/image-smoke.sh` (do not edit the harness here), boots the
+  assembled image against a real PostgreSQL sidecar, runs one cycle through
+  `pg-autodump run`, reads the seeded row back out of the archive with the
+  shipped `pg_restore`, then runs two negative controls: a `pg_dump` that
+  exits non-zero on a reachable server (a row-level-security table the
+  backup role may not read) must be reported as a failed cycle with its
+  `pg_error` line and make the container unhealthy, with a clean cycle
+  through the resident server (`pg-autodump trigger`) restoring health, and
+  a hidden `libpq` must fail the run's preflight and make the container
+  unhealthy again. A change to what a failed cycle reports needs the
+  matching assertion there. It drives a live server rather than an
+  unreachable spec because boot health proves only that the client binaries
+  run: measured on v2.2.3 with `/usr/lib/libpq.so.5.18` moved aside,
+  `pg_dump --version` exits 127 and every dump fails while the container
+  reports healthy in 5s, so a health-only smoke passed that image.
 - **No per-host serialization in the pool.** The cap
   (`DUMP_CONCURRENCY`) is the only knob; serializing per host would force
   the common one-server case serial.
@@ -99,6 +132,13 @@ apk exists in the pinned Alpine:
 
 ```sh
 docker build -t pg-autodump .
+```
+
+Run the image smoke test against that build; it needs a Docker daemon that
+can pull the PostgreSQL sidecar image and create a network:
+
+```sh
+sh tests/image-smoke.sh pg-autodump
 ```
 
 CI runs the same battery via the shared `cplieger/ci` reusable workflow

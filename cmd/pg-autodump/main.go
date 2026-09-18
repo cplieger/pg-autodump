@@ -1,10 +1,11 @@
 // Command pg-autodump is the composition root. With no argument it runs the
 // HTTP server; `pg-autodump run` performs exactly one dump cycle and exits;
-// `pg-autodump health` runs the file-marker probe for the Docker HEALTHCHECK;
-// `pg-autodump trigger` POSTs to the local server's /dump. `trigger` and `run`
-// differ on a busy cycle: `trigger` gets 429 (demand dropped, next tick covers
-// it) while `run` queues its demand and exits 0 (the active runner owes it a
-// cycle). Pick per deployment; they are not interchangeable.
+// `pg-autodump health` runs the file-marker probe for the Docker HEALTHCHECK
+// (healthy iff the most recent cycle fully succeeded); `pg-autodump trigger`
+// POSTs to the local server's /dump. `trigger` and `run` differ on a busy
+// cycle: `trigger` gets 429 (demand dropped, next tick covers it) while `run`
+// queues its demand and exits 0 (the active runner owes it a cycle). Pick per
+// deployment; they are not interchangeable.
 package main
 
 import (
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -42,8 +44,8 @@ func run(args []string, getenv func(string) string) int {
 	}
 	switch sub {
 	case "health":
-		health.RunProbe(health.DefaultPath) // stats the marker and calls os.Exit
-		return 0                            // unreachable
+		health.RunProbe(healthMarkerPath, probeOptions(getenv)...) // stats the marker and calls os.Exit
+		return 0                                                   // unreachable
 	case "trigger":
 		return runTrigger(getenv)
 	case "run":
@@ -53,6 +55,118 @@ func run(args []string, getenv func(string) string) int {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q (want: serve | run | health | trigger)\n", sub)
 		return 2
+	}
+}
+
+// healthMarkerPath is the file the Docker HEALTHCHECK stats; the server and
+// any exec'd `pg-autodump run` both write it. A var so tests can point it at
+// a temp dir.
+var healthMarkerPath = health.DefaultPath
+
+// probeOptions returns the healthcheck's freshness policy; an unloadable
+// config disarms it.
+func probeOptions(getenv func(string) string) []health.ProbeOption {
+	cfg, _, err := config.Load(getenv)
+	if err != nil {
+		return nil
+	}
+	return []health.ProbeOption{health.WithMaxAge(probeLease(&cfg).Duration())}
+}
+
+// probeLease sizes the marker's freshness deadline: every completed cycle
+// refreshes the marker, so in built-in timer mode a marker older than two
+// intervals plus one worst-case cycle means the ticker is wedged. A zero
+// Interval (external-trigger mode) disables the lease: no cadence to judge.
+func probeLease(cfg *config.Config) health.Lease {
+	return health.Lease{Interval: cfg.DumpInterval, Cycles: 2, Timeout: cycleRuntime(cfg), Attempts: 1}
+}
+
+// startupRecord is the last-run record as read at boot; the boot health
+// verdict and the built-in ticker share it instead of re-reading the file.
+type startupRecord struct {
+	last scheduler.RunRecord
+	// remaining is the delay until the first scheduled tick; 0 means the
+	// startup dump is due. Always 0 in external-trigger mode.
+	remaining time.Duration
+	known     bool
+}
+
+// openRecordForWrite is the boot check that an inherited record can be
+// replaced; a test substitutes a failing open.
+var openRecordForWrite = func(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
+// readStartupRecord reads the last-run record at boot. A record the server
+// cannot rewrite would outlive every later cycle, so it is trusted only while
+// a replacement can land; otherwise it reads as absent.
+func readStartupRecord(path string, interval time.Duration, now time.Time, log *slog.Logger) startupRecord {
+	stamp := scheduler.NewStamp(path)
+	var rec startupRecord
+	rec.last, rec.known = stamp.Last()
+	if rec.known {
+		if err := openRecordForWrite(path); err != nil {
+			log.Warn("cannot rewrite the last-run record; ignoring it",
+				"path", path, "err", err, "hint", "make the record writable by the container user, or delete it")
+			return startupRecord{}
+		}
+	}
+	if interval > 0 {
+		rec.remaining = stamp.Remaining(interval, now, scheduler.RetryFailed)
+	}
+	return rec
+}
+
+// bootHealthy decides the marker state the server boots with. The preflight
+// must pass. In built-in timer mode the record must also show a fully
+// successful cycle within one interval (rec.remaining > 0, which is exactly
+// when the startup dump is skipped), so a due boot is unhealthy while that
+// dump runs. In external-trigger mode there is no cadence, so a recorded
+// failure boots unhealthy until a cycle fully succeeds and anything else
+// boots healthy.
+func bootHealthy(preErr error, interval time.Duration, rec startupRecord) bool {
+	if preErr != nil {
+		return false
+	}
+	if interval > 0 {
+		return rec.remaining > 0
+	}
+	return !rec.known || rec.last.OK
+}
+
+// bootHealth runs the startup preflight, reads the last-run record and writes
+// the boot verdict through latch, returning the record the ticker shares and
+// the verdict the listening line reports. A boot the record alone decided
+// against gets its own Warn: in external-trigger mode no ticker speaks, and
+// the failed cycle's own ERROR line is in the previous container's log.
+func bootHealth(cfg *config.Config, latch *health.Latch, log *slog.Logger) (startupRecord, bool) {
+	preErr := obs.Preflight(cfg.DumpDir, cfg.Specs)
+	if preErr != nil {
+		log.Error("health preconditions not met; serving but unhealthy", "err", preErr)
+	}
+	rec := readStartupRecord(dump.StampPath(cfg.DumpDir), cfg.DumpInterval, time.Now(), log)
+	healthy := bootHealthy(preErr, cfg.DumpInterval, rec)
+	if !healthy && preErr == nil {
+		log.Warn("booting unhealthy: no fully successful cycle on record",
+			"last_cycle", rec.last.Time, "last_cycle_ok", rec.last.OK, "record_known", rec.known,
+			"hint", "health returns after the next fully successful cycle")
+	}
+	latch.Set(healthy)
+	return rec, healthy
+}
+
+// beginDrain returns the pre-drain hook webhttp.Run invokes before it drains:
+// it names the shutdown cause and latches health unhealthy. The latch, not a
+// bare marker write, is what stops a cycle completing during the drain from
+// restoring healthy.
+func beginDrain(ctx context.Context, latch *health.Latch, log *slog.Logger) func(context.Context) {
+	return func(context.Context) {
+		log.Info("shutting down", "cause", context.Cause(ctx))
+		latch.BeginDrain()
 	}
 }
 
@@ -101,10 +215,11 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 
 // newOrchestrator wires the dump orchestrator from validated config, shared by
 // serve and run so the two entry points never drift.
-func newOrchestrator(cfg *config.Config, log *slog.Logger) *dump.Orchestrator {
+func newOrchestrator(cfg *config.Config, log *slog.Logger, sink dump.HealthSink) *dump.Orchestrator {
 	return dump.New(&dump.Params{
 		PG:          pg.New(cfg.PGPassFile, cfg.StmtTimeout),
 		Logger:      log,
+		Health:      sink,
 		DumpDir:     cfg.DumpDir,
 		Specs:       cfg.Specs,
 		DumpTimeout: cfg.DumpTimeout,
@@ -116,10 +231,10 @@ func newOrchestrator(cfg *config.Config, log *slog.Logger) *dump.Orchestrator {
 
 // runServer runs the serve subcommand (the default with no argument): builds
 // the slog handler, loads config, sets the health marker from the startup
-// preflight, wires the cycle lock, dump orchestrator, and HTTP server,
-// reclaims crash-orphaned temp dumps, optionally starts the built-in ticker,
-// then serves until a signal and drains any in-flight dump within
-// ShutdownTimeout.
+// preflight and the last-run record, wires the cycle lock, dump orchestrator,
+// and HTTP server, reclaims crash-orphaned temp dumps, optionally starts the
+// built-in ticker, then serves until a signal and drains any in-flight dump
+// within ShutdownTimeout.
 func runServer(getenv func(string) string) int {
 	slogx.Setup(slogx.Options{})
 	log := slog.Default()
@@ -138,14 +253,12 @@ func runServer(getenv func(string) string) int {
 			"listen_addr", cfg.ListenAddr)
 	}
 
-	marker := health.NewMarker(health.DefaultPath)
+	marker := health.NewMarker(healthMarkerPath)
 	defer marker.Cleanup()
-	if preErr := obs.Preflight(cfg.DumpDir, cfg.Specs); preErr != nil {
-		log.Error("health preconditions not met; serving but unhealthy", "err", preErr)
-		marker.Set(false)
-	} else {
-		marker.Set(true)
-	}
+	// The latch makes shutdown health monotonic: once the pre-drain hook
+	// begins the drain, a cycle completing during it cannot restore healthy.
+	latch := health.NewLatch(marker)
+	rec, healthy := bootHealth(&cfg, latch, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -158,7 +271,7 @@ func runServer(getenv func(string) string) int {
 	reclaimAtStartup(ctx, cfg.DumpDir, log)
 
 	guard := &dump.Guard{}
-	orch := newOrchestrator(&cfg, log)
+	orch := newOrchestrator(&cfg, log, latch)
 	trigger := httpapi.NewTrigger(guard, cycle, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{
 		AuthToken: cfg.AuthToken,
@@ -177,11 +290,13 @@ func runServer(getenv func(string) string) int {
 	}
 
 	if cfg.DumpInterval > 0 {
-		go runTicker(ctx, scheduler.NewStamp(dump.StampPath(cfg.DumpDir)), cfg.DumpInterval, trigger, log)
+		go runTicker(ctx, rec, cfg.DumpInterval, trigger, log)
 	}
 
 	log.Info("pg-autodump listening",
-		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency)
+		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency,
+		"interval", cfg.DumpInterval, "boot_healthy", healthy,
+		"last_cycle", rec.last.Time, "last_cycle_ok", rec.last.OK, "record_known", rec.known)
 
 	// webhttp.Run drains the HTTP server within ShutdownTimeout, then invokes
 	// the teardown below with a context bounded by the same deadline. A
@@ -192,23 +307,19 @@ func runServer(getenv func(string) string) int {
 	// by listener closure.
 	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownTimeout, log),
 		webhttp.WithShutdownGrace(cfg.ShutdownTimeout),
-		webhttp.WithPreDrain(func(context.Context) {
-			log.Info("shutting down", "cause", context.Cause(ctx))
-			marker.Set(false)
-		})); err != nil {
+		webhttp.WithPreDrain(beginDrain(ctx, latch, log))); err != nil {
 		log.Error("server failed", "err", err)
 		return 1
 	}
 	return 0
 }
 
-// runOnce implements `pg-autodump run`: exactly one signal-aware dump cycle,
-// coordinated with any resident server (or concurrent run) through the
-// cross-process cycle lock, exiting 0 only when every configured database
-// dumped ok. When a cycle is already in flight the demand queues (depth
-// cycleQueueCapacity) and the process exits 0 immediately; the per-database
-// results land in the active runner's log stream. No HTTP listener is bound
-// and the health marker is not touched; DUMP_INTERVAL, LISTEN_ADDR,
+// runOnce implements `pg-autodump run`: exactly one signal-aware dump cycle
+// under the cross-process cycle lock, exiting 0 only when dump.CycleOK. When a
+// cycle is already in flight the demand queues (depth cycleQueueCapacity) and
+// the process exits 0 immediately; the per-database results land in the active
+// runner's log stream. The cycle's verdict, and a failed preflight, reach the
+// health marker. No HTTP listener is bound; DUMP_INTERVAL, LISTEN_ADDR,
 // AUTH_TOKEN, and SHUTDOWN_TIMEOUT are ignored — scheduling, transport, and
 // drain belong to the invoking scheduler.
 func runOnce(getenv func(string) string) int {
@@ -223,8 +334,10 @@ func runOnce(getenv func(string) string) int {
 		log.Error("invalid configuration; refusing to run", "err", err)
 		return 1
 	}
+	marker := health.NewMarker(healthMarkerPath)
 	if preErr := obs.Preflight(cfg.DumpDir, cfg.Specs); preErr != nil {
 		log.Error("run preconditions not met", "err", preErr)
+		marker.Set(false)
 		return 1
 	}
 
@@ -236,7 +349,7 @@ func runOnce(getenv func(string) string) int {
 		log.Error("cycle coordination unavailable", "err", err)
 		return 1
 	}
-	orch := newOrchestrator(&cfg, log)
+	orch := newOrchestrator(&cfg, log, marker)
 
 	// Capture the first execution's results as this invocation's own run; the
 	// closure may run again for demand queued by OTHER processes, which
@@ -280,10 +393,8 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 	if exErr != nil {
 		log.Warn("cycle coordination error after run", "err", exErr)
 	}
-	for i := range results {
-		if !results[i].OK() {
-			return 1
-		}
+	if !dump.CycleOK(results) {
+		return 1
 	}
 	return 0
 }
@@ -323,17 +434,16 @@ func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 }
 
 // runTicker drives the optional built-in scheduler (DUMP_INTERVAL).
-func runTicker(ctx context.Context, stamp *scheduler.Stamp, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
+func runTicker(ctx context.Context, rec startupRecord, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
 	// The ticker's first fire is one interval after start and its clock
 	// resets on every restart, so a restart-heavy deployment could go a long
 	// time with no backups without this: fire once at startup, unless the
 	// cycle record inherited from the previous container proves a fully
 	// successful cycle within one interval. A partially failed cycle records
 	// failed, so the boot retries until one cycle fully succeeds.
-	if !stamp.Due(interval, time.Now(), scheduler.RetryFailed) {
-		rec, _ := stamp.Last()
+	if rec.remaining > 0 {
 		log.Info("startup dump skipped; the last cycle fully succeeded within one interval",
-			"last_success", rec.Time, "interval", interval)
+			"last_success", rec.last.Time, "interval", interval)
 	} else if ctx.Err() == nil {
 		switch _, ok, err := trigger.Run(); {
 		case err != nil:
@@ -359,7 +469,7 @@ func runTicker(ctx context.Context, stamp *scheduler.Stamp, interval time.Durati
 		}
 	}, scheduler.LoopOptions{
 		Interval:   interval,
-		FirstDelay: stamp.Remaining(interval, time.Now(), scheduler.RetryFailed),
+		FirstDelay: rec.remaining,
 	})
 }
 
@@ -403,26 +513,58 @@ func runTrigger(getenv func(string) string) int {
 	return 0
 }
 
-// triggerHTTPSlack covers connection setup, handler bookkeeping, and the
-// post-dump retention prune, on top of the modeled dump time.
-const triggerHTTPSlack = 30 * time.Second
+// cycleSlack covers connection setup, handler bookkeeping, and the post-dump
+// retention prune, on top of the modeled dump time.
+const cycleSlack = 30 * time.Second
 
-// triggerTimeout estimates the worst-case time POST /dump can legitimately
-// take, so `trigger` waits out a real dump without blocking forever. Specs
-// dump in ceil(len/concurrency) serial waves; each database is bounded by
-// min(ProbeTimeoutCap, DumpTimeout) for the probe plus DumpTimeout for the
-// dump. The server also executes any rerun demand queued during the cycle
-// (at most cycleQueueCapacity) before responding, so the modeled dump time is
-// billed (1 + cycleQueueCapacity) times.
-func triggerTimeout(cfg *config.Config) time.Duration {
+// dumpTime models one cycle's dump work: specs dump in ceil(len/concurrency)
+// serial waves, and each database is bounded by min(ProbeTimeoutCap,
+// DumpTimeout) for the probe plus DumpTimeout for the dump. Saturating, so an
+// operator-supplied DUMP_TIMEOUT can never wrap the bound negative.
+func dumpTime(cfg *config.Config) time.Duration {
 	concurrency := max(cfg.DumpConcurrency, 1)
 	waves := 1 // at least one wave even with no specs configured
 	if n := len(cfg.Specs); n > 0 {
 		waves = (n + concurrency - 1) / concurrency
 	}
-	perDB := cfg.DumpTimeout + min(dump.ProbeTimeoutCap, cfg.DumpTimeout)
-	cycles := 1 + cycleQueueCapacity
-	return time.Duration(waves*cycles)*perDB + triggerHTTPSlack
+	perDB := addSaturating(cfg.DumpTimeout, min(dump.ProbeTimeoutCap, cfg.DumpTimeout))
+	return scaleSaturating(perDB, waves)
+}
+
+// cycleRuntime bounds one dump cycle's wall time, the gap the health lease
+// tolerates between two marker refreshes.
+func cycleRuntime(cfg *config.Config) time.Duration {
+	return addSaturating(dumpTime(cfg), cycleSlack)
+}
+
+// triggerTimeout bounds one POST /dump so `trigger` waits out a real cycle
+// without blocking forever. The server also executes any rerun demand queued
+// during the cycle (at most cycleQueueCapacity) before responding, so the
+// dump time is billed (1 + cycleQueueCapacity) times.
+func triggerTimeout(cfg *config.Config) time.Duration {
+	return addSaturating(cycleRuntime(cfg), scaleSaturating(dumpTime(cfg), cycleQueueCapacity))
+}
+
+const maxDuration = time.Duration(math.MaxInt64)
+
+// scaleSaturating multiplies d by n, saturating at maxDuration. Non-positive
+// operands contribute nothing.
+func scaleSaturating(d time.Duration, n int) time.Duration {
+	if d <= 0 || n <= 0 {
+		return 0
+	}
+	if d > maxDuration/time.Duration(n) {
+		return maxDuration
+	}
+	return d * time.Duration(n)
+}
+
+// addSaturating returns a+b for non-negative a and b, saturating at maxDuration.
+func addSaturating(a, b time.Duration) time.Duration {
+	if a > maxDuration-b {
+		return maxDuration
+	}
+	return a + b
 }
 
 // localAddr turns a listen address into the trigger's dial target on the same

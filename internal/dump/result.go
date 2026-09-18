@@ -87,6 +87,22 @@ type Result struct {
 // OK reports whether the dump succeeded.
 func (r *Result) OK() bool { return r.Reason == ReasonOK }
 
+// CycleOK reports whether a cycle fully succeeded: at least one database was
+// configured and every one dumped and verified. It is the one verdict behind
+// the health marker, the last-run record, the POST /dump status and the `run`
+// exit code. A cycle over zero databases dumped nothing and is not a success.
+func CycleOK(results []Result) bool {
+	if len(results) == 0 {
+		return false
+	}
+	for i := range results {
+		if !results[i].OK() {
+			return false
+		}
+	}
+	return true
+}
+
 // BodyDetail is the operator-facing line for the POST /dump (and `trigger`)
 // response body. For pg_error/truncated/other, whose Detail carries a raw
 // pg_dump/pg_restore stderr tail, it returns only the reason word — that

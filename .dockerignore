@@ -1,6 +1,7 @@
-# Keep the build context minimal: only go.mod/go.sum + cmd/ + internal/ are
-# COPY'd into the image. Everything else (VCS history, review/CI scratch, docs,
-# tests, and any local secrets) must never enter the build context.
+# Keep the build context minimal: only go.mod/go.sum + cmd/ + internal/, the
+# attribution files and scripts/collect-licenses.sh are COPY'd into the image.
+# Everything else (VCS history, review/CI scratch, docs, tests, and any local
+# secrets) must never enter the build context.
 .git
 .github
 .code-review
@@ -14,6 +15,9 @@ tests
 !tests/smoke.sh
 *_test.go
 *.md
+# ...except the attribution file the builder stage copies into the image's
+# /usr/share/licenses tree (LICENSE and NOTICE carry no excluded extension).
+!THIRD_PARTY_NOTICES.md
 compose.yaml
 .env
 *.env

@@ -4,7 +4,7 @@
 // deadline is enforced here.
 //
 // argv construction and exit-code handling follow patterns from
-// orgrim/pg_back (BSD-2-Clause; see CREDITS). The connect-vs-auth probe
+// orgrim/pg_back (BSD-2-Clause; see THIRD_PARTY_NOTICES.md). The connect-vs-auth probe
 // (dial-then-psql) is original to this project.
 package pg
 

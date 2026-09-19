@@ -1,0 +1,5 @@
+No license file from https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.24-stable/main/postgresql-common, version 1.3-r0
+The package is built from the aports tree itself, which publishes no LICENSE, COPYING or COPYRIGHT
+file at its root or in this directory. Its APKBUILD declares MIT, and the only file the image
+installs from it, /usr/sbin/pg_versions, carries no copyright or license header. No text is
+reproduced here.

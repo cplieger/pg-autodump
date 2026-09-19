@@ -1,0 +1,7 @@
+No license file from https://gitlab.alpinelinux.org/alpine/ca-certificates/-/archive/20260909/ca-certificates-20260909.tar.bz2, version 20260909
+That source tree publishes no LICENSE, COPYING or COPYRIGHT file; Alpine's APKBUILD
+declares MPL-2.0 AND MIT. The image installs only the ca-certificates-bundle
+subpackage, whose content is derived from certdata.txt, and that file's header is the
+Mozilla Public License 2.0 notice ("This Source Code Form is subject to the terms of
+the Mozilla Public License, v. 2.0"). The MIT half covers c_rehash.c, which this
+subpackage does not ship. No text is reproduced here.

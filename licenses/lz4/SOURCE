@@ -1,0 +1,6 @@
+LICENSE and lib/LICENSE from https://github.com/lz4/lz4/archive/v1.10.0.tar.gz, version 1.10.0
+The root LICENSE is a pointer rather than a license text: it states that the lib directory is
+BSD-2-Clause and everything else GPL-2.0-or-later. The image installs only lz4-libs, built from
+that lib directory, so its text is the BSD-2-Clause file reproduced here at the upstream path
+lib/LICENSE. The GPL-2.0-or-later half of the origin's expression covers the lz4 programs and
+tests, which this image does not install.

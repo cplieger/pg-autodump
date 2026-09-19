@@ -1,0 +1,6 @@
+No license file from https://gitlab.alpinelinux.org/alpine/aports/-/tree/3.24-stable/main/alpine-baselayout, version 3.7.2-r1
+The package is built from the aports tree itself, which publishes no LICENSE, COPYING
+or COPYRIGHT file at its root or in this directory. Its APKBUILD declares GPL-2.0-only,
+and none of the files it installs (crontab, profile, 20locale.sh, usr_merge_nag.sh,
+hier.7, inittab, group, passwd) carries a copyright or license header. No text is
+reproduced here.

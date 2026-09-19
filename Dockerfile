@@ -10,6 +10,8 @@ ARG TINI_VERSION=v0.19.0
 ARG TINI_SHA256_AMD64=c5b0666b4cb676901f90dfcb37106783c5fe2077b04590973b885950611b30ee
 # repin: dep=krallin/tini url=https://github.com/krallin/tini/releases/download/{version}/tini-static-arm64
 ARG TINI_SHA256_ARM64=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa84a48b9
+# repin: dep=krallin/tini url=https://raw.githubusercontent.com/krallin/tini/{version}/LICENSE
+ARG TINI_LICENSE_SHA256=e5f46bca81266bdd511cf08018d66866870531794569c04f9b45f50dd23c28b0
 
 # renovate: datasource=docker depName=golang
 FROM golang:1.27-alpine@sha256:7d5cbf6833f7331dafd25a2e8b9673477f559759ff8ed4ca8efabe6795ad08db AS builder
@@ -30,10 +32,15 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 \
     go build -trimpath -ldflags="-s -w" -o /pg-autodump ./cmd/pg-autodump
 
+COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
+COPY scripts/collect-licenses.sh scripts/collect-licenses.sh
+RUN --mount=type=cache,target=/go/pkg/mod \
+    sh scripts/collect-licenses.sh --name pg-autodump ./cmd/pg-autodump
+
 # ---------------------------------------------------------------------------
-# tini fetch stage -- downloads the pinned upstream static binary and verifies
-# it fail-closed against the per-arch SHA256 pins above. Discarded at the end
-# of the build; only the verified binary reaches the runtime image below.
+# tini fetch stage -- downloads the pinned upstream static binary and its MIT
+# license text, each verified fail-closed against a SHA256 pin above. Discarded
+# at the end of the build; only those two files reach the runtime image below.
 # Native per-arch builds (no TARGETARCH): `uname -m` IS the target arch.
 # ---------------------------------------------------------------------------
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS tini-fetcher
@@ -43,6 +50,7 @@ SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 ARG TINI_VERSION
 ARG TINI_SHA256_AMD64
 ARG TINI_SHA256_ARM64
+ARG TINI_LICENSE_SHA256
 # ---------------------------------------------------------------------------
 # Embedded SBOM fragment, emitted at the tail of the fetch RUN below: the purl
 # names the resolved release asset and carries the sha256 that same RUN
@@ -80,6 +88,13 @@ RUN case "$(uname -m)" in \
     }; } \
     && chmod 755 /tini \
     && /tini --version \
+    && mkdir -p /out/usr/share/licenses/tini \
+    && wget -q --tries=3 --timeout=30 -O /out/usr/share/licenses/tini/LICENSE \
+      "https://raw.githubusercontent.com/krallin/tini/${TINI_VERSION}/LICENSE" \
+    && { echo "${TINI_LICENSE_SHA256}  /out/usr/share/licenses/tini/LICENSE" | sha256sum -c - || { \
+      echo "tini LICENSE sha256 pin mismatch for ${TINI_VERSION}: recompute from the release tag and update ARG TINI_LICENSE_SHA256" >&2; \
+      exit 1; \
+    }; } \
     && cat > /tini.cdx.json <<EOF
 {
   "bomFormat": "CycloneDX",
@@ -141,6 +156,9 @@ COPY --from=tini-fetcher /tini.cdx.json /usr/share/sbom/pg-autodump.cdx.json
 
 COPY --chmod=755 --from=builder /pg-autodump /usr/local/bin/pg-autodump
 
+COPY --from=builder /out/usr/share/licenses /usr/share/licenses
+COPY --from=tini-fetcher /out/usr/share/licenses/tini /usr/share/licenses/tini
+
 # Unprivileged by default: no Docker socket, no root. The container needs only
 # network reach to the databases, a read-only .pgpass, and a writable /dumps.
 USER 65532:65532
@@ -169,6 +187,8 @@ RUN TINI_EXPECTED_VERSION="${TINI_VERSION:?}" sh /tmp/tests/smoke.sh \
 # ---------------------------------------------------------------------------
 FROM base AS final
 COPY --from=test /tmp/tests-passed /tmp/tests-passed
+
+COPY licenses/ /usr/share/licenses/
 
 # Health via the binary's own probe (file marker): no shell, no curl, no port.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=6m \

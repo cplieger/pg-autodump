@@ -354,3 +354,7 @@ This project was built with AI-assisted tooling using [Claude](https://claude.co
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+The image carries the license text of every bundled component under `/usr/share/licenses/`. The Alpine packages in the image ship no license file upstream, so their license texts are kept under `licenses/` in this repository and copied in.
+
+Third-party attributions are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

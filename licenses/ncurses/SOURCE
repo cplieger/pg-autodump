@@ -1,0 +1,4 @@
+COPYING from https://distfiles.alpinelinux.org/distfiles/v3.24/ncurses-6.6-20260516.tgz, version 6.6_p20260516
+The aport's own source URL, https://invisible-mirror.net/archives/ncurses/current/ncurses-6.6-20260516.tgz,
+no longer serves that weekly snapshot, so the bytes came from Alpine's distfiles mirror; their sha512
+matches the one the 3.24-stable APKBUILD declares for that file name.

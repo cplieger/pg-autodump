@@ -1,6 +1,8 @@
 package obs
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,6 +66,24 @@ func TestDirWritable(t *testing.T) {
 			t.Errorf("dirWritable() error = %v, a real refusal must not be reported as an unattempted probe", err)
 		}
 	})
+}
+
+// A filesystem that widens the probe's owner-only mode (an inherited ACL) must
+// read as that, not as a generic write failure, so the operator fixes the
+// volume rather than its permissions.
+func TestProbeVerdictNamesAModeTheFilesystemWidened(t *testing.T) {
+	res := atomicfile.ProbeResult{
+		Dir:   "/dumps",
+		Stage: atomicfile.ProbeStageCreate,
+		Err:   fmt.Errorf("%w: /dumps/.atomicfile-1.tmp: asked for 0600, filesystem stored 0670", atomicfile.ErrModeNotStored),
+	}
+	err := probeVerdict(res)
+	if !errors.Is(err, atomicfile.ErrModeNotStored) {
+		t.Fatalf("probeVerdict(mode not stored) = %v, want it to wrap ErrModeNotStored", err)
+	}
+	if !strings.Contains(err.Error(), "owner-only (0600)") || !strings.Contains(err.Error(), "ACL") {
+		t.Errorf("probeVerdict(mode not stored) = %q, want it to name the owner-only mode and the ACL remedy", err)
+	}
 }
 
 // The preflight's probe file must be a name the app's own stale-temp sweep

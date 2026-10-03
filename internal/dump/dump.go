@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cplieger/atomicfile/v3"
+	"github.com/cplieger/atomicfile/v4"
 	"github.com/cplieger/pg-autodump/internal/spec"
 	"github.com/cplieger/scheduler/v4"
 )

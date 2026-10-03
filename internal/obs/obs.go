@@ -44,23 +44,23 @@ func Preflight(dumpDir string, specs []spec.DBSpec) error {
 var errEmptySpecs = errors.New("DB_SPECS is empty")
 
 // dirWritable confirms dir accepts atomicfile's create/write/sync/close/unlink
-// ladder (the same probe every dump temp uses), so a leftover is reclaimable by
-// dump.ReclaimOrphans.
-//
-// Policy: any failure up to and including Close fails the preflight (nothing
-// durable was written, or the filesystem never confirmed the write reached
-// disk — stricter than ProbeResult.Writable, which treats a Close failure as
-// an accepted write). A Remove failure is a WARN only: a dump commits by
-// rename, never by unlink, so a directory that wrote real bytes but refused
-// the unlink is still dump-ready; the leftover is reclaimed by the next
-// cycle's ReclaimOrphans.
+// ladder under the owner-only mode every dump temp is written with; a leftover
+// probe file is reclaimable by dump.ReclaimOrphans.
 func dirWritable(ctx context.Context, dir string) error {
 	// ProbeWritable checks ctx once before it creates anything, so this bounds
 	// when the probe starts rather than how long a wedged write may take.
-	res, err := atomicfile.ProbeWritable(ctx, dir)
+	res, err := atomicfile.ProbeWritable(ctx, dir, atomicfile.WithMode(0o600))
 	if err != nil {
 		return fmt.Errorf("dump dir write probe not attempted: %w", err)
 	}
+	return probeVerdict(res)
+}
+
+// probeVerdict fails on any stage up to and including Close, stricter than
+// ProbeResult.Writable, which accepts a Close failure. A Remove failure only
+// warns: a dump commits by rename, never by unlink, and the next cycle's
+// ReclaimOrphans reclaims the leftover.
+func probeVerdict(res atomicfile.ProbeResult) error {
 	if res.OK() {
 		return nil
 	}
@@ -68,6 +68,11 @@ func dirWritable(ctx context.Context, dir string) error {
 		slog.Warn("dump dir refuses to remove its writability probe; reclaimed by the stale-temp sweep",
 			"dir", res.Dir, "probe", res.Name, "err", res.Err)
 		return nil
+	}
+	if errors.Is(res.Err, atomicfile.ErrModeNotStored) {
+		return fmt.Errorf("dump dir %q cannot hold an owner-only (0600) dump file; "+
+			"check the volume for an inherited ACL or mount option that widens new files: %w",
+			res.Dir, res.Err)
 	}
 	return fmt.Errorf("dump dir %q failed the write probe at %q: %w", res.Dir, res.Stage, res.Err)
 }

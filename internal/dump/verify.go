@@ -18,7 +18,7 @@ import (
 const dumpTimeFormat = "20060102T150405Z"
 
 // dumpFileName returns the artifact name for a database. With keep <= 1 it is
-// the stable "<dbname>.dump" (overwritten each run, the default), so external
+// the stable "<dbname>.dump" (overwritten each run), so external
 // collectors that expect a fixed path are unaffected. With keep > 1 each run
 // writes a distinct "<dbname>.<UTC>.dump" so pruneOldDumps can retain the N
 // newest.

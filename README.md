@@ -3,347 +3,160 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/size.json)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump) [![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)](https://github.com/cplieger/pg-autodump/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/mutation.json)](https://github.com/cplieger/pg-autodump/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/pg-autodump/releases)
 
 <!-- hub-overview BEGIN -->
-On-demand PostgreSQL logical-backup sidecar. Trigger it, and it writes a verified dump per database for your real backup tool to collect.
+pg-autodump writes a checked backup file of each of your PostgreSQL databases into a folder that your backup tool already collects. It leaves encryption and off-site copies to that tool, such as Kopia, Restic, Borg or rsync.
 
 ## What it does
 
-pg-autodump runs `pg_dump` (custom format) against every database in `DB_SPECS`,
-verifies each dump with `pg_restore --list`, and writes it atomically into a
-shared volume under a per-server `<host>_<port>/` subdirectory, keeping the
-newest `DUMP_KEEP` copies per database (7 by default).
-It delegates the heavy lifting: no compression, encryption, or off-site sync.
-Your backup tool (Kopia, Restic, Borg, rsync) already does those; point it at
-the `/dumps` volume.
+pg-autodump keeps a fresh, readable dump of every database you list, ready for your backup tool to pick up.
 
-It connects to Postgres **over the network** (the PostgreSQL wire protocol, not
-HTTP) and runs as an ordinary **unprivileged** user.
+- Dumps each database with PostgreSQL's own `pg_dump` every 24 hours, or whenever you ask.
+- Replaces a dump only after `pg_restore` can read the new one, so a failed run keeps the last good file.
+- Keeps the 7 newest dumps of each database and deletes older ones.
+- Shows a failed backup as an unhealthy container until every database dumps cleanly again.
 
-### Why this design
+## Who it is for
 
-- **Unprivileged and socket-less.** Non-root, `cap_drop: [ALL]`, `read_only`. A compromise reads databases through a least-privilege role; it cannot reach the host. No Docker socket, so no root-equivalent surface.
-- **Verify before replace.** Each dump stages to a temp file, passes a non-empty and `pg_restore --list` (TOC) check, then atomically renames into place. The last known-good dump survives any failure.
-- **Bounded parallelism.** `DUMP_CONCURRENCY` dumps databases concurrently with no per-host serialization, so the common one-server-many-DBs case is not forced serial. One knob, safe default.
-- **Built-in retention.** Keeps the newest `DUMP_KEEP` timestamped dumps per database (7 by default), pruning older ones after each successful run. Set `DUMP_KEEP=1` to instead keep a single stable `<dbname>.dump` and delegate versioning to your backup tool.
-- **Standard surface.** `POST /dump`, `GET /healthz`. Trigger by the built-in daily timer (default), over HTTP, `docker exec ... pg-autodump trigger`, or run one cycle as a batch job with `pg-autodump run` (see [One-shot mode](#one-shot-mode)).
+pg-autodump is built for self-hosters who run PostgreSQL behind apps such as Authentik, Paperless or Immich and already back up a folder. It connects over the network as a read-only role and needs no root and no Docker socket. It dumps the databases you list, one file each, without roles or other server-wide settings.
+
+You need a PostgreSQL server from version 9.2 to 18 that the container can reach, and a role allowed to read every table.
+
+One other tool suits a different need. Consider [pgBackRest](https://pgbackrest.org/) if you want full, differential and incremental backups of a whole server, which it can store in S3, Azure or GCS.
+
+pg-autodump is free software under the Apache-2.0 license.
 <!-- hub-overview END -->
 
 ## Quick start
 
-The image is published to both GHCR (`ghcr.io/cplieger/pg-autodump`) and Docker Hub (`cplieger/pg-autodump`); identical contents, use whichever you prefer.
+The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository.
 
-1. Create a least-privilege backup role in each database:
+```yaml
+services:
+  pg-autodump:
+    image: ghcr.io/cplieger/pg-autodump:latest
+    container_name: pg-autodump
+    restart: unless-stopped
+    # Run "mkdir secrets dumps". Once secrets/.pgpass exists, run "sudo chown 1000:1000 secrets/.pgpass dumps",
+    # or every dump fails. If .env sets PUID and PGID, use those numbers.
+    user: "${PUID:-1000}:${PGID:-1000}"
+    stop_grace_period: 320s  # SHUTDOWN_TIMEOUT (default 315s) plus the 5s cancel budget, so a dump finishes or unwinds on stop
+
+    environment:
+      # First create a login role with pg_read_all_data and CONNECT on each database.
+      # The README quick start has the SQL.
+      DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
+
+    ports:
+      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN
+
+    volumes:
+      # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
+      # then run "chmod 600 secrets/.pgpass", or libpq ignores it.
+      - "./secrets/.pgpass:/secrets/.pgpass:ro"
+      - "./dumps:/dumps"  # point your backup tool at this folder
+```
+
+1. On your PostgreSQL server, create the backup role and let it connect to each database you want dumped:
 
    ```sql
    CREATE ROLE dbdumper_ro LOGIN PASSWORD 'choose-a-strong-password';
-   GRANT pg_read_all_data TO dbdumper_ro;          -- PostgreSQL 14+
+   GRANT pg_read_all_data TO dbdumper_ro;
    GRANT CONNECT ON DATABASE myapp TO dbdumper_ro;
    ```
 
-2. Create a `.pgpass` (mode **0600**, or libpq silently ignores it). One line
-   per `host:port:dbname:user`:
+   `pg_read_all_data` needs PostgreSQL 14 or later. On an older server, use the grants in [Security](docs/security.md#the-backup-role).
+
+2. In the folder that holds `compose.yaml`, run `mkdir secrets dumps`.
+3. Create `secrets/.pgpass` with one `host:port:database:role:password` line per database:
 
    ```text
    mydb-host:5432:myapp:dbdumper_ro:choose-a-strong-password
    ```
 
-3. Run it (see [`compose.yaml`](compose.yaml) for the full example):
+4. Run `chmod 600 secrets/.pgpass`.
+5. Run `sudo chown 1000:1000 secrets/.pgpass dumps`, so the container can read the password file and write the dumps. If `.env` sets `PUID` and `PGID`, use those numbers instead.
+6. In `compose.yaml`, set `DB_SPECS` to one `host:port:database:role` entry per database, separated by spaces. The host is the address the container reaches your PostgreSQL server at, such as its LAN address, or its container name when both share a Docker network. It is never `localhost`, which inside the container is the container itself.
+7. Run `docker compose up -d`.
 
-   ```yaml
-   services:
-     pg-autodump:
-       image: ghcr.io/cplieger/pg-autodump:latest
-       container_name: pg-autodump
-       restart: unless-stopped
-       # Override with PUID/PGID in .env; defaults to 1000:1000.
-       user: "${PUID:-1000}:${PGID:-1000}"  # match your host user
-       read_only: true
-       cap_drop: ["ALL"]
-       security_opt: ["no-new-privileges:true"]
-       environment:
-         DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"
-       ports:
-         - "127.0.0.1:9847:9847"
-       volumes:
-         - "./secrets/.pgpass:/secrets/.pgpass:ro"   # mode 0600
-         - "./dumps:/dumps"
-       tmpfs:
-         - "/tmp:size=16m,mode=1777"   # 1777 so the non-root user can write the health marker
-   ```
+pg-autodump dumps every database right after the first start. Run `docker logs pg-autodump`. You should see `msg="dump cycle complete"` with `failed=0`. A `dump auth_error` line means the role, its password or the database name in `.pgpass` or `DB_SPECS` is wrong.
 
-   The container runs as the UID set in `user:` (1000 unless you set `PUID`/`PGID`),
-   so the host `./secrets/.pgpass` (mode **0600**) and the host `./dumps` directory
-   must be owned by that UID: libpq ignores a `.pgpass` not owned by the running
-   UID, and dumps can't be written otherwise.
+## Starting a dump yourself
 
-   ```sh
-   chown "${PUID:-1000}:${PGID:-1000}" ./secrets/.pgpass ./dumps
-   ```
+The built-in timer dumps every 24 hours. To dump right now, run `curl -fsS -X POST http://127.0.0.1:9847/dump` on the Docker host, or `docker exec pg-autodump pg-autodump trigger`. The answer has one line per database and status `200` when every database dumped. Status `500` means at least one failed, and `429` means a dump is already running.
 
-4. Trigger a backup:
+To let cron, a systemd timer or another scheduler decide when dumps run, set `DUMP_INTERVAL=off` and call `trigger` from it. `pg-autodump run`, started as a container of its own, does one dump and exits, with exit code `0` only when every database dumped. [Configuration](docs/configuration.md#scheduling) covers both.
 
-   ```sh
-   curl -fsS -X POST http://127.0.0.1:9847/dump
-   # or: docker exec pg-autodump pg-autodump trigger
-   ```
+## Restoring a dump
 
-## One-shot mode
-
-`pg-autodump run` performs exactly one dump cycle and exits, for deployments
-where an external scheduler (cron, a systemd timer, a Kubernetes CronJob,
-Ofelia) owns the cadence and consumes the exit code as the result:
-
-```sh
-docker run --rm \
-  -e DB_SPECS="mydb-host:5432:myapp:dbdumper_ro" \
-  -v ./secrets/.pgpass:/secrets/.pgpass:ro \
-  -v ./dumps:/dumps \
-  ghcr.io/cplieger/pg-autodump:latest run
-```
-
-- **Exit code is the result.** `0` when every configured database dumped ok,
-  non-zero when any failed or the preconditions (client binaries, writable
-  `/dumps`, non-empty `DB_SPECS`) weren't met. SIGTERM mid-run cancels the
-  in-flight `pg_dump` cleanly (reported as `killed`, non-zero exit).
-- **No listener, no timer.** `run` binds no HTTP port and ignores
-  `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL`, and `SHUTDOWN_TIMEOUT`:
-  transport, scheduling, and drain belong to the invoking scheduler. The
-  image's `HEALTHCHECK` is aimed at the resident server and reports nothing
-  useful for a run-and-exit container.
-- **Runs never overlap, and contended runs are never lost.** The server and
-  one-shot runs in the same container coordinate through a kernel-released
-  cycle lock, so a crashed run can never wedge it. A `run` arriving while a
-  cycle is already in flight exits `0` immediately; the active runner executes
-  one queued cycle as soon as the current one finishes, logging its
-  per-database results. Pick one scheduling mode per deployment (resident
-  server or one-shot); the coordination exists so a stray manual `run` is
-  safe, not to run both on a schedule.
+Each dump sits under `dumps/<host>_<port>/`, named `<database>.<UTC time>.dump`, for example `dumps/mydb-host_5432/myapp.20261002T020000Z.dump`. The files are in `pg_dump`'s custom format, so restore one into an empty database with `pg_restore --dbname=myapp <file>`. Create the roles the database uses first, because the dumps do not carry them.
 
 ## Configuration reference
 
-### Environment variables
+Settings are environment variables, read once at start, so recreate the container after a change. A malformed value falls back to its default with a warning in the log. The one exception is a `DUMP_DIR` with a `..` part, which stops the container from starting.
 
-| Variable | Description | Default | Required |
-| --- | --- | --- | --- |
-| `DB_SPECS` | Space-separated `host[:port]:dbname:user` tuples (port defaults to 5432). Ids are `[a-zA-Z0-9_-]` (host also allows `.`), no leading `-`, no `..`, no control chars. IPv6 literal hosts use the bracketed form `[2001:db8::1][:port]:dbname:user`. Invalid entries are reported per-DB and skipped. | _none_ | Yes |
-| `PGPASSFILE` | Path to a read-only `.pgpass` (mode 0600). `PGPASSWORD` is also honoured by libpq but `.pgpass` is preferred (scoped per host/db/user). | `/secrets/.pgpass` | No |
-| `DUMP_DIR` | Output directory; each database's dump lands under a per-server `<host>_<port>/` subdirectory (see [On-disk layout](#on-disk-layout)). A value with a `..` path component is **fatal**: startup aborts rather than silently relocate backups to the default. Names that merely contain dots (`/dumps/a..b`) are fine. | `/dumps` | No |
-| `DUMP_TIMEOUT` | Per-dump seconds (min 10). | `300` | No |
-| `DUMP_CONCURRENCY` | Parallel dumps. Raise for many hosts / fast storage; set `1` for a single slow backup volume. | `2` | No |
-| `DUMP_INTERVAL` | Built-in timer cadence (Go duration). On startup it runs one dump unless the [last-run record](#the-startup-dump-and-the-last-run-record) shows a fully successful cycle within one interval, so a deployment that restarts faster than its interval is never starved of backups. `off` / `disabled` / `0` hand scheduling to an external trigger. | `24h` | No |
-| `DUMP_KEEP` | Retained dumps per database. `>1` (default 7) writes timestamped `<dbname>.<UTC>.dump` files and prunes to the N newest. `1` writes a single stable `<dbname>.dump`, overwritten each run (delegate versioning to your backup tool). | `7` | No |
-| `DUMP_FREE_KB_WARN` | Warn when free space on `/dumps` falls below this (KB) at run start. `0` disables. | `1048576` | No |
-| `AUTH_TOKEN` | When set, `/dump` requires `Authorization: Bearer <token>`. Empty = open (fine on a private network / loopback); pg-autodump logs a startup warning when it is empty **and** `LISTEN_ADDR` is non-loopback. | `""` | No |
-| `LISTEN_ADDR` | HTTP listen address. | `:9847` | No |
-| `SHUTDOWN_TIMEOUT` | Drain budget on SIGTERM (Go duration, for example `315s`). Set compose `stop_grace_period` >= this + ~5s (a cancelled in-flight dump gets a short extra window to reap pg_dump and clear its staged temp). | `DUMP_TIMEOUT+15s` | No |
+| Variable | Description | Default |
+| --- | --- | --- |
+| `DB_SPECS` | Databases to dump, as space-separated `host[:port]:database:role` entries. The port defaults to 5432 | required |
+| `DUMP_INTERVAL` | Time between built-in dumps, such as `12h`. `off` hands scheduling to your own trigger | `24h` |
+| `DUMP_KEEP` | Dumps kept per database. `1` keeps one `<database>.dump` that each run overwrites | `7` |
+| `DUMP_TIMEOUT` | Seconds one database may take to dump, at least 10 | `300` |
+| `DUMP_CONCURRENCY` | Databases dumped at the same time | `2` |
+| `AUTH_TOKEN` | When set, `POST /dump` needs the header `Authorization: Bearer <token>` | _(unset)_ |
+| `LISTEN_ADDR` | Address the HTTP server listens on | `:9847` |
+| `SHUTDOWN_TIMEOUT` | How long a stop waits for a running dump, such as `315s`. Keep `stop_grace_period` about 5s longer than this | `DUMP_TIMEOUT` plus 15s |
+| `PGPASSFILE` | Path of the password file inside the container | `/secrets/.pgpass` |
+| `DUMP_DIR` | Folder the dumps go to inside the container. A path with a `..` part stops the container from starting | `/dumps` |
+| `DUMP_FREE_KB_WARN` | Log a warning when free space for dumps is below this many KB at the start of a run. `0` turns it off | `1048576` |
 
-> **IPv6 hosts.** Use the bracketed form in `DB_SPECS` (`[2001:db8::1]:5432:db:user`; the port is optional). libpq's `.pgpass` is colon-delimited, so an IPv6 host's colons must be backslash-escaped there (`2001\:db8\:\:1:5432:db:user:pw`), or use `PGPASSWORD` instead.
-
-### Volumes
+Instead of a `.pgpass` file, you can set `PGPASSWORD`, which libpq uses for every database. [Configuration](docs/configuration.md) explains the `DB_SPECS` rules, IPv6 hosts, file names and timeouts.
 
 | Mount | Description |
 | --- | --- |
-| `/secrets/.pgpass` | Read-only `.pgpass` (mode 0600). Optional when `PGPASSWORD` is used. |
-| `/dumps` | Output directory; verified dumps under a per-server `<host>_<port>/` subdirectory (one stable `<dbname>.dump`, or `DUMP_KEEP` timestamped copies). A one-line `.pg-autodump-last-run` record sits at the root; harmless if your backup tool collects it. |
+| `/secrets/.pgpass` | Password file, mode 0600, read-only. Not needed when you set `PGPASSWORD` |
+| `/dumps` | The checked dumps, one folder per server, plus a one-line `.pg-autodump-last-run` record |
 
-### Endpoints
-
-- `POST /dump`: run all dumps. `200` if every database succeeded, `500` if any failed or none is configured (the body then reads `no databases configured`), `429` if a run is already in progress **or** repeated bad bearer attempts have engaged the failed-auth throttle (over-budget attempts get the 429 with a `Retry-After` hint before reaching the handler; a valid token is never throttled), `401` if `AUTH_TOKEN` is set and the bearer token is missing/wrong. The body has one `host/db: <detail>` line per database; for an execution-tool failure (`pg_error` / `truncated` / `other`) the line carries only the reason word. The raw `pg_dump`/`pg_restore` stderr is logged, not returned, so an open endpoint never discloses schema or object names.
-- `GET /healthz`: `200 ok` / `503 unhealthy`. The same marker the Docker healthcheck reads: healthy when the most recent cycle fully succeeded (see [Healthcheck](#healthcheck)).
-
-### On-disk layout
-
-Each database's dump is written under a per-server subdirectory of `DUMP_DIR`
-named `<host>_<port>`, so two databases that share a name on different servers
-never collide on one file:
-
-```text
-/dumps/
-  db1.example.com_5432/myapp.dump
-  db2.example.com_5432/myapp.dump        # same dbname, different host, no clash
-  apphost_5433/myapp.dump                # same host, a second instance on :5433
-  @2001-db8--1_5432/myapp.dump           # IPv6 host (':' encoded as '-', '@'-prefixed)
-```
-
-With `DUMP_KEEP>1` the timestamped `<dbname>.<UTC>.dump` files live inside that
-subdirectory and are pruned per server, so retention never counts one server's
-dumps against another's. **Upgrading from a flat layout:** root-level
-`<dbname>.dump` files are never read, moved, or deleted; new dumps appear under
-`<host>_<port>/`, and the first start after upgrading runs a dump immediately
-(timer on). Remove the old flat files at your convenience; a versioning
-collector begins a fresh chain at the new paths.
-
-### The startup dump and the last-run record
-
-The built-in timer keeps its phase across restarts: its first fire lands one
-interval after the previous completed cycle, read from the record below, so a
-restart neither adds a dump nor delays the next one. At startup pg-autodump
-additionally fires one immediate dump unless the previous cycle both fully
-succeeded and completed within one interval. The decision reads a one-line
-record at `DUMP_DIR/.pg-autodump-last-run`, written after every completed
-cycle whatever triggered it (timer, HTTP, `trigger`, or a one-shot `run`).
-
-- Only a cycle in which **every** configured database dumped and verified
-  records a success. A cycle with any failed database records a failure, and
-  a failure never suppresses the startup dump: a restart retries the whole
-  cycle until one fully succeeds. Dumps are verify-before-replace, so the
-  retries cost work, never data. A cycle cut short by a shutdown records
-  nothing, so the previous cycle's record stands: a redeploy that lands
-  mid-cycle neither loses the timer's phase nor boots the container unhealthy.
-- When `/dumps` is not persisted, the record does not survive a container
-  recreate and every start fires one dump, which is also the cold-start
-  behavior. A record the container can read but not rewrite is ignored with
-  a warning, so with the built-in timer the startup dump fires and the
-  container boots unhealthy until it succeeds.
-
-## Alerting
-
-pg-autodump has no metrics endpoint; its operational state is in its logs
-(structured `slog` written to stderr). Ship the container's logs to Loki
-(Grafana Alloy's Docker log discovery does this with no configuration) and
-evaluate this rule with
-[Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
-deliver through your Alertmanager exactly like Prometheus metric alerts.
-
-Two rules cover the two failure shapes: a **loud failure** (a dump ran and
-reported an error) and a **silent non-run** (no cycle completed at all:
-container down, timer disabled, or every trigger dying before the dump
-starts). Every completed cycle, whatever triggered it, emits one
-`dump cycle complete` heartbeat line; the absence rule keys on it. One
-visibility caveat: the rules match the container's main log stream, which
-covers the resident server (timer, HTTP, and `trigger` all dump in that
-process) and a one-shot container running `run` as its command. A `run`
-invoked through `docker exec` logs to the exec session instead, so alert on
-your scheduler's job result in that shape.
-
-```yaml
-groups:
-  - name: pg-autodump
-    rules:
-      - alert: PgAutodumpDumpFailed
-        expr: |
-          sum by (container) (count_over_time(
-            {container="pg-autodump"} |= `level=ERROR` |= `reason=` [15m]
-          )) > 0
-        for: 0m
-        labels:
-          severity: critical
-        annotations:
-          summary: "pg-autodump: database dump failed"
-          description: >
-            A pg-autodump database dump failed (level=ERROR with a reason=
-            field). Verify-before-replace keeps the last good .dump, so the
-            affected database's backup is now stale. reasons:
-            connect_error/auth_error/pg_error = misconfig or database down;
-            timeout = exceeded the DUMP_TIMEOUT budget; truncated/empty =
-            bad/partial dump; other = an environment fault, such as a shipped
-            pg client the image can no longer execute. (A graceful-shutdown
-            cancel logs reason=killed at level=WARN and does not trip this
-            alert.)
-      - alert: PgAutodumpCycleMissing
-        expr: |
-          absent_over_time(
-            {container="pg-autodump"} |= `dump cycle complete` [26h]
-          )
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "pg-autodump: no dump cycle completed in 26h"
-          description: >
-            No "dump cycle complete" heartbeat in 26h. Backups have silently
-            stopped: the container may be down, the timer disabled, or every
-            trigger failing before a dump starts. The window covers the
-            longest legal gap under the built-in 24h timer: the schedule
-            keeps its phase across restarts (the record on /dumps carries
-            it), so two heartbeats sit at most one DUMP_INTERVAL plus the
-            cycle's own runtime apart. With an external daily trigger, 26h
-            likewise detects a missed day.
-```
-
-Thresholds and the `severity` label are starting points; adjust the `[15m]` /
-`[26h]` windows and the `container` selector to your deployment (the absence
-window tracks the longest legal gap: about one `DUMP_INTERVAL` plus a cycle's
-runtime under the built-in timer, or your trigger cadence plus slack under an
-external scheduler), and route by whatever
-labels your Alertmanager uses. If your scheduler already alerts on a missing
-scheduled run (as an exec-based scheduler like Ofelia can), the absence rule is
-redundant; keep whichever vantage point you trust more.
-
-## Healthcheck
-
-The Docker `HEALTHCHECK` runs the `pg-autodump health` subcommand, a file-marker probe: no shell, `curl`, or open port is needed in the image. Healthy means the most recent dump cycle fully succeeded, whatever triggered it (the timer, `POST /dump`, `trigger`, or a `run` exec'd into the container). Unhealthy means a database failed to dump or the cycle could not start (a client binary that cannot run, an unwritable `/dumps` or one whose inherited ACL widens the owner-only mode of new dump files, an empty `DB_SPECS`), and it stays that way until a cycle fully succeeds. The reason is in the log: the per-database `level=ERROR` line the [Alerting](#alerting) rule keys on, the `level=ERROR` preflight line, or, after a restart, the `pg-autodump listening` line and the `booting unhealthy` warning that name the recorded last cycle; a caller also sees it as the `500` response or the non-zero `run` exit code. At boot, health follows the [last-run record](#the-startup-dump-and-the-last-run-record): with the built-in timer the container boots healthy only when the record shows a fully successful cycle within one interval, and is unhealthy while the startup dump runs otherwise; with `DUMP_INTERVAL=off` it boots unhealthy when the record's last cycle failed, and healthy otherwise (a fresh deployment has nothing to report until its first trigger). Size `healthcheck.start_period` for the time that startup dump may take with your database count: the image bakes `6m` (one default `DUMP_TIMEOUT` wave plus slack), a healthy probe inside the window ends it early, and a container still dumping is reported `unhealthy` only after it. A restart does not fix a failing dump: the same cycle runs again against the same database. With the built-in timer the `health` subcommand also fails when the marker is older than two intervals plus one worst-case cycle, so a timer that stopped firing is caught; `GET /healthz` reads the marker's presence only.
-
-## The backup role
-
-`pg_read_all_data` (PostgreSQL 14+) grants read on all ordinary tables, views,
-and sequences: exactly what a logical dump needs. Caveats to document for your
-databases:
-
-- **Large objects** (`pg_largeobject`) are not covered by `pg_read_all_data` ([BUG #19379](https://www.postgresql.org/message-id/r5a3aqlrrqen2snktdmx5tjeoakp3hmbektlqmeqhij3fqqez4@zmx3bdscipny)). A database using them needs an owning/superuser role, `lo_compat_privileges`, or `--no-large-objects` if blobs are not part of the backup contract.
-- **Row-level security** requires `BYPASSRLS` (a superuser-granted attribute, more than read-only) for `pg_dump` to read RLS-protected tables.
-- The role is cluster-level and SELECT-only: it cannot modify the database and is unaffected by application updates. A fresh data-directory re-init drops it (recreate it), and a dump holds `ACCESS SHARE` locks, so schedule dumps outside heavy DDL/migration windows.
-- On PostgreSQL < 14, grant `SELECT` on all tables plus schema `USAGE` instead.
-
-## Versioning
-
-The image ships the newest PostgreSQL client major it is built with. `pg_dump`
-requires the client major to be **>= the server major**, so a client can dump
-any server up to its own version. Bump the client major when you upgrade a
-server ahead of it; a too-old client is reported per-DB as `version_mismatch`
-with a clear message rather than a cryptic pg_dump abort.
+| Port | Description |
+| --- | --- |
+| `9847` | `POST /dump` starts a dump, `GET /healthz` reports health |
 
 ## Security
 
-- **No Docker socket, no root.** The container needs only network reach to the databases, a read-only `.pgpass`, and a writable `/dumps`.
-- **Credentials never on a command line or in logs.** They live in `.pgpass` (or `PGPASSWORD`); `pg_dump` is invoked with `--no-password` so it never prompts.
-- **No shell, explicit argv.** `DB_SPECS` is validated once, and identifiers are passed as long options (`--dbname=`, `--username=`) so a value can never be read as a flag. No shell is ever invoked.
-- **Keep it private or set `AUTH_TOKEN`.** A stray trigger can at most write a read-only-role dump to the volume. When the endpoint is open (`AUTH_TOKEN` empty) on a non-loopback `LISTEN_ADDR`, pg-autodump logs a startup warning; and `POST /dump` returns only the reason word for execution-tool failures (never the raw `pg_dump`/`pg_restore` stderr), so an open endpoint discloses no schema or object names.
+The container runs as an ordinary user with no Docker socket. It needs only network access to your databases, the password file and a writable `/dumps` folder. Use a role that can only read, as in the quick start.
 
-The CI battery runs govulncheck, golangci-lint (gosec, gocritic), trivy, grype, gitleaks, semgrep, and hadolint on every change; `DB_SPECS` parsing is fuzzed.
+Port 9847 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log.
 
-## Dependencies
+Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/security.md) covers the hardened compose settings, the backup role's limits and what the image contains.
 
-Updated automatically via [Renovate](https://github.com/renovatebot/renovate) and pinned by digest. Builds carry signed SBOMs and provenance attestations verifiable with `gh attestation verify`.
+## Troubleshooting
 
-| Dependency | Source |
-| --- | --- |
-| golang | [Go](https://hub.docker.com/_/golang) |
-| alpine | [Alpine](https://hub.docker.com/_/alpine) |
-| postgresql18-client | [PostgreSQL](https://www.postgresql.org/) |
-| tini | [GitHub](https://github.com/krallin/tini) |
-| github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile) |
-| github.com/cplieger/envx | [GitHub](https://github.com/cplieger/envx) |
-| github.com/cplieger/health | [GitHub](https://github.com/cplieger/health) |
-| github.com/cplieger/keyenc | [GitHub](https://github.com/cplieger/keyenc) |
-| github.com/cplieger/pathinside | [GitHub](https://github.com/cplieger/pathinside) |
-| github.com/cplieger/scheduler | [GitHub](https://github.com/cplieger/scheduler) |
-| github.com/cplieger/slogx | [GitHub](https://github.com/cplieger/slogx) |
-| github.com/cplieger/webhttp | [GitHub](https://github.com/cplieger/webhttp) |
+The healthcheck runs `pg-autodump health`, which reads a file written after each run. Healthy means the last run dumped and checked every database. Unhealthy means a database failed or a run could not start. It stays unhealthy until a run fully succeeds, and a restart does not clear it.
 
-`tini` (PID 1) is fetched as the pinned upstream static binary, SHA256-verified per arch, fail-closed.
+With the built-in timer, a new container is unhealthy while its first dump runs, unless the last run fully succeeded less than one interval ago. It also turns unhealthy when no run has finished in two intervals, 48 hours by default, plus the time one run may take.
 
-The `postgresql-client` (`pg_dump`/`pg_restore`/`psql` + `libpq`) is a required dependency and the reason the image is Alpine (libc) rather than distroless. It stays the Alpine package rather than a pinned upstream build: the client major must track the newest PostgreSQL server major you dump (see [Versioning](#versioning)), and the package floats to the current revisions in the digest-pinned release line at each rebuild.
+- `dump auth_error` means the role, its password or the database name is wrong, or `.pgpass` is not mode 0600 and owned by the container user.
+- `dump connect_error` means the container cannot reach that host and port. Put it on a network that reaches your server.
+- `dump version_mismatch` means the server is newer than the PostgreSQL 18 tools in the image.
+- `health preconditions not met` naming the dump dir means the container user cannot write to `./dumps`. Repeat quick start step 5.
+
+The image waits 6 minutes before it counts a starting container as unhealthy. With many databases, raise `healthcheck.start_period` in your compose file. [How it works](docs/how-it-works.md#health) has the details.
+
+## Monitoring
+
+pg-autodump has no metrics endpoint. It logs one line per database and one `dump cycle complete` line per run to standard error. [Monitoring and alerts](docs/monitoring.md) lists the log lines and has two Loki alert rules, one for a failed dump and one for a missing completion heartbeat after 26 hours.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) explains every setting, the scheduling modes and the file layout.
+- [Security](docs/security.md) has the hardened compose settings, the backup role's limits and what the image contains.
+- [How it works](docs/how-it-works.md) shows how a dump is checked and replaced, how runs take turns and what health means.
+- [Monitoring and alerts](docs/monitoring.md) lists the log lines and the Loki alert rules.
 
 ## Credits
 
-The PostgreSQL client tools `pg_dump`, `pg_restore`, and `psql` are part of [PostgreSQL](https://www.postgresql.org/) (PostgreSQL License). The pg_dump argument construction and exit-code handling were informed by [orgrim/pg_back](https://github.com/orgrim/pg_back) (2-clause BSD), used as a reference only, not vendored.
-
-## Migrating from db-dumper 1.x
-
-pg-autodump succeeds `db-dumper`, which ran `pg_dump` via `docker exec` over the root-equivalent Docker socket; pg-autodump is an unprivileged network client instead (no socket, no root). To migrate:
-
-- Remove the Docker socket mount and `user: "0:0"`.
-- Rewrite `DB_SPECS` from `container:dbname:user` to `host[:port]:dbname:user`.
-- Provide credentials via a read-only `.pgpass` and a least-privilege role (see above).
-- Move triggers from `GET /cgi-bin/dump` to `POST /dump` (or `pg-autodump trigger`), and health to `GET /healthz`.
-- Set the healthcheck to `["CMD", "pg-autodump", "health"]` and `stop_grace_period` >= `SHUTDOWN_TIMEOUT`.
+pg-autodump runs `pg_dump`, `pg_restore` and `psql` from [PostgreSQL](https://www.postgresql.org/), and all credit for them goes to the PostgreSQL developers. The way it builds the `pg_dump` command and reads its exit code follows [pg_back](https://github.com/orgrim/pg_back), a dump tool for PostgreSQL.
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for larger
-changes so the approach can be discussed before implementation. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the package layout, essential
-invariants, and local checks.
+Issues and pull requests are welcome. Please open an issue first for larger changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the package layout, the rules the code keeps and the local checks.
 
 ## Disclaimer
 

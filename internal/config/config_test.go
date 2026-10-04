@@ -378,13 +378,13 @@ func TestLoadCustomListenAddrAndPGPassFile(t *testing.T) {
 
 func TestLoadPositiveIntWarningNamesVariable(t *testing.T) {
 	_, cw := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_CONCURRENCY": "bad"})
-	wantC := Warning(`DUMP_CONCURRENCY "bad" is not a positive integer; using default 2`)
+	wantC := Warning(`DUMP_CONCURRENCY "bad" is not a positive integer, so the default 2 is used`)
 	if len(cw) != 1 || cw[0] != wantC {
 		t.Errorf("DUMP_CONCURRENCY=bad warnings = %v, want exactly [%q]", cw, wantC)
 	}
 
 	_, kw := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": "bad"})
-	wantK := Warning(`DUMP_KEEP "bad" is not a positive integer; using default 7`)
+	wantK := Warning(`DUMP_KEEP "bad" is not a positive integer, so the default 7 is used`)
 	if len(kw) != 1 || kw[0] != wantK {
 		t.Errorf("DUMP_KEEP=bad warnings = %v, want exactly [%q]", kw, wantK)
 	}
@@ -467,7 +467,7 @@ func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
 	})
 	t.Run("malformed warning renders the trimmed value", func(t *testing.T) {
 		_, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": " bad "})
-		want := Warning(`DUMP_KEEP "bad" is not a positive integer; using default 7`)
+		want := Warning(`DUMP_KEEP "bad" is not a positive integer, so the default 7 is used`)
 		if len(warns) != 1 || warns[0] != want {
 			t.Errorf("warnings = %v, want exactly [%q]", warns, want)
 		}

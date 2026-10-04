@@ -55,7 +55,7 @@ func TestOrchestratorRunReportsEverySpec(t *testing.T) {
 	specs := []spec.DBSpec{
 		{Host: "h", Port: 5432, DBName: "good", User: "u"},
 		{Raw: "bad", Invalid: "invalid format"},
-		{Host: "h", Port: 5432, DBName: "dupe", User: "u", Invalid: "duplicate host:port:dbname (kept first)", Duplicate: true},
+		{Host: "h", Port: 5432, DBName: "dupe", User: "u", Invalid: "duplicate host:port:dbname, so the first one is kept", Duplicate: true},
 	}
 	orch := New(&Params{
 		PG:          &fakePG{},
@@ -270,7 +270,7 @@ func TestInvalidResultDBNameFallback(t *testing.T) {
 		t.Errorf("invalidResult reason = %q, want invalid", empty.Reason)
 	}
 
-	named := invalidResult(&spec.DBSpec{DBName: "named", Raw: "raw-token", Invalid: "duplicate host:port:dbname (kept first)", Duplicate: true})
+	named := invalidResult(&spec.DBSpec{DBName: "named", Raw: "raw-token", Invalid: "duplicate host:port:dbname, so the first one is kept", Duplicate: true})
 	if named.DBName != "named" {
 		t.Errorf("invalidResult(named) DBName = %q, want %q (parsed name kept)", named.DBName, "named")
 	}

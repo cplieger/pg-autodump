@@ -61,7 +61,7 @@ func Parse(raw string) []DBSpec {
 		if s.Invalid == "" {
 			key := keyenc.Join(s.Host, strconv.Itoa(s.Port), s.DBName)
 			if _, dup := seen[key]; dup {
-				s.Invalid = "duplicate host:port:dbname (kept first)"
+				s.Invalid = "duplicate host:port:dbname, so the first one is kept"
 				s.Duplicate = true
 			} else {
 				seen[key] = struct{}{}
@@ -94,7 +94,7 @@ func parseOne(tok string) DBSpec {
 	if strings.HasPrefix(tok, "[") {
 		ip := net.ParseIP(host)
 		if ip == nil {
-			s.Invalid = "host: invalid IP literal in brackets (zone IDs and non-IP values are rejected)"
+			s.Invalid = "host: invalid IP literal in brackets, zone IDs and non-IP values are rejected"
 			return s
 		}
 		s.Host = ip.String()
@@ -129,8 +129,8 @@ func parseOne(tok string) DBSpec {
 
 	// The per-server subdirectory name must fit one filesystem path component.
 	if len(ServerDir(s.Host, s.Port)) > maxServerDirLen {
-		s.Invalid = "host: too long for artifact path (server directory name exceeds " +
-			strconv.Itoa(maxServerDirLen) + " bytes)"
+		s.Invalid = "host: too long for artifact path, the server directory name exceeds " +
+			strconv.Itoa(maxServerDirLen) + " bytes"
 		return s
 	}
 
@@ -152,7 +152,7 @@ func splitFields(tok string) (host, portStr, dbname, user, invalid string) {
 		host = tok[1:end]
 		rest := tok[end+1:]
 		if !strings.HasPrefix(rest, ":") {
-			return "", "", "", "", "host: expected ':' after ']' (want [addr][:port]:dbname:user)"
+			return "", "", "", "", "host: expected ':' after ']', want [addr][:port]:dbname:user"
 		}
 		switch parts := strings.Split(rest[1:], ":"); len(parts) {
 		case 2:
@@ -160,7 +160,7 @@ func splitFields(tok string) (host, portStr, dbname, user, invalid string) {
 		case 3:
 			return host, parts[0], parts[1], parts[2], ""
 		default:
-			return "", "", "", "", "invalid format (want [addr][:port]:dbname:user)"
+			return "", "", "", "", "invalid format, want [addr][:port]:dbname:user"
 		}
 	}
 
@@ -170,7 +170,7 @@ func splitFields(tok string) (host, portStr, dbname, user, invalid string) {
 	case 4:
 		return parts[0], parts[1], parts[2], parts[3], ""
 	default:
-		return "", "", "", "", "invalid format (want host[:port]:dbname:user)"
+		return "", "", "", "", "invalid format, want host[:port]:dbname:user"
 	}
 }
 

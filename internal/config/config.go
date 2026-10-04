@@ -119,7 +119,7 @@ func loadDumpDir(v string) (string, error) {
 		return DefaultDumpDir, nil
 	}
 	if pathinside.HasDotDot(v) {
-		return "", fmt.Errorf("DUMP_DIR %q must not contain a %q path component (refusing to start; set a directory without path traversal)", v, "..")
+		return "", fmt.Errorf("DUMP_DIR %q must not contain a %q path component, so pg-autodump refuses to start. Set a directory without path traversal", v, "..")
 	}
 	return v, nil
 }
@@ -128,15 +128,15 @@ func loadDumpTimeout(src envx.Source, w *warnings) time.Duration {
 	secs, ok, err := src.IntStrict("DUMP_TIMEOUT")
 	switch {
 	case err != nil:
-		w.addf("DUMP_TIMEOUT %q is not a positive integer; using default %s", rawValue(err), DefaultDumpTimeout)
+		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", rawValue(err), DefaultDumpTimeout)
 		return DefaultDumpTimeout
 	case !ok:
 		return DefaultDumpTimeout
 	case secs <= 0:
-		w.addf("DUMP_TIMEOUT %q is not a positive integer; using default %s", strconv.Itoa(secs), DefaultDumpTimeout)
+		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", strconv.Itoa(secs), DefaultDumpTimeout)
 		return DefaultDumpTimeout
 	case time.Duration(secs)*time.Second < MinDumpTimeout:
-		w.addf("DUMP_TIMEOUT %ds below minimum; clamped to %s", secs, MinDumpTimeout)
+		w.addf("DUMP_TIMEOUT %ds is below the minimum, so it is clamped to %s", secs, MinDumpTimeout)
 		return MinDumpTimeout
 	default:
 		return time.Duration(secs) * time.Second
@@ -150,12 +150,12 @@ func loadPositiveInt(src envx.Source, key envx.Key, def int, w *warnings) int {
 	n, ok, err := src.IntStrict(key)
 	switch {
 	case err != nil:
-		w.addf("%s %q is not a positive integer; using default %d", key, rawValue(err), def)
+		w.addf("%s %q is not a positive integer, so the default %d is used", key, rawValue(err), def)
 		return def
 	case !ok:
 		return def
 	case n < 1:
-		w.addf("%s %q is not a positive integer; using default %d", key, strconv.Itoa(n), def)
+		w.addf("%s %q is not a positive integer, so the default %d is used", key, strconv.Itoa(n), def)
 		return def
 	default:
 		return n
@@ -175,12 +175,12 @@ func loadInterval(src envx.Source, w *warnings) time.Duration {
 	d, ok, err := src.DurationStrict("DUMP_INTERVAL")
 	switch {
 	case err != nil:
-		w.addf("DUMP_INTERVAL %q is not a valid duration; using default %s (set \"off\" to disable)", rawValue(err), DefaultDumpInterval)
+		w.addf("DUMP_INTERVAL %q is not a valid duration, so the default %s is used. Set \"off\" to disable the built-in timer", rawValue(err), DefaultDumpInterval)
 		return DefaultDumpInterval
 	case !ok:
 		return DefaultDumpInterval
 	case d < 0:
-		w.addf("DUMP_INTERVAL %q is negative; built-in timer disabled (use a positive duration or 'off')", d.String())
+		w.addf("DUMP_INTERVAL %q is negative, so the built-in timer is disabled. Use a positive duration or \"off\"", d.String())
 		return 0
 	case d == 0:
 		return 0
@@ -195,12 +195,12 @@ func loadFreeKB(src envx.Source, w *warnings) int64 {
 	kb, ok, err := src.IntStrict("DUMP_FREE_KB_WARN")
 	switch {
 	case err != nil:
-		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer; using default %d", rawValue(err), DefaultFreeKBWarn)
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", rawValue(err), DefaultFreeKBWarn)
 		return DefaultFreeKBWarn
 	case !ok:
 		return DefaultFreeKBWarn
 	case kb < 0:
-		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer; using default %d", strconv.Itoa(kb), DefaultFreeKBWarn)
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", strconv.Itoa(kb), DefaultFreeKBWarn)
 		return DefaultFreeKBWarn
 	default:
 		return int64(kb)
@@ -216,16 +216,16 @@ func loadShutdownTimeout(src envx.Source, dumpTimeout time.Duration, w *warnings
 	timeout, ok, err := src.DurationStrict("SHUTDOWN_TIMEOUT")
 	switch {
 	case err != nil:
-		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration; using derived %s", rawValue(err), derived)
+		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration, so the derived %s is used", rawValue(err), derived)
 		return derived
 	case !ok:
 		return derived
 	case timeout <= 0:
-		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration; using derived %s", timeout.String(), derived)
+		w.addf("SHUTDOWN_TIMEOUT %q is not a positive duration, so the derived %s is used", timeout.String(), derived)
 		return derived
 	}
 	if timeout < dumpTimeout {
-		w.addf("SHUTDOWN_TIMEOUT %s is below DUMP_TIMEOUT %s; an in-flight dump may be killed on shutdown", timeout, dumpTimeout)
+		w.addf("SHUTDOWN_TIMEOUT %s is below DUMP_TIMEOUT %s. An in-flight dump may be killed on shutdown", timeout, dumpTimeout)
 	}
 	return timeout
 }

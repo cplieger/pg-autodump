@@ -111,13 +111,12 @@ func absDumpDir(dir string) string {
 }
 
 // Run executes every spec and returns one Result per database in spec order;
-// invalid and duplicate specs yield a Result without being dispatched. Run
-// assumes it is the only dump run in flight (its production callers hold the
-// in-process guard and the cross-process cycle lock), so it first reclaims
-// crash-orphaned temp files — every temp visible at cycle start is an
-// orphan. On completion it emits one "dump cycle complete" heartbeat (the
-// README's Loki absence rule keys on it) and, unless shutdown cancelled the
-// cycle, writes the CycleOK verdict to the last-run record and health sink.
+// invalid and duplicate specs yield a Result without being dispatched. It must
+// be the only run in flight (callers hold the in-process guard and the cycle
+// lock), because it first reclaims every temp file as a crash orphan. It ends
+// with the "dump cycle complete" line the Loki absence rule keys on and, unless
+// shutdown cancelled the cycle, writes CycleOK to the last-run record and the
+// health sink.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()

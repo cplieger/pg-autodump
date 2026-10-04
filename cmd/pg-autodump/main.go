@@ -53,7 +53,7 @@ func run(args []string, getenv func(string) string) int {
 	case "", "serve":
 		return runServer(getenv)
 	default:
-		fmt.Fprintf(os.Stderr, "unknown subcommand %q (want: serve | run | health | trigger)\n", sub)
+		fmt.Fprintf(os.Stderr, "unknown subcommand %q, want one of: serve, run, health, trigger\n", sub)
 		return 2
 	}
 }

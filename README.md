@@ -63,7 +63,7 @@ services:
    GRANT CONNECT ON DATABASE myapp TO dbdumper_ro;
    ```
 
-   `pg_read_all_data` needs PostgreSQL 14 or later. On an older server, use the grants in [Security](docs/security.md#the-backup-role).
+   `pg_read_all_data` needs PostgreSQL 14 or later. On an older server, use the grants in [Security](docs/hardening.md#the-backup-role).
 
 2. In the folder that holds `compose.yaml`, run `mkdir secrets dumps`.
 3. Create `secrets/.pgpass` with one `host:port:database:role:password` line per database:
@@ -124,7 +124,7 @@ The container runs as an ordinary user with no Docker socket. It needs only netw
 
 Port 9847 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log.
 
-Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/security.md) covers the hardened compose settings, the backup role's limits and what the image contains.
+Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/hardening.md) covers the hardened compose settings, the backup role's limits and what the image contains.
 
 ## Troubleshooting
 
@@ -146,7 +146,7 @@ pg-autodump has no metrics endpoint. It logs one line per database and one `dump
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the scheduling modes and the file layout.
-- [Security](docs/security.md) has the hardened compose settings, the backup role's limits and what the image contains.
+- [Security](docs/hardening.md) has the hardened compose settings, the backup role's limits and what the image contains.
 - [How it works](docs/how-it-works.md) shows how a dump is checked and replaced, how runs take turns and what health means.
 - [Monitoring and alerts](docs/monitoring.md) lists the log lines and the Loki alert rules.
 

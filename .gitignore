@@ -12,3 +12,4 @@ go.work.sum
 
 # Agent workflow scratch
 .agents/
+.kiro/

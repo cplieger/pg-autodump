@@ -34,14 +34,9 @@ groups:
         annotations:
           summary: "pg-autodump: database dump failed"
           description: >
-            A pg-autodump database dump failed, logged at level=ERROR with a
-            reason= field. The last good .dump is kept, so that database's
-            backup is now stale. connect_error, auth_error and pg_error point
-            to a wrong setting or a database that is down. timeout means the
-            dump took longer than DUMP_TIMEOUT. truncated and empty mean a bad
-            or partial dump. other means an environment fault, such as a
-            PostgreSQL tool the image can no longer run. A dump cancelled by a
-            stop logs reason=killed at level=WARN and does not trip this alert.
+            A database dump failed, so that database's backup is now stale.
+            The last good .dump is kept. Check the reason and detail fields
+            of the level=ERROR log line.
       - alert: PgAutodumpCycleMissing
         expr: |
           absent_over_time(
@@ -53,14 +48,21 @@ groups:
         annotations:
           summary: "pg-autodump: no dump cycle complete line in 26h"
           description: >
-            No "dump cycle complete" line arrived in 26h. The container or its
-            timer may have stopped, a trigger may be failing before the dump
-            starts, or the log stream may have been renamed or stopped
-            shipping. Under the built-in 24h timer
-            the schedule keeps its timing across restarts, so two of these
-            lines are at most one DUMP_INTERVAL plus one run's time apart.
-            With an external daily trigger, 26h also catches a missed day.
+            No "dump cycle complete" line arrived in 26h, so backups may have
+            stopped. Check that the container and its timer or trigger are
+            running, and that its logs still reach Loki.
 ```
+
+When `PgAutodumpDumpFailed` fires, the `reason` field names the cause:
+
+- `connect_error`, `auth_error` and `pg_error` point to a wrong setting or a database that is down.
+- `timeout` means the dump took longer than `DUMP_TIMEOUT`.
+- `truncated` and `empty` mean a bad or partial dump.
+- `other` means an environment fault, such as a PostgreSQL tool the image can no longer run.
+
+A dump cancelled by a stop logs `reason=killed` at `level=WARN`, so it does not trip `PgAutodumpDumpFailed`.
+
+The 26-hour window of `PgAutodumpCycleMissing` fits the built-in 24-hour timer. That timer keeps its timing across restarts, so two `dump cycle complete` lines are at most one `DUMP_INTERVAL` plus one run's time apart. With an external daily trigger, 26 hours also catches a missed day.
 
 Thresholds and the `severity` labels are starting points. Set the `[26h]` window to the longest normal gap, about one `DUMP_INTERVAL` plus a run's time under the built-in timer, or your trigger's cadence plus some margin under an external scheduler. Change the `container` selector to the label your log collector sets, and route by whatever labels your Alertmanager uses.
 

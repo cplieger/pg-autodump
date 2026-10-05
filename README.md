@@ -156,7 +156,7 @@ pg-autodump runs `pg_dump`, `pg_restore` and `psql` from [PostgreSQL](https://ww
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue first for larger changes. See [CONTRIBUTING.md](CONTRIBUTING.md) for the package layout, the rules the code keeps and the local checks.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 

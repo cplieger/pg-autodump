@@ -44,7 +44,7 @@ The client tools need a C library, which is why the image is Alpine rather than 
 
 `tini` runs as process 1. It is the upstream static binary at a pinned version, checked against a SHA256 sum for each architecture, and the build fails when the sum does not match.
 
-[Renovate](https://github.com/renovatebot/renovate) updates the dependencies, and the base images are pinned by digest. Builds carry signed SBOMs and provenance attestations. [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) and [Checking with the GitHub CLI](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-with-the-github-cli) show how to check the SBOM.
+[Renovate](https://github.com/renovatebot/renovate) updates the dependencies, and the base images are pinned by digest. Each image carries a signed SBOM and the build provenance Docker records. [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) and [Checking with the GitHub CLI](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-with-the-github-cli) show how to check the SBOM.
 
 | Dependency | Source |
 | --- | --- |

@@ -13,7 +13,7 @@ pg-autodump has no metrics endpoint. It writes structured `key=value` logs to st
 
 ## Alerting
 
-Ship the container's logs to Loki and evaluate these rules with [Loki's ruler](https://grafana.com/docs/loki/latest/alert/). Grafana Alloy's Docker log discovery ships them with no extra configuration. Firing alerts go through your Alertmanager like any Prometheus alert.
+These rules are for Loki's ruler. Save the block below as a file in Loki's rules folder, as [Loading an app's alert rules](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#loading-an-apps-alert-rules) shows.
 
 The two rules cover the two ways backups go wrong. `PgAutodumpDumpFailed` fires when a dump ran and reported an error. `PgAutodumpCycleMissing` fires when no `dump cycle complete` line has arrived for 26 hours. The container or its timer may have stopped, or every trigger may fail before a dump starts. The log stream may also have been renamed or stopped shipping.
 

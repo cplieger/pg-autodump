@@ -14,7 +14,7 @@ pg-autodump connects to your databases over the network as an ordinary PostgreSQ
 
 ## Hardened compose settings
 
-The image runs as a non-root user. Add these lines to the service in `compose.yaml` to give it a read-only root filesystem, drop its Linux capabilities and block privilege escalation:
+The image runs as a non-root user. Add these lines to the service in `compose.yaml`. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting.
 
 ```yaml
     read_only: true
@@ -44,7 +44,7 @@ The client tools need a C library, which is why the image is Alpine rather than 
 
 `tini` runs as process 1. It is the upstream static binary at a pinned version, checked against a SHA256 sum for each architecture, and the build fails when the sum does not match.
 
-[Renovate](https://github.com/renovatebot/renovate) updates the dependencies, and the base images are pinned by digest. Builds carry signed SBOMs and provenance attestations that `gh attestation verify` checks.
+[Renovate](https://github.com/renovatebot/renovate) updates the dependencies, and the base images are pinned by digest. Builds carry signed SBOMs and provenance attestations. [Reading the software bill of materials](https://github.com/cplieger/docs/blob/main/docs/images.md#reading-the-software-bill-of-materials) and [Checking with the GitHub CLI](https://github.com/cplieger/docs/blob/main/docs/images.md#checking-with-the-github-cli) show how to check the SBOM.
 
 | Dependency | Source |
 | --- | --- |

@@ -190,7 +190,7 @@ func loadInterval(src envx.Source, w *warnings) time.Duration {
 }
 
 // loadFreeKB reads DUMP_FREE_KB_WARN via IntStrict; int is 64-bit on both
-// fleet platforms, so the old ParseInt(v, 10, 64) range is unchanged.
+// supported platforms, so the range matches ParseInt(v, 10, 64).
 func loadFreeKB(src envx.Source, w *warnings) int64 {
 	kb, ok, err := src.IntStrict("DUMP_FREE_KB_WARN")
 	switch {

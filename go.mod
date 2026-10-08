@@ -5,10 +5,10 @@ go 1.27.2
 require (
 	github.com/cplieger/atomicfile/v4 v4.0.0
 	github.com/cplieger/envx/v2 v2.0.5
-	github.com/cplieger/health v1.8.1
+	github.com/cplieger/health v1.8.2
 	github.com/cplieger/keyenc v1.0.10
-	github.com/cplieger/pathinside/v2 v2.0.2
-	github.com/cplieger/scheduler/v4 v4.2.2
-	github.com/cplieger/slogx v1.6.6
-	github.com/cplieger/webhttp/v3 v3.0.1
+	github.com/cplieger/pathinside/v2 v2.0.3
+	github.com/cplieger/scheduler/v4 v4.2.3
+	github.com/cplieger/slogx v1.6.7
+	github.com/cplieger/webhttp/v3 v3.0.2
 )

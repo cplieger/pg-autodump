@@ -16,7 +16,7 @@ import (
 	"github.com/cplieger/health"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/webhttp/v3"
+	"github.com/cplieger/webhttp/v4"
 )
 
 // readHeaderTimeout guards against slow-header (slowloris) clients. There is no

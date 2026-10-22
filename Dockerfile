@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # at the end of the build; only those two files reach the runtime image below.
 # Native per-arch builds (no TARGETARCH): `uname -m` IS the target arch.
 # ---------------------------------------------------------------------------
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS tini-fetcher
+FROM alpine:3.24@sha256:c6b073f8e9e58d881f6ffba6ebf3b9ebd60b9e7d6e8337018c0e68bb5c356873 AS tini-fetcher
 
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 
@@ -119,7 +119,7 @@ EOF
 # newest PostgreSQL SERVER major you dump (client must be >= server). Bump
 # together with your servers.
 # renovate: datasource=docker depName=alpine
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6 AS base
+FROM alpine:3.24@sha256:c6b073f8e9e58d881f6ffba6ebf3b9ebd60b9e7d6e8337018c0e68bb5c356873 AS base
 
 # apk upgrade: the pinned base ships some packages (e.g. libssl3) at a stale,
 # CVE-affected revision; upgrading floats them forward on each rebuild.

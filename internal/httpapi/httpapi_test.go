@@ -17,7 +17,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
 	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/webhttp/v3"
+	"github.com/cplieger/webhttp/v4"
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on

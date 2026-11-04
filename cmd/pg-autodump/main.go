@@ -194,15 +194,12 @@ func newCycleExclusive(ctx context.Context, log *slog.Logger) (*scheduler.Exclus
 		scheduler.WithGate(func() bool { return ctx.Err() == nil })), nil
 }
 
-// ensureCycleDir establishes dir as an owner-only directory and PROVES it came
-// out that way, before scheduler.Exclusive puts the cycle lock inside it. dir
-// is a parameter (not the cycleDir constant) so tests can target a temp
-// directory. /tmp is shared with other principals in this container, so
-// os.MkdirAll's mode is only a request (a group-write ACL on the filesystem
-// can store 0770 for a 0o700 mkdir) and it also follows a planted symlink;
-// EnsurePrivateDir has the kernel refuse the link and refuses a foreign or
-// already-group-accessible pre-existing directory. A wide mode here would
-// leak control over the cross-process cycle lock, not dump contents.
+// ensureCycleDir makes dir an owner-only directory and proves it, before
+// scheduler.Exclusive puts the cycle lock inside it; a wide mode would leak
+// control of the cross-process lock. /tmp is shared with other principals:
+// os.MkdirAll's mode is only a request (a group-write ACL can store 0770 for
+// 0o700) and follows a planted symlink, while EnsurePrivateDir has the kernel
+// refuse the link and refuses a foreign or group-accessible existing dir.
 func ensureCycleDir(dir string, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return fmt.Errorf("create cycle dir parent %s: %w", filepath.Dir(dir), err)
@@ -289,25 +286,25 @@ func runServer(getenv func(string) string) int {
 		return 1
 	}
 
-	if cfg.DumpInterval > 0 {
-		go runTicker(ctx, rec, cfg.DumpInterval, trigger, log)
-	}
+	tickerDone := startTicker(ctx, rec, cfg.DumpInterval, trigger, log)
 
 	log.Info("pg-autodump listening",
 		"addr", cfg.ListenAddr, "databases", len(cfg.Specs), "concurrency", cfg.DumpConcurrency,
 		"interval", cfg.DumpInterval, "boot_healthy", healthy,
 		"last_cycle", rec.last.Time, "last_cycle_ok", rec.last.OK, "record_known", rec.known)
 
-	// webhttp.Run drains the HTTP server within ShutdownTimeout, then invokes
-	// the teardown below with a context bounded by the same deadline. A
-	// built-in ticker dump holds no HTTP connection Shutdown can see, so
-	// drainInFlightDump waits for the guard to go idle separately. The
-	// pre-drain hook flips the health marker red strictly before the drain
-	// begins, since the marker is a FILE the healthcheck reads, not covered
-	// by listener closure.
-	if err := webhttp.Run(ctx, srv, ln, drainInFlightDump(guard, cfg.ShutdownTimeout, log),
+	// The pre-drain hook flips the health marker red before the drain begins:
+	// the marker is a file the healthcheck reads, which closing the listener
+	// does not cover. A fatal serve error runs only the serve-exit hook, with
+	// ctx still live, so it cancels ctx to stop the timer first.
+	teardown := drainInFlightDump(guard, tickerDone, cfg.ShutdownTimeout, log)
+	if err := webhttp.Run(ctx, srv, ln, teardown,
 		webhttp.WithShutdownGrace(cfg.ShutdownTimeout),
-		webhttp.WithPreDrain(beginDrain(ctx, latch, log))); err != nil {
+		webhttp.WithPreDrain(beginDrain(ctx, latch, log)),
+		webhttp.WithServeExit(func(exitCtx context.Context) {
+			stop()
+			teardown(exitCtx)
+		})); err != nil {
 		log.Error("server failed", "err", err)
 		return 1
 	}
@@ -399,21 +396,34 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 	return 0
 }
 
+// unwindBudget bounds the teardown's waits once the drain budget is spent: a
+// cancelled dump stopping pg_dump and removing its temp, and the timer
+// goroutine returning.
+const unwindBudget = 5 * time.Second
+
 // drainInFlightDump returns a webhttp.Run teardown callback that waits for any
-// in-flight ticker dump to finish within the remaining drain budget and, if
-// it does not, cancels it so pg_dump is killed cleanly and its staged temp
-// removed. HTTP requests are already drained by the time it runs.
-func drainInFlightDump(guard *dump.Guard, grace time.Duration, log *slog.Logger) func(context.Context) {
+// in-flight dump to finish within the remaining drain budget and, if it does
+// not, cancels it so pg_dump is killed cleanly and its staged temp removed.
+// It then waits for the timer goroutine (tickerDone), so nothing the server
+// started can still log once it returns. HTTP requests are already drained by
+// the time it runs.
+func drainInFlightDump(guard *dump.Guard, tickerDone <-chan struct{}, grace time.Duration, log *slog.Logger) func(context.Context) {
 	return func(drainCtx context.Context) {
 		if !guard.WaitIdle(drainCtx) {
 			log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", grace)
 			guard.CancelInFlight()
-			unwindCtx, unwindCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer unwindCancel()
-			if !guard.WaitIdle(unwindCtx) {
-				log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
-				return
-			}
+		}
+		// A fresh budget: drainCtx may already be spent, and both waits end
+		// promptly once the closed cycle gate refuses new runs.
+		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), unwindBudget)
+		defer unwindCancel()
+		if !guard.WaitIdle(unwindCtx) {
+			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
+			return
+		}
+		if !webhttp.AwaitDone(unwindCtx, tickerDone) {
+			log.Warn("shutdown complete; the built-in timer did not stop within the cancel budget", "grace", grace)
+			return
 		}
 		log.Info("shutdown complete", "grace", grace)
 	}
@@ -433,7 +443,23 @@ func reclaimAtStartup(ctx context.Context, dumpDir string, log *slog.Logger) {
 	dump.ReclaimOrphans(ctx, dumpDir, log)
 }
 
-// runTicker drives the optional built-in scheduler (DUMP_INTERVAL).
+// startTicker runs the optional built-in scheduler (DUMP_INTERVAL > 0) in its
+// own goroutine until ctx ends, and returns a channel closed once it has
+// returned; with the timer off the channel is already closed.
+func startTicker(ctx context.Context, rec startupRecord, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) <-chan struct{} {
+	done := make(chan struct{})
+	if interval <= 0 {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		runTicker(ctx, rec, interval, trigger, log)
+	}()
+	return done
+}
+
+// runTicker drives the built-in scheduler until ctx ends.
 func runTicker(ctx context.Context, rec startupRecord, interval time.Duration, trigger *httpapi.Trigger, log *slog.Logger) {
 	// The ticker's first fire is one interval after start and its clock
 	// resets on every restart, so a restart-heavy deployment could go a long
@@ -445,26 +471,30 @@ func runTicker(ctx context.Context, rec startupRecord, interval time.Duration, t
 		log.Info("startup dump skipped; the last cycle fully succeeded within one interval",
 			"last_success", rec.last.Time, "interval", interval)
 	} else if ctx.Err() == nil {
-		switch _, ok, err := trigger.Run(); {
+		switch _, outcome, err := trigger.Run(); {
 		case err != nil:
 			log.Error("startup dump failed; cycle coordination error", "err", err)
-		case ok:
-			log.Info("startup dump complete (no fully successful cycle within one interval at boot)")
-		default:
+		case outcome == scheduler.OutcomeGated:
+			log.Info("startup dump skipped; shutting down")
+		case outcome == scheduler.OutcomeSkipped:
 			log.Warn("startup dump skipped; a run is already in progress")
+		default:
+			log.Info("startup dump complete (no fully successful cycle within one interval at boot)")
 		}
 	}
 
 	// scheduler.RunLoop drives the recurring ticks; no FireOnStart, since the
 	// startup dump above is already conditional, and FirstDelay phases the
 	// first tick from the recorded previous cycle so a restart neither adds a
-	// dump nor delays the cadence. It re-checks ctx before each tick so a
-	// pending tick racing a fresh SIGTERM never launches a run the drain then
-	// abandons.
+	// dump nor delays the cadence. A tick that passes RunLoop's ctx check as
+	// SIGTERM lands is refused by the cycle gate (OutcomeGated).
 	scheduler.RunLoop(ctx, func(context.Context) {
-		if _, ok, err := trigger.Run(); err != nil {
+		switch _, outcome, err := trigger.Run(); {
+		case err != nil:
 			log.Error("scheduled dump failed; cycle coordination error", "err", err)
-		} else if !ok {
+		case outcome == scheduler.OutcomeGated:
+			log.Info("scheduled dump skipped; shutting down")
+		case outcome == scheduler.OutcomeSkipped:
 			log.Warn("scheduled dump skipped; a run is already in progress")
 		}
 	}, scheduler.LoopOptions{

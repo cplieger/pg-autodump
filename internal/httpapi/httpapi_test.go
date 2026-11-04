@@ -60,6 +60,11 @@ func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 // can contend on it like an exec'd `pg-autodump run` process would.
 func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
 	t.Helper()
+	return newTestServerWithCycle(t, pg, token, scheduler.NewExclusive(cycleDir, discard()))
+}
+
+func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *scheduler.Exclusive) *http.Server {
+	t.Helper()
 	orch := dump.New(&dump.Params{
 		PG:          pg,
 		Logger:      discard(),
@@ -68,7 +73,6 @@ func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *h
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	cycle := scheduler.NewExclusive(cycleDir, discard())
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		AuthToken: token,
@@ -421,10 +425,10 @@ func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch,
 		slog.New(slog.NewTextHandler(&buf, nil)))
 
-	results, ok, err := trigger.Run()
+	results, outcome, err := trigger.Run()
 
-	if !ok || err != nil {
-		t.Fatalf("Trigger.Run() = (ok=%v, err=%v), want (true, nil)", ok, err)
+	if outcome != scheduler.OutcomeRan || err != nil {
+		t.Fatalf("Trigger.Run() = (%v, %v), want (ran, nil)", outcome, err)
 	}
 	if len(results) != 1 || results[0].Reason != dump.ReasonOK {
 		t.Fatalf("Trigger.Run() results = %+v, want one ok result", results)
@@ -449,6 +453,86 @@ func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
 	if rec := post(t, srv, ""); rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("dump with foreign cycle lock held: status = %d, want 429", rec.Code)
 	}
+}
+
+// A POST /dump arriving after shutdown was signalled, before the listener
+// closed, ran nothing because the server is stopping: 503, not the 429 that
+// says another run holds the cycle.
+func TestDumpDuringShutdownReturns503(t *testing.T) {
+	pg := &stubPG{}
+	gated := scheduler.NewExclusive(t.TempDir(), discard(), scheduler.WithGate(func() bool { return false }))
+	srv := newTestServerWithCycle(t, pg, "", gated)
+
+	rec := post(t, srv, "")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /dump after shutdown began: status = %d, want 503", rec.Code)
+	}
+	if got := rec.Body.String(); got != "shutting down\n" {
+		t.Errorf("POST /dump after shutdown began: body = %q, want %q", got, "shutting down\n")
+	}
+	if got := pg.dumpCalls.Load(); got != 0 {
+		t.Errorf("Dump calls = %d, want 0 (the gate refuses the run)", got)
+	}
+}
+
+// Trigger.Run reports why nothing ran: a closed shutdown gate is OutcomeGated,
+// a run already in flight in this process or another is OutcomeSkipped.
+func TestTriggerRunReportsWhyNothingRan(t *testing.T) {
+	newTrigger := func(t *testing.T, pg dump.PGTool, cycle *scheduler.Exclusive) *Trigger {
+		t.Helper()
+		orch := dump.New(&dump.Params{
+			PG:          pg,
+			Logger:      discard(),
+			DumpDir:     t.TempDir(),
+			Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
+			DumpTimeout: 30 * time.Second,
+			Concurrency: 1,
+		})
+		return NewTrigger(&dump.Guard{}, cycle, orch, discard())
+	}
+	check := func(t *testing.T, results []dump.Result, outcome scheduler.Outcome, err error, want scheduler.Outcome) {
+		t.Helper()
+		if outcome != want || err != nil {
+			t.Errorf("Trigger.Run() = (%v, %v), want (%v, nil)", outcome, err, want)
+		}
+		if results != nil {
+			t.Errorf("Trigger.Run() results = %+v, want nil (nothing ran)", results)
+		}
+	}
+
+	t.Run("shutdown gate closed", func(t *testing.T) {
+		gated := scheduler.NewExclusive(t.TempDir(), discard(), scheduler.WithGate(func() bool { return false }))
+		results, outcome, err := newTrigger(t, &stubPG{}, gated).Run()
+		check(t, results, outcome, err, scheduler.OutcomeGated)
+	})
+	t.Run("cycle lock held by another process", func(t *testing.T) {
+		cycleDir := t.TempDir()
+		lock, ok, err := scheduler.TryLock(filepath.Join(cycleDir, scheduler.ExclusiveLockName))
+		if err != nil || !ok {
+			t.Fatalf("TryLock(cycle.lock) = ok=%v err=%v, want held", ok, err)
+		}
+		defer lock.Unlock()
+		results, outcome, err := newTrigger(t, &stubPG{}, scheduler.NewExclusive(cycleDir, discard())).Run()
+		check(t, results, outcome, err, scheduler.OutcomeSkipped)
+	})
+	t.Run("guard held in this process", func(t *testing.T) {
+		pg := &stubPG{entered: make(chan struct{}), release: make(chan struct{})}
+		tr := newTrigger(t, pg, scheduler.NewExclusive(t.TempDir(), discard()))
+		first := make(chan scheduler.Outcome, 1)
+		go func() {
+			_, outcome, _ := tr.Run()
+			first <- outcome
+		}()
+		<-pg.entered
+
+		results, outcome, err := tr.Run()
+		close(pg.release)
+		check(t, results, outcome, err, scheduler.OutcomeSkipped)
+		if got := <-first; got != scheduler.OutcomeRan {
+			t.Errorf("first Trigger.Run() outcome = %v, want ran", got)
+		}
+	})
 }
 
 // Rerun demand queued while the server's cycle is in flight is executed by

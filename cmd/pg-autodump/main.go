@@ -396,25 +396,24 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 	return 0
 }
 
-// unwindBudget bounds the teardown's waits once the drain budget is spent: a
-// cancelled dump stopping pg_dump and removing its temp, and the timer
-// goroutine returning.
+// unwindBudget bounds the teardown's waits after the drain: a cancelled dump
+// stopping pg_dump and removing its temp, then the timer goroutine returning.
 const unwindBudget = 5 * time.Second
 
 // drainInFlightDump returns a webhttp.Run teardown callback that waits for any
 // in-flight dump to finish within the remaining drain budget and, if it does
 // not, cancels it so pg_dump is killed cleanly and its staged temp removed.
-// It then waits for the timer goroutine (tickerDone), so nothing the server
-// started can still log once it returns. HTTP requests are already drained by
-// the time it runs.
+// Once the dump has unwound it waits for the timer goroutine (tickerDone), so
+// nothing the server started can still log after it returns; a dump that does
+// not unwind makes it give up without that wait. HTTP requests are already
+// drained by the time it runs.
 func drainInFlightDump(guard *dump.Guard, tickerDone <-chan struct{}, grace time.Duration, log *slog.Logger) func(context.Context) {
 	return func(drainCtx context.Context) {
 		if !guard.WaitIdle(drainCtx) {
 			log.Warn("drain budget exceeded; cancelling in-flight dump", "grace", grace)
 			guard.CancelInFlight()
 		}
-		// A fresh budget: drainCtx may already be spent, and both waits end
-		// promptly once the closed cycle gate refuses new runs.
+		// A fresh budget: drainCtx may already be spent.
 		unwindCtx, unwindCancel := context.WithTimeout(context.Background(), unwindBudget)
 		defer unwindCancel()
 		if !guard.WaitIdle(unwindCtx) {

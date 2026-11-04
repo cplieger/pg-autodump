@@ -22,16 +22,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/pg"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/slogx"
-	"github.com/cplieger/webhttp/v4"
 )
 
 func main() { os.Exit(run(os.Args, os.Getenv)) }
@@ -159,7 +159,7 @@ func bootHealth(cfg *config.Config, latch *health.Latch, log *slog.Logger) (star
 	return rec, healthy
 }
 
-// beginDrain returns the pre-drain hook webhttp.Run invokes before it drains:
+// beginDrain returns the pre-drain hook httpserver.Run invokes before it drains:
 // it names the shutdown cause and latches health unhealthy. The latch, not a
 // bare marker write, is what stops a cycle completing during the drain from
 // restoring healthy.
@@ -204,7 +204,7 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return fmt.Errorf("create cycle dir parent %s: %w", filepath.Dir(dir), err)
 	}
-	if _, err := atomicfile.EnsurePrivateDir(dir, atomicfile.WithLogger(log)); err != nil {
+	if _, err := filesafe.EnsurePrivateDir(dir, filesafe.WithLogger(log)); err != nil {
 		return fmt.Errorf("create cycle dir %s: %w", dir, err)
 	}
 	return nil
@@ -298,10 +298,10 @@ func runServer(getenv func(string) string) int {
 	// does not cover. A fatal serve error runs only the serve-exit hook, with
 	// ctx still live, so it cancels ctx to stop the timer first.
 	teardown := drainInFlightDump(guard, tickerDone, cfg.ShutdownTimeout, log)
-	if err := webhttp.Run(ctx, srv, ln, teardown,
-		webhttp.WithShutdownGrace(cfg.ShutdownTimeout),
-		webhttp.WithPreDrain(beginDrain(ctx, latch, log)),
-		webhttp.WithServeExit(func(exitCtx context.Context) {
+	if err := httpserver.Run(ctx, srv, ln, teardown,
+		httpserver.WithShutdownGrace(cfg.ShutdownTimeout),
+		httpserver.WithPreDrain(beginDrain(ctx, latch, log)),
+		httpserver.WithServeExit(func(exitCtx context.Context) {
 			stop()
 			teardown(exitCtx)
 		})); err != nil {
@@ -400,7 +400,7 @@ func exitForRun(outcome scheduler.Outcome, exErr error, results []dump.Result, r
 // stopping pg_dump and removing its temp, then the timer goroutine returning.
 const unwindBudget = 5 * time.Second
 
-// drainInFlightDump returns a webhttp.Run teardown callback that waits for any
+// drainInFlightDump returns a httpserver.Run teardown callback that waits for any
 // in-flight dump to finish within the remaining drain budget and, if it does
 // not, cancels it so pg_dump is killed cleanly and its staged temp removed.
 // Once the dump has unwound it waits for the timer goroutine (tickerDone); a
@@ -421,7 +421,7 @@ func drainInFlightDump(guard *dump.Guard, tickerDone <-chan struct{}, grace time
 			log.Warn("shutdown complete; in-flight dump did not unwind within the cancel budget", "grace", grace)
 			return
 		}
-		if !webhttp.AwaitDone(unwindCtx, tickerDone) {
+		if !httpserver.AwaitDone(unwindCtx, tickerDone) {
 			log.Warn("shutdown complete; the built-in timer did not stop within the cancel budget", "grace", grace)
 			return
 		}

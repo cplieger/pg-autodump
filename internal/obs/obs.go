@@ -9,7 +9,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/pg-autodump/internal/pg"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
@@ -43,13 +43,13 @@ func Preflight(dumpDir string, specs []spec.DBSpec) error {
 
 var errEmptySpecs = errors.New("DB_SPECS is empty")
 
-// dirWritable confirms dir accepts atomicfile's create/write/sync/close/unlink
+// dirWritable confirms dir accepts filesafe's create/write/sync/close/unlink
 // ladder under the owner-only mode every dump temp is written with; a leftover
 // probe file is reclaimable by dump.ReclaimOrphans.
 func dirWritable(ctx context.Context, dir string) error {
 	// ProbeWritable checks ctx once before it creates anything, so this bounds
 	// when the probe starts rather than how long a wedged write may take.
-	res, err := atomicfile.ProbeWritable(ctx, dir, atomicfile.WithMode(0o600))
+	res, err := filesafe.ProbeWritable(ctx, dir, filesafe.WithMode(0o600))
 	if err != nil {
 		return fmt.Errorf("dump dir write probe not attempted: %w", err)
 	}
@@ -60,16 +60,16 @@ func dirWritable(ctx context.Context, dir string) error {
 // ProbeResult.Writable, which accepts a Close failure. A Remove failure only
 // warns: a dump commits by rename, never by unlink, and the next cycle's
 // ReclaimOrphans reclaims the leftover.
-func probeVerdict(res atomicfile.ProbeResult) error {
+func probeVerdict(res filesafe.ProbeResult) error {
 	if res.OK() {
 		return nil
 	}
-	if res.Stage == atomicfile.ProbeStageRemove {
+	if res.Stage == filesafe.ProbeStageRemove {
 		slog.Warn("dump dir refuses to remove its writability probe; reclaimed by the stale-temp sweep",
 			"dir", res.Dir, "probe", res.Name, "err", res.Err)
 		return nil
 	}
-	if errors.Is(res.Err, atomicfile.ErrModeNotStored) {
+	if errors.Is(res.Err, filesafe.ErrModeNotStored) {
 		return fmt.Errorf("dump dir %q cannot hold an owner-only (0600) dump file; "+
 			"check the volume for an inherited ACL or mount option that widens new files: %w",
 			res.Dir, res.Err)

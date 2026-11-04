@@ -22,8 +22,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // ErrNoDeadline is returned by every boundary method when handed a context

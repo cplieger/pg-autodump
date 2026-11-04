@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
 )
 
 func TestDirWritable(t *testing.T) {
@@ -27,7 +27,7 @@ func TestDirWritable(t *testing.T) {
 
 	// The probe leaves nothing behind on the happy path; asserted by reading
 	// the directory rather than globbing a probe name, since the name is now
-	// atomicfile's temp shape.
+	// filesafe's temp shape.
 	t.Run("probe file is removed after a successful check", func(t *testing.T) {
 		dir := t.TempDir()
 		if err := dirWritable(t.Context(), dir); err != nil {
@@ -58,9 +58,9 @@ func TestDirWritable(t *testing.T) {
 		if err == nil {
 			t.Fatal("dirWritable(read-only dir) = nil, want an error")
 		}
-		if !strings.Contains(err.Error(), atomicfile.ProbeStageCreate.String()) {
+		if !strings.Contains(err.Error(), filesafe.ProbeStageCreate.String()) {
 			t.Errorf("dirWritable() error = %v, want it to name the %q stage",
-				err, atomicfile.ProbeStageCreate)
+				err, filesafe.ProbeStageCreate)
 		}
 		if strings.Contains(err.Error(), "not attempted") {
 			t.Errorf("dirWritable() error = %v, a real refusal must not be reported as an unattempted probe", err)
@@ -72,13 +72,13 @@ func TestDirWritable(t *testing.T) {
 // read as that, not as a generic write failure, so the operator fixes the
 // volume rather than its permissions.
 func TestProbeVerdictNamesAModeTheFilesystemWidened(t *testing.T) {
-	res := atomicfile.ProbeResult{
+	res := filesafe.ProbeResult{
 		Dir:   "/dumps",
-		Stage: atomicfile.ProbeStageCreate,
-		Err:   fmt.Errorf("%w: /dumps/.atomicfile-1.tmp: asked for 0600, filesystem stored 0670", atomicfile.ErrModeNotStored),
+		Stage: filesafe.ProbeStageCreate,
+		Err:   fmt.Errorf("%w: /dumps/.atomicfile-1.tmp: asked for 0600, filesystem stored 0670", filesafe.ErrModeNotStored),
 	}
 	err := probeVerdict(res)
-	if !errors.Is(err, atomicfile.ErrModeNotStored) {
+	if !errors.Is(err, filesafe.ErrModeNotStored) {
 		t.Fatalf("probeVerdict(mode not stored) = %v, want it to wrap ErrModeNotStored", err)
 	}
 	if !strings.Contains(err.Error(), "owner-only (0600)") || !strings.Contains(err.Error(), "ACL") {
@@ -87,16 +87,16 @@ func TestProbeVerdictNamesAModeTheFilesystemWidened(t *testing.T) {
 }
 
 // The preflight's probe file must be a name the app's own stale-temp sweep
-// reclaims (atomicfile.TempName/IsPackageTemp), unlike the retired
+// reclaims (filesafe.TempName/IsPackageTemp), unlike the retired
 // ".pg-autodump-writable-*" name, which the sweep never recognized. The
 // reclaim half is pinned in internal/dump
 // (TestReclaimOrphansReapsRootProbeLeftovers).
 func TestDirWritableProbeNameIsReclaimable(t *testing.T) {
-	name := atomicfile.TempName()
-	if !atomicfile.IsPackageTemp(name) {
-		t.Fatalf("atomicfile.TempName() = %q, which its own sweep does not recognise", name)
+	name := filesafe.TempName()
+	if !filesafe.IsPackageTemp(name) {
+		t.Fatalf("filesafe.TempName() = %q, which its own sweep does not recognise", name)
 	}
-	if atomicfile.IsPackageTemp(".pg-autodump-writable-123") {
+	if filesafe.IsPackageTemp(".pg-autodump-writable-123") {
 		t.Error("the retired app-owned probe name is reclaimable after all; the leak this adoption fixes was not real")
 	}
 }

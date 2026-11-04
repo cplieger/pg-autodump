@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // ProbeTimeoutCap bounds the per-database reachability probe so a dead host
@@ -268,8 +268,8 @@ func (o *Orchestrator) ensureServerDir(dir string) error {
 	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 		return err
 	}
-	_, err := atomicfile.EnsurePrivateDir(dir,
-		atomicfile.WithLogger(o.log), atomicfile.WithRepairOwnedDir(true))
+	_, err := filesafe.EnsurePrivateDir(dir,
+		filesafe.WithLogger(o.log), filesafe.WithRepairOwnedDir(true))
 	return err
 }
 

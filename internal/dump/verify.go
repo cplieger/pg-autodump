@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
 )
 
 // dumpTimeFormat is the UTC timestamp embedded in retained dump filenames. It
@@ -92,7 +92,7 @@ func removeDumps(dir string, names []string) (int, error) {
 }
 
 // stageAndReplace is the load-bearing verify-before-replace invariant. It
-// streams a network pg_dump into a temp file in dir (via atomicfile, so the
+// streams a network pg_dump into a temp file in dir (via filesafe, so the
 // temp shares dir's filesystem and the replace is an atomic rename), verifies
 // the result locally, and only then commits to fileName. On any failure it
 // discards the temp and leaves any existing file untouched: a ctx
@@ -101,13 +101,13 @@ func removeDumps(dir string, names []string) (int, error) {
 func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn) Result {
 	target := filepath.Join(dir, fileName)
 
-	pending, err := atomicfile.NewPendingFile(ctx, target, atomicfile.WithMode(0o600))
+	pending, err := filesafe.NewPendingFile(ctx, target, filesafe.WithMode(0o600))
 	if err != nil {
 		// A target occupied by a directory, FIFO, device, or socket is
 		// refused here rather than at Commit; the prior dump is intact and
 		// this classifies as rename_failed, not a generic temp-create fault
 		// (ReasonOther would misname the destination problem as a temp one).
-		if errors.Is(err, atomicfile.ErrNotRegular) {
+		if errors.Is(err, filesafe.ErrNotRegular) {
 			return Result{
 				Reason: ReasonRenameFailed,
 				Detail: "target is not a regular file: " + err.Error(),

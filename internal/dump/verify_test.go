@@ -93,7 +93,7 @@ func TestStageAndReplaceContextTimeout(t *testing.T) {
 }
 
 // A cancel landing on pending.Commit must classify as killed/timeout, not
-// rename_failed: atomicfile's Commit checks ctx.Err() at the top of its
+// rename_failed: filesafe's Commit checks ctx.Err() at the top of its
 // temp-side barrier and returns a context-wrapped error, which must not be
 // mistaken for a filesystem rename fault.
 func TestStageAndReplaceCommitContextCancel(t *testing.T) {
@@ -159,7 +159,7 @@ func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 	})
 }
 
-// A cancel landing before atomicfile creates the temp file must classify as
+// A cancel landing before filesafe creates the temp file must classify as
 // killed/timeout, not the generic ReasonOther.
 func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 	dir := t.TempDir()
@@ -173,7 +173,7 @@ func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 }
 
 // A real filesystem failure under a live context must classify as
-// rename_failed. Pre-creating the target as a directory reaches this: atomicfile
+// rename_failed. Pre-creating the target as a directory reaches this: filesafe
 // refuses a non-regular write target (ErrNotRegular) at the temp-create gate,
 // same reason word as a Commit-time rename failure would give.
 func TestStageAndReplaceCommitRenameFailedLiveCtx(t *testing.T) {

@@ -301,9 +301,10 @@ func runServer(getenv func(string) string) int {
 }
 
 // serve runs srv on ln until ctx ends or Serve fails on its own, then waits
-// for the in-flight dump on guard and the timer goroutine (tickerDone) within
-// grace. stop must cancel ctx: a fatal serve error leaves ctx live, so serve
-// calls stop to end the timer before waiting for it.
+// for the in-flight dump on guard and the timer goroutine (tickerDone);
+// drainInFlightDump owns the budgets. stop must cancel ctx: a fatal serve
+// error leaves ctx live, so serve calls stop to end the timer before waiting
+// for it.
 func serve(ctx context.Context, stop context.CancelFunc, srv *http.Server, ln net.Listener,
 	guard *dump.Guard, tickerDone <-chan struct{}, latch *health.Latch, grace time.Duration, log *slog.Logger,
 ) error {

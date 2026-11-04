@@ -403,10 +403,11 @@ const unwindBudget = 5 * time.Second
 // drainInFlightDump returns a webhttp.Run teardown callback that waits for any
 // in-flight dump to finish within the remaining drain budget and, if it does
 // not, cancels it so pg_dump is killed cleanly and its staged temp removed.
-// Once the dump has unwound it waits for the timer goroutine (tickerDone), so
-// nothing the server started can still log after it returns; a dump that does
-// not unwind makes it give up without that wait. HTTP requests are already
-// drained by the time it runs.
+// Once the dump has unwound it waits for the timer goroutine (tickerDone); a
+// dump that does not unwind makes it give up without that wait. On the graceful
+// path HTTP requests are already drained. On the serve-exit path the caller has
+// cancelled the signal context and requests are not drained, so a request
+// handler can still log after it returns.
 func drainInFlightDump(guard *dump.Guard, tickerDone <-chan struct{}, grace time.Duration, log *slog.Logger) func(context.Context) {
 	return func(drainCtx context.Context) {
 		if !guard.WaitIdle(drainCtx) {

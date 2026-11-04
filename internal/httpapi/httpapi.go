@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/webhttp/v4"
 )
 
 // readHeaderTimeout guards against slow-header (slowloris) clients. There is no
@@ -103,17 +103,17 @@ func NewServer(d *Deps) *http.Server {
 	// bad-bearer flood gets 429s without an access line each, and
 	// SecurityHeaders sits innermost so its baseline survives onto a recovered
 	// 500. client_ip is the bare socket peer: no proxy fronts this sidecar.
-	handler := webhttp.Chain(mux,
+	handler := httpserver.Chain(mux,
 		authFailureLimiter(d.AuthToken),
-		webhttp.Logging(webhttp.WithLogger(log), webhttp.ProbeLogLevel("/healthz"), webhttp.WithClientIP()),
-		webhttp.Recoverer(webhttp.WithRecoverLogger(log)),
-		webhttp.SecurityHeaders(),
+		httpserver.Logging(httpserver.WithLogger(log), httpserver.ProbeLogLevel("/healthz"), httpserver.WithClientIP()),
+		httpserver.Recoverer(httpserver.WithRecoverLogger(log)),
+		httpserver.SecurityHeaders(),
 	)
 
-	return webhttp.NewServer(handler,
-		webhttp.WithReadHeaderTimeout(readHeaderTimeout),
-		webhttp.WithReadTimeout(readHeaderTimeout),
-		webhttp.WithIdleTimeout(60*time.Second),
+	return httpserver.New(handler,
+		httpserver.WithReadHeaderTimeout(readHeaderTimeout),
+		httpserver.WithReadTimeout(readHeaderTimeout),
+		httpserver.WithIdleTimeout(60*time.Second),
 	)
 }
 
@@ -160,17 +160,17 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 }
 
 // authFailureLimiter throttles repeated failed bearer attempts against
-// POST /dump with webhttp's FailedAuthRateLimit preset. A valid bearer is never
+// POST /dump with httpserver's FailedAuthRateLimit preset. A valid bearer is never
 // throttled; over-budget bad-bearer requests get 429 before the access logger
 // or handler, bounding the log-flood vector. Open mode (no token) disables it:
 // the verifier fails closed on an empty secret, so every request to a
 // deliberately open endpoint would otherwise read as a failed attempt.
-func authFailureLimiter(token string) webhttp.Middleware {
+func authFailureLimiter(token string) httpserver.Middleware {
 	if token == "" {
 		return func(next http.Handler) http.Handler { return next }
 	}
-	verify := webhttp.NewStaticTokenVerifier(token)
-	return webhttp.FailedAuthRateLimit(func(r *http.Request) bool {
+	verify := httpserver.NewStaticTokenVerifier(token)
+	return httpserver.FailedAuthRateLimit(func(r *http.Request) bool {
 		if r.Method != http.MethodPost || r.URL.Path != "/dump" {
 			return false
 		}
@@ -182,7 +182,7 @@ func authFailureLimiter(token string) webhttp.Middleware {
 // bearer that verifies against the configured token. Shared by the
 // auth-failure throttle's predicate and authMiddleware so the two can never
 // drift on what counts as a valid credential.
-func presentsValidBearer(verify webhttp.StaticTokenVerifier, r *http.Request) bool {
+func presentsValidBearer(verify httpserver.StaticTokenVerifier, r *http.Request) bool {
 	const prefix = "Bearer "
 	h := r.Header.Get("Authorization")
 	return strings.HasPrefix(h, prefix) && verify.Verify(strings.TrimPrefix(h, prefix))
@@ -198,7 +198,7 @@ func authMiddleware(token string, next http.Handler) http.Handler {
 	if token == "" {
 		return next
 	}
-	verify := webhttp.NewStaticTokenVerifier(token)
+	verify := httpserver.NewStaticTokenVerifier(token)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !presentsValidBearer(verify, r) {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)

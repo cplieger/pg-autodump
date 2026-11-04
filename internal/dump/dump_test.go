@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/slogx/capture"
 )
 
 // fixedNow pins the clock to a 2026 instant so dump filenames produced

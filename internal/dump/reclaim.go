@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
 )
 
-// reclaimAllOrphans is the maxAge for atomicfile.CleanupStaleTemps when every
+// reclaimAllOrphans is the maxAge for filesafe.CleanupStaleTemps when every
 // leftover temp is known to be an orphan: the smallest positive age reaps
 // them all, while a non-positive age would make CleanupStaleTemps a no-op.
 const reclaimAllOrphans = time.Nanosecond
@@ -18,7 +18,7 @@ const reclaimAllOrphans = time.Nanosecond
 // ReclaimOrphans removes crash-orphaned temp files under dumpDir: every
 // first-level per-server subdirectory (where dump temps stage) and the
 // DUMP_DIR root itself (where obs.Preflight's writability probe can leave one
-// behind). Both scans reap only atomicfile's own temp shape
+// behind). Both scans reap only filesafe's own temp shape
 // (".atomicfile-<digits>.tmp", regular files), so an operator's own files are
 // never touched.
 //
@@ -64,7 +64,7 @@ func ReclaimOrphans(ctx context.Context, dumpDir string, log *slog.Logger) {
 // failure is logged at Warn and still contributes whatever the sweep
 // accumulated before it stopped.
 func reclaimDir(ctx context.Context, dir string, log *slog.Logger) (removed, unreclaimed int) {
-	res, err := atomicfile.CleanupStaleTemps(ctx, dir, reclaimAllOrphans)
+	res, err := filesafe.CleanupStaleTemps(ctx, dir, reclaimAllOrphans)
 	if err != nil {
 		log.Warn("stale temp cleanup failed", "dir", dir, "err", err)
 	}

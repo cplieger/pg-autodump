@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/cplieger/atomicfile/v4"
-	"github.com/cplieger/slogx/capture"
+	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 const reclaimedMsg = "reclaimed stale temp files"
@@ -20,7 +20,7 @@ func writeFile(t *testing.T, path string) {
 	}
 }
 
-// Crash-orphaned atomicfile temps are reclaimed from the per-server
+// Crash-orphaned filesafe temps are reclaimed from the per-server
 // subdirectories where the app stages dump temps; committed dumps are left
 // alone.
 func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
@@ -48,11 +48,11 @@ func TestReclaimOrphansReapsServerSubdirs(t *testing.T) {
 // The DUMP_DIR root is scanned too: obs.Preflight's writability probe lands
 // there as an atomicfile-shaped temp, and a directory that accepts a write but
 // denies the unlink leaks one that only this sweep can reclaim. Only
-// atomicfile's exact temp shape is eligible; an operator's own root files
+// filesafe's exact temp shape is eligible; an operator's own root files
 // must survive.
 func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
 	dir := t.TempDir()
-	leakedProbe := filepath.Join(dir, atomicfile.TempName())
+	leakedProbe := filepath.Join(dir, filesafe.TempName())
 	operatorFile := filepath.Join(dir, "README-restore-steps.txt")
 	operatorLookalike := filepath.Join(dir, ".atomicfile-notes.tmp")
 	writeFile(t, leakedProbe)
@@ -73,7 +73,7 @@ func TestReclaimOrphansReapsRootProbeLeftovers(t *testing.T) {
 }
 
 // A file that only resembles a temp (non-digit middle) and a directory named
-// like one are never reclaimed: only atomicfile's exact
+// like one are never reclaimed: only filesafe's exact
 // ".atomicfile-<digits>.tmp" shape for regular files is eligible.
 func TestReclaimOrphansLeavesNonTemps(t *testing.T) {
 	dir := t.TempDir()
@@ -171,7 +171,7 @@ func TestReclaimDirReadableDirReportsCleanCounts(t *testing.T) {
 
 // A temp the sweep sees and cannot unlink is reported, not silently dropped:
 // obs.Preflight's ladder only probes the DUMP_DIR root, so a per-server
-// subdirectory that refuses an unlink is outside its reach. atomicfile counts
+// subdirectory that refuses an unlink is outside its reach. filesafe counts
 // ENOENT on either the lstat or the remove as neither removed nor failed, so a
 // benign race cannot produce this count. The sticky bit is what separates
 // "cannot unlink" from "cannot write" (only the file's owner may unlink); root
@@ -206,7 +206,7 @@ func TestReclaimOrphansReportsUnreclaimableTemps(t *testing.T) {
 	}
 }
 
-// The flat sweep can never report Unreadable: atomicfile increments that
+// The flat sweep can never report Unreadable: filesafe increments that
 // counter only for a path below the swept directory, and every sweep here is
 // one directory deep. The per-server loop visiting each subdirectory directly
 // is what actually guards against an unreadable one going unnoticed.

@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/envx/v2"
-	"github.com/cplieger/pathinside/v2"
+	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/pathinside"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/webhttp/v4"
 )
 
 // Defaults for every tunable. Exported so tests and docs share one source.
@@ -252,5 +252,5 @@ func ListenerOpenAndPublic(authToken, listenAddr string) bool {
 // unparseable address is treated as public (a spurious warning beats a
 // silently unflagged open endpoint).
 func listenIsPublic(addr string) bool {
-	return webhttp.ClassifyBind(addr) != webhttp.BindLoopback
+	return httpserver.ClassifyBind(addr) != httpserver.BindLoopback
 }

@@ -8,8 +8,8 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
-	"github.com/cplieger/scheduler/v4"
 )
 
 const testGrace = 30 * time.Second

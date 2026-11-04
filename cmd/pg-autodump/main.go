@@ -293,22 +293,32 @@ func runServer(getenv func(string) string) int {
 		"interval", cfg.DumpInterval, "boot_healthy", healthy,
 		"last_cycle", rec.last.Time, "last_cycle_ok", rec.last.OK, "record_known", rec.known)
 
-	// The pre-drain hook flips the health marker red before the drain begins:
-	// the marker is a file the healthcheck reads, which closing the listener
-	// does not cover. A fatal serve error runs only the serve-exit hook, with
-	// ctx still live, so it cancels ctx to stop the timer first.
-	teardown := drainInFlightDump(guard, tickerDone, cfg.ShutdownTimeout, log)
-	if err := httpserver.Run(ctx, srv, ln, teardown,
-		httpserver.WithShutdownGrace(cfg.ShutdownTimeout),
-		httpserver.WithPreDrain(beginDrain(ctx, latch, log)),
-		httpserver.WithServeExit(func(exitCtx context.Context) {
-			stop()
-			teardown(exitCtx)
-		})); err != nil {
+	if err := serve(ctx, stop, srv, ln, guard, tickerDone, latch, cfg.ShutdownTimeout, log); err != nil {
 		log.Error("server failed", "err", err)
 		return 1
 	}
 	return 0
+}
+
+// serve runs srv on ln until ctx ends or Serve fails on its own, then waits
+// for the in-flight dump on guard and the timer goroutine (tickerDone);
+// drainInFlightDump owns the budgets. stop must cancel ctx: a fatal serve
+// error leaves ctx live, so serve calls stop to end the timer before waiting
+// for it.
+func serve(ctx context.Context, stop context.CancelFunc, srv *http.Server, ln net.Listener,
+	guard *dump.Guard, tickerDone <-chan struct{}, latch *health.Latch, grace time.Duration, log *slog.Logger,
+) error {
+	// The pre-drain hook flips the health marker red before the drain begins:
+	// the marker is a file the healthcheck reads, which closing the listener
+	// does not cover.
+	teardown := drainInFlightDump(guard, tickerDone, grace, log)
+	return httpserver.Run(ctx, srv, ln, teardown,
+		httpserver.WithShutdownGrace(grace),
+		httpserver.WithPreDrain(beginDrain(ctx, latch, log)),
+		httpserver.WithServeExit(func(exitCtx context.Context) {
+			stop()
+			teardown(exitCtx)
+		}))
 }
 
 // runOnce implements `pg-autodump run`: exactly one signal-aware dump cycle

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // tickerPG is an always-successful dump.PGTool counting dump calls, so a test

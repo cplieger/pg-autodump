@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/webhttp/v4"
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
@@ -161,11 +161,11 @@ func TestAuthRequired(t *testing.T) {
 	})
 }
 
-// webhttp.NewStaticTokenVerifier must never authorize when the configured
+// httpserver.NewStaticTokenVerifier must never authorize when the configured
 // secret is empty, even for an empty presented credential. pg-autodump's open
 // mode (empty AUTH_TOKEN) is a bypass above this gate, not a weakening of it.
 func TestVerifierFailsClosedOnEmptyConfigured(t *testing.T) {
-	verify := webhttp.NewStaticTokenVerifier("")
+	verify := httpserver.NewStaticTokenVerifier("")
 	for _, presented := range []string{"", "sekret", "Bearer "} {
 		if verify.Verify(presented) {
 			t.Errorf("NewStaticTokenVerifier(\"\").Verify(%q) = true, want false (empty configured must never authorize)", presented)
@@ -591,7 +591,7 @@ func TestServerTimeoutsConfigured(t *testing.T) {
 	}
 }
 
-// webhttp's baseline hardening headers are present, but no CSP or HSTS: this
+// httpserver's baseline hardening headers are present, but no CSP or HSTS: this
 // is a plain-HTTP, non-browser control endpoint, and HSTS would make a
 // browser refuse plain HTTP to the host.
 func TestSecurityHeadersPresent(t *testing.T) {
@@ -618,7 +618,7 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	}
 }
 
-// throttleProbeAttempts must exceed webhttp.FailedAuthRateLimit's burst.
+// throttleProbeAttempts must exceed httpserver.FailedAuthRateLimit's burst.
 const throttleProbeAttempts = 64
 
 // Bad attempts inside the preset's burst pass to their 401s, the flood is

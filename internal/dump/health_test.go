@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // healthOrchestrator wires an orchestrator over pgf whose cycle verdicts land

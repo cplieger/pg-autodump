@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cplieger/keyenc"
+	"github.com/cplieger/go/keyenc"
 )
 
 // DefaultPort is the PostgreSQL port assumed when a spec omits one.
@@ -182,7 +182,7 @@ func splitFields(tok string) (host, portStr, dbname, user, invalid string) {
 // validateHost's grammar) keeps the two namespaces disjoint, and ':'->'-' is
 // reversible because a canonical IPv6 literal never contains '-'.
 //
-// Deliberately NOT routed through cplieger/keyenc, unlike the dedupe key in
+// Deliberately NOT routed through cplieger/go/keyenc, unlike the dedupe key in
 // Parse: the output is persisted state (an existing on-disk directory name
 // that nothing here migrates) and a filename, where keyenc's ':'/'\' escaping
 // would break existing deployments and NAME_MAX budgeting alike. This

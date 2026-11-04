@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 )

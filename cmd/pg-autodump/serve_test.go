@@ -13,11 +13,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // heldPG is a dump.PGTool whose one Dump stays in flight until release is

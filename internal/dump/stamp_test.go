@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/slogx/capture"
 )
 
 // A cycle in which every configured database dumped and verified records a

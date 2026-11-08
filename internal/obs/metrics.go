@@ -105,7 +105,7 @@ func newDumpDirCollector(dumpDir string, specs []spec.DBSpec) *measure.Collector
 	}, newest, free)
 }
 
-// CountDumps implements dump.Recorder.
+// CountDumps counts every result, a cycle shutdown cut short included.
 func (m *Metrics) CountDumps(results []dump.Result) {
 	for i := range results {
 		d := databaseOf(&results[i])
@@ -113,9 +113,9 @@ func (m *Metrics) CountDumps(results []dump.Result) {
 	}
 }
 
-// RecordVerdict implements dump.Recorder. A database is ok only when every
-// result for it is, so a duplicate entry keeps it failed as long as the cycle
-// reports failed.
+// RecordVerdict sets the gauges from a cycle with a verdict. A database is ok
+// only when every result for it is, so a duplicate entry keeps it failed as
+// long as the cycle reports failed.
 func (m *Metrics) RecordVerdict(results []dump.Result, end time.Time) {
 	ok := make(map[database]bool, len(results))
 	for i := range results {

@@ -141,7 +141,7 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which.
 
 ## Documentation
 

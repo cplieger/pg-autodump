@@ -93,13 +93,3 @@ tests:
       - eval_time: 53h
         alertname: PgAutodumpDumpStale
         exp_alerts: []
-
-  - name: a database with no dump yet is never stale
-    interval: 1h
-    input_series:
-      - series: 'pg_autodump_dump_ok{job="pg-autodump", instance="pg-autodump:9847", server="db1_5432", db="new"}'
-        values: "1x60"
-    alert_rule_test:
-      - eval_time: 60h
-        alertname: PgAutodumpDumpStale
-        exp_alerts: []

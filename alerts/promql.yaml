@@ -5,8 +5,11 @@
 # severity labels are starting points. The 50h window is two runs of the default
 # 24h DUMP_INTERVAL plus time for the run; set it to two intervals plus a run's
 # time. PgAutodumpDumpStale and PgAutodumpDown exist only in this file; in
-# alerts/logql.yaml, PgAutodumpCycleMissing covers the same problems. Notes are
-# in docs/monitoring.md.
+# alerts/logql.yaml, PgAutodumpCycleMissing covers the same problems. The
+# series come from the resident server: a one-shot `run` container serves no
+# /metrics, so alert on your scheduler's job result there, and a `run` started
+# with docker exec is seen by PgAutodumpDumpStale but not by
+# PgAutodumpDumpFailed. Notes are in docs/monitoring.md.
 groups:
   - name: pg-autodump
     rules:

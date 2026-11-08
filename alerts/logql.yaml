@@ -1,7 +1,8 @@
 # Alert rules for pg-autodump as a Loki ruler (LogQL) group. This file is the
 # alternative to alerts/promql.yaml: load one of the two, not both. The rules
-# read the `dump cycle complete` record every cycle writes once at INFO, so
-# keep the container's INFO lines if your log collector filters by level.
+# read the `dump cycle complete` record every finished cycle writes once at
+# INFO, so keep the container's INFO lines if your log collector filters by
+# level. A cycle a stop cuts short writes no record and changes no alert.
 # Change the `container` selector to the label your log collector sets.
 # Thresholds, windows and severity labels are starting points. The 50h windows
 # are two runs of the default 24h DUMP_INTERVAL plus time for the run; set them

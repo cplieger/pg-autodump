@@ -126,10 +126,11 @@ func absDumpDir(dir string) string {
 // Run executes every spec and returns one Result per database in spec order;
 // invalid and duplicate specs yield a Result without being dispatched. It must
 // be the only run in flight (callers hold the in-process guard and the cycle
-// lock), because it first reclaims every temp file as a crash orphan. It ends
-// with the "dump cycle complete" line the Loki absence rule keys on and, unless
-// shutdown cancelled the cycle, writes CycleOK to the last-run record and the
-// health sink.
+// lock), because it first reclaims every temp file as a crash orphan. A cycle
+// with a verdict ends with the "dump cycle complete" record the log alert
+// rules read and writes CycleOK to the last-run record, the health sink and
+// the metrics. A cycle shutdown cut short logs "dump cycle cut short" instead
+// and records no verdict, so the previous one stands.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()
@@ -163,20 +164,21 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 			failedN++
 		}
 	}
-	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
 	if o.metrics != nil {
 		o.metrics.CountDumps(results)
 	}
 
-	// A cycle cut short by shutdown has no verdict to record: this ctx is
-	// cancelled only by the drain's CancelInFlight or a one-shot run's signal,
-	// and killed dumps are an expected operator action rather than a dump
-	// failure (see levelFor). Recording one would leave a container recreated
-	// mid-cycle unhealthy until the next trigger, so the previous cycle's
-	// verdict stands and the drain latch owns shutdown health.
+	// A cycle cut short by shutdown has no verdict: this ctx is cancelled only
+	// by the drain's CancelInFlight or a one-shot run's signal, and killed dumps
+	// are an operator action (levelFor). Recording one would leave a container
+	// recreated mid-cycle unhealthy until the next trigger, so the previous
+	// verdict stands and the drain latch owns shutdown health. The log alerts
+	// read the cycle complete record as the verdict, so it is never written here.
 	if ctx.Err() != nil {
+		o.log.Warn("dump cycle cut short", "total", len(results), "ok", okN, "failed", failedN)
 		return results
 	}
+	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
 	ok := CycleOK(results)
 	o.recordCycle(ok)
 	if o.health != nil {
@@ -338,9 +340,10 @@ func levelFor(r Reason) slog.Level {
 	case ReasonOK:
 		return slog.LevelInfo
 	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
-		// ReasonKilled is only produced by a graceful shutdown cancelling an
-		// in-flight dump, so it's an expected operator action, not a dump
-		// failure — Warn avoids false-firing the Loki dump-failure alert.
+		// ReasonKilled comes only from a graceful shutdown cancelling an
+		// in-flight dump: an expected operator action, not a dump failure.
+		// The log alerts never see it, because a cut-short cycle writes no
+		// cycle complete record (Run).
 		return slog.LevelWarn
 	default:
 		return slog.LevelError

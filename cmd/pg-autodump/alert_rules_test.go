@@ -68,11 +68,17 @@ func ruleExprs(t *testing.T, path string) map[string]string {
 	return rules
 }
 
-// cycleEnv is a DB_SPECS with one database that dumps and one whose server
-// refuses the connection, on a fresh DUMP_DIR.
-func cycleEnv(t *testing.T) config.Config {
+// Two DB_SPECS for cycleEnv: one database that dumps, and the same plus one
+// whose server refuses the connection.
+const (
+	goodSpecs   = "h1:5432:app:u"
+	failedSpecs = "h1:5432:app:u down:5432:app:u"
+)
+
+// cycleEnv is the config of specs on a fresh DUMP_DIR.
+func cycleEnv(t *testing.T, specs string) config.Config {
 	t.Helper()
-	env := map[string]string{"DB_SPECS": "h1:5432:app:u down:5432:app:u", "DUMP_DIR": t.TempDir()}
+	env := map[string]string{"DB_SPECS": specs, "DUMP_DIR": t.TempDir()}
 	cfg, _, err := config.Load(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +88,7 @@ func cycleEnv(t *testing.T) config.Config {
 
 // runCycle runs one cycle over cfg through the real orchestrator, logging
 // through the production text handler, and returns the log.
-func runCycle(t *testing.T, cfg *config.Config, metrics dump.Recorder) string {
+func runCycle(ctx context.Context, t *testing.T, cfg *config.Config, metrics dump.Recorder) string {
 	t.Helper()
 	var buf bytes.Buffer
 	handler, _ := slogx.NewHandler(slogx.Options{Output: &buf})
@@ -96,7 +102,7 @@ func runCycle(t *testing.T, cfg *config.Config, metrics dump.Recorder) string {
 		Concurrency: cfg.DumpConcurrency,
 		Keep:        cfg.DumpKeep,
 	})
-	orch.Run(t.Context())
+	orch.Run(ctx)
 	return buf.String()
 }
 
@@ -137,9 +143,9 @@ func seriesNames(expr string) []string {
 // a sample. It returns each family's label names.
 func exportedFamilies(t *testing.T) map[string][]string {
 	t.Helper()
-	cfg := cycleEnv(t)
+	cfg := cycleEnv(t, failedSpecs)
 	reg, metrics := obs.NewRegistry(cfg.DumpDir, cfg.Specs, scheduler.RunRecord{}, false)
-	runCycle(t, &cfg, metrics)
+	runCycle(t.Context(), t, &cfg, metrics)
 	return familyLabels(t, reg)
 }
 
@@ -337,9 +343,9 @@ func logfmtFields(line string) map[string]string {
 // message, which appears once per cycle, and the field PgAutodumpDumpFailed
 // unwraps is a number on it.
 func TestLogQLRulesReadTheRecordTheCycleWrites(t *testing.T) {
-	cfg := cycleEnv(t)
+	cfg := cycleEnv(t, failedSpecs)
 	var records []string
-	for line := range strings.Lines(runCycle(t, &cfg, nil)) {
+	for line := range strings.Lines(runCycle(t.Context(), t, &cfg, nil)) {
 		if strings.Contains(line, "dump cycle complete") {
 			records = append(records, line)
 		}
@@ -369,43 +375,85 @@ func TestLogQLRulesReadTheRecordTheCycleWrites(t *testing.T) {
 	}
 }
 
-// TestLogQLDumpFailedHoldsUntilACycleSucceeds is the state rule's fixture: the
-// latest record in the window decides, so a failed cycle fires it until a
-// good cycle follows, and the good one resolves it.
+// cycleRecords runs one real cycle over specs and returns the value of field
+// on each line filter selects: the records a LogQL rule sees for that cycle.
+func cycleRecords(ctx context.Context, t *testing.T, specs, filter, field string) []float64 {
+	t.Helper()
+	cfg := cycleEnv(t, specs)
+	var values []float64
+	for line := range strings.Lines(runCycle(ctx, t, &cfg, nil)) {
+		if !strings.Contains(line, filter) {
+			continue
+		}
+		v, err := strconv.ParseFloat(logfmtFields(line)[field], 64)
+		if err != nil {
+			t.Fatalf("record %q carries no number in %s", line, field)
+		}
+		values = append(values, v)
+	}
+	return values
+}
+
+// TestLogQLDumpFailedHoldsUntilACycleSucceeds is the state rule's fixture over
+// the records real cycles write: the latest record in the window decides, so
+// a failed cycle fires it until a good cycle follows, and a cycle a shutdown
+// cut short changes nothing either way.
 func TestLogQLDumpFailedHoldsUntilACycleSucceeds(t *testing.T) {
 	expr := ruleExprs(t, logqlRules)["PgAutodumpDumpFailed"]
 	if !strings.HasPrefix(expr, "last_over_time(") || !strings.Contains(expr, ") by (container) > 0") {
 		t.Fatalf("PgAutodumpDumpFailed is not last_over_time by container > 0: %s", expr)
 	}
 	m := windowRe.FindStringSubmatch(expr)
-	if m == nil {
-		t.Fatalf("PgAutodumpDumpFailed has no range: %s", expr)
+	filter := lineFilterRe.FindStringSubmatch(expr)
+	field := logfmtRe.FindStringSubmatch(expr)
+	if m == nil || filter == nil || field == nil {
+		t.Fatalf("PgAutodumpDumpFailed has no range, line filter or unwrapped field: %s", expr)
 	}
 	hours, _ := strconv.Atoi(m[1])
 	window := time.Duration(hours) * time.Hour
+
+	cutShort, cancel := context.WithCancel(t.Context())
+	cancel()
+	cycles := map[string][]float64{
+		"good":      cycleRecords(t.Context(), t, goodSpecs, filter[1], field[2]),
+		"failed":    cycleRecords(t.Context(), t, failedSpecs, filter[1], field[2]),
+		"cut short": cycleRecords(cutShort, t, goodSpecs, filter[1], field[2]),
+	}
 	type record struct {
 		at     time.Duration
 		failed float64
 	}
-	// firing evaluates last_over_time(...)[window] > 0 at `at`.
-	firing := func(records []record, at time.Duration) bool {
+	// firing evaluates last_over_time(...)[window] > 0 at `at` over the
+	// records of cycles run one a day, the first at 0.
+	firing := func(at time.Duration, kinds ...string) bool {
+		var recs []record
+		for day, kind := range kinds {
+			for _, v := range cycles[kind] {
+				recs = append(recs, record{at: time.Duration(day) * 24 * time.Hour, failed: v})
+			}
+		}
 		last, seen := 0.0, false
-		for _, r := range records {
+		for _, r := range recs {
 			if r.at <= at && at-r.at < window {
 				last, seen = r.failed, true
 			}
 		}
 		return seen && last > 0
 	}
-	recs := []record{{at: 0, failed: 1}}
-	if !firing(recs, time.Hour) {
+
+	if !firing(time.Hour, "failed") {
 		t.Error("does not fire an hour after a failed cycle")
 	}
-	if !firing(recs, 23*time.Hour) {
+	if !firing(23*time.Hour, "failed") {
 		t.Error("resolved 23 hours after a failed cycle with no cycle since; a count window would, a state rule must not")
 	}
-	recs = append(recs, record{at: 24 * time.Hour, failed: 0})
-	if firing(recs, 25*time.Hour) {
+	if firing(25*time.Hour, "failed", "good") {
 		t.Error("still fires after a good cycle followed the failed one")
+	}
+	if firing(25*time.Hour, "good", "cut short") {
+		t.Error("fires after a good cycle and then a cycle a shutdown cut short; want it to stay resolved")
+	}
+	if !firing(25*time.Hour, "failed", "cut short") {
+		t.Error("resolved after a failed cycle and then a cycle a shutdown cut short; want it still firing")
 	}
 }

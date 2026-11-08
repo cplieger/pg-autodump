@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -95,7 +97,7 @@ func checkSeries(t *testing.T, got, want map[string]float64) {
 // and records the cycle's time and its failed verdict.
 func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u down:5432:app:u h2:5433:billing:u")
-	reg, m := NewRegistry(specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
 	before := time.Now()
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
@@ -131,7 +133,7 @@ func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 // the two results arrive in.
 func TestADuplicateEntryKeepsItsDatabaseFailed(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u h1:5432:app:u")
-	reg, m := NewRegistry(specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
 
@@ -162,7 +164,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reg, _ := NewRegistry(specs, tc.rec, tc.known)
+			reg, _ := NewRegistry(t.TempDir(), specs, tc.rec, tc.known)
 			got := series(t, reg)
 			for _, db := range []struct{ server, name string }{{"h1_5432", "app"}, {"_5432", "not-a-spec"}} {
 				for _, r := range dump.Reasons() {
@@ -194,7 +196,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 // record.
 func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -212,11 +214,11 @@ func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 	dumpDir := t.TempDir()
 	before := spec.Parse("h1:5432:app:u h1:5432:gone:u")
-	_, m := NewRegistry(before, scheduler.RunRecord{}, false)
+	_, m := NewRegistry(dumpDir, before, scheduler.RunRecord{}, false)
 	runCycle(t.Context(), t, dumpDir, before, m)
 
 	after := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(after, scheduler.RunRecord{Time: time.Now(), OK: true}, true)
+	reg, m := NewRegistry(dumpDir, after, scheduler.RunRecord{Time: time.Now(), OK: true}, true)
 	runCycle(t.Context(), t, dumpDir, after, m)
 
 	got := series(t, reg)
@@ -226,4 +228,55 @@ func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 		}
 	}
 	checkSeries(t, got, map[string]float64{key("dump_ok", "h1_5432", "app"): 1})
+	if _, ok := got[key("newest_dump_timestamp_seconds", "h1_5432", "app")]; !ok {
+		t.Error("newest_dump_timestamp_seconds has no series for app, which is still configured and dumped")
+	}
+}
+
+// writeDump creates a dump file under dumpDir/server with modification time
+// at.
+func writeDump(t *testing.T, dumpDir, server, name string, at time.Time) {
+	t.Helper()
+	dir := filepath.Join(dumpDir, server)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(fakeDump), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, at, at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The newest verified dump's time is read from the files when Prometheus
+// scrapes: the stable name or the newest retained one, never another
+// database's file or a staging temp, and a database with no dump yet has no
+// sample. Gather reports no dropped sample.
+func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
+	dumpDir := t.TempDir()
+	stable := time.Date(2026, 11, 3, 2, 0, 0, 0, time.UTC)
+	older := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
+	writeDump(t, dumpDir, "h1_5432", "app.dump", stable)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261104T020000Z.dump", older)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261105T020000Z.dump", newer)
+	writeDump(t, dumpDir, "h1_5432", "keep2.dump", newer.Add(time.Hour))
+	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", newer.Add(2*time.Hour))
+	specs := spec.Parse("h1:5432:app:u h1:5432:keep:u h1:5432:never:u")
+
+	reg, _ := NewRegistry(dumpDir, specs, scheduler.RunRecord{}, false)
+
+	got := series(t, reg)
+	checkSeries(t, got, map[string]float64{
+		key("newest_dump_timestamp_seconds", "h1_5432", "app"):  float64(stable.Unix()),
+		key("newest_dump_timestamp_seconds", "h1_5432", "keep"): float64(newer.Unix()),
+	})
+	if v, ok := got[key("newest_dump_timestamp_seconds", "h1_5432", "never")]; ok {
+		t.Errorf("newest_dump_timestamp_seconds for a database with no dump = %v, want no sample", v)
+	}
+	if free := got[key("dump_dir_free_bytes", "")]; free <= 0 {
+		t.Errorf("dump_dir_free_bytes = %v, want the free space of the temp dir's filesystem", free)
+	}
 }

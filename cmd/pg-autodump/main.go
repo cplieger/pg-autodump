@@ -269,7 +269,7 @@ func runServer(getenv func(string) string) int {
 	reclaimAtStartup(ctx, cfg.DumpDir, log)
 
 	guard := &dump.Guard{}
-	reg, metrics := obs.NewRegistry(cfg.Specs, rec.last, rec.known)
+	reg, metrics := obs.NewRegistry(cfg.DumpDir, cfg.Specs, rec.last, rec.known)
 	orch := newOrchestrator(&cfg, log, latch, metrics)
 	trigger := httpapi.NewTrigger(guard, cycle, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{

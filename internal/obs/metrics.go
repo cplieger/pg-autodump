@@ -1,6 +1,8 @@
 package obs
 
 import (
+	"context"
+	"slices"
 	"time"
 
 	"github.com/cplieger/go/measure"
@@ -10,6 +12,9 @@ import (
 )
 
 const metricsPrefix = "pg_autodump"
+
+// perDB are the labels of every per-database series.
+var perDB = []string{"server", "db"}
 
 // Metrics holds the series a dump cycle sets.
 type Metrics struct {
@@ -35,12 +40,12 @@ func databaseOf(r *dump.Result) database {
 // cycle records into. Every entry of specs has its series from the start, and
 // last, the last-run record read at boot (known is false when there is none),
 // seeds the last-result and last-cycle gauges: the record does not say which
-// database failed, so a failed record seeds every entry failed.
-func NewRegistry(specs []spec.DBSpec, last scheduler.RunRecord, known bool) (*measure.Registry, *Metrics) {
-	perDB := []string{"server", "db"}
+// database failed, so a failed record seeds every entry failed. The files
+// under dumpDir are read at each scrape.
+func NewRegistry(dumpDir string, specs []spec.DBSpec, last scheduler.RunRecord, known bool) (*measure.Registry, *Metrics) {
 	m := &Metrics{
 		dumps: measure.NewLabeledCounter("dumps_total",
-			"Dumps by database and result.", []string{"server", "db", "result"}),
+			"Dumps by database and result.", append(slices.Clone(perDB), "result")),
 		dumpOK: measure.NewLabeledGauge("dump_ok",
 			"1 unless the database's latest dump failed; 0 for every database after a restart that read a failed last-run record.", perDB),
 		bytes: measure.NewLabeledGauge("dump_bytes",
@@ -53,7 +58,7 @@ func NewRegistry(specs []spec.DBSpec, last scheduler.RunRecord, known bool) (*me
 			"1 when every database dumped and verified in the latest cycle, else 0."),
 	}
 	reg := measure.NewRegistry(metricsPrefix)
-	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK)
+	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK, newDumpDirCollector(dumpDir, specs))
 
 	okSeed := 1.0
 	if known && !last.OK {
@@ -74,6 +79,30 @@ func NewRegistry(specs []spec.DBSpec, last scheduler.RunRecord, known bool) (*me
 		m.cycleOK.Set(digit(last.OK))
 	}
 	return reg, m
+}
+
+// newDumpDirCollector reads the dump directory at each scrape, so its series
+// survive a restart and count dumps an exec'd `pg-autodump run` wrote.
+func newDumpDirCollector(dumpDir string, specs []spec.DBSpec) *measure.Collector {
+	newest := measure.NewGaugeDesc("newest_dump_timestamp_seconds",
+		"Modification time of the database's newest verified dump under DUMP_DIR; absent until its first dump.",
+		perDB)
+	free := measure.NewGaugeDesc("dump_dir_free_bytes",
+		"Bytes free to the container user on the filesystem holding DUMP_DIR.", nil)
+	return measure.NewCollector(func(_ context.Context, e *measure.Emitter) {
+		for i := range specs {
+			s := &specs[i]
+			if s.Invalid != "" {
+				continue
+			}
+			if at, found, err := dump.NewestDump(dumpDir, s); err == nil && found {
+				e.Emit(newest, unixSeconds(at), spec.ServerDir(s.Host, s.Port), s.DBName)
+			}
+		}
+		if bytes, err := dump.FreeBytes(dumpDir); err == nil {
+			e.Emit(free, float64(bytes))
+		}
+	}, newest, free)
 }
 
 // CountDumps implements dump.Recorder.

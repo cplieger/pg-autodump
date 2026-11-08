@@ -8,7 +8,7 @@ pg-autodump writes structured `key=value` logs to standard error, with UTC times
 
 - One line per database per run. A successful dump logs `msg="dump ok"` at `level=INFO`. A failure logs `msg="dump <result>"` at `level=ERROR`, for example `msg="dump auth_error"`. Each line carries `host`, `db`, `reason`, `bytes` and `duration_s`, plus `detail` on a failure. [How it works](how-it-works.md#results) lists every result.
 - `invalid`, `duplicate`, `skipped` and `killed` log at `level=WARN`. A `killed` dump is a stop you asked for, so it is not an error.
-- One `msg="dump cycle complete"` line at the end of every run that finishes, whatever started it, with `total`, `ok` and `failed` counts. A run that a stop cuts short logs `msg="dump cycle cut short"` at `level=WARN` instead, with the same counts, and records no result.
+- One `msg="dump cycle complete"` line at the end of every run that finishes, whatever started it, with `total`, `ok` and `failed` counts. A run that a stop cuts short logs `msg="dump cycle cut short"` at `level=WARN` instead, with the same counts, and keeps the previous verdict.
 - At start, a `msg="pg-autodump listening"` line with the number of databases, the interval and whether the container started healthy.
 
 ## Alerting
@@ -29,7 +29,7 @@ If you copied the two rules from an earlier version of this page, delete them an
 
 The log rules read the container's own log stream. That stream covers the resident server, where the timer, `POST /dump` and `trigger` all dump, and a one-shot container whose command is `run`. A `run` started with `docker exec` logs to that exec session instead, so in that setup alert on your scheduler's job result.
 
-The metrics come from the resident server. A one-shot container whose command is `run` serves no `/metrics`, so in that setup alert on your scheduler's job result instead of loading `alerts/promql.yaml`. A `run` started with `docker exec` updates the dump files but not the server's metrics, so `PgAutodumpDumpStale` notices its failures after 50 hours and `PgAutodumpDumpFailed` does not.
+The metrics come from the resident server. A one-shot container whose command is `run` serves no `/metrics`, so in that setup load `alerts/logql.yaml` or alert on your scheduler's job result instead. A `run` started with `docker exec` updates the dump files but not the server's metrics, so `PgAutodumpDumpStale` notices its failures after 50 hours and `PgAutodumpDumpFailed` does not.
 
 When `PgAutodumpDumpFailed` fires, the `reason` field names the cause:
 
@@ -38,7 +38,7 @@ When `PgAutodumpDumpFailed` fires, the `reason` field names the cause:
 - `truncated` and `empty` mean a bad or partial dump.
 - `other` means an environment fault, such as a PostgreSQL tool the image can no longer run.
 
-A dump cancelled by a stop logs `reason=killed` at `level=WARN`. The stop cuts its run short, and a run cut short records no result and writes no `dump cycle complete` line, so it does not trip `PgAutodumpDumpFailed` in either file.
+A dump cancelled by a stop logs `reason=killed` at `level=WARN`. The stop cuts its run short, and a run cut short keeps the previous verdict and writes no `dump cycle complete` line, so it does not trip `PgAutodumpDumpFailed` in either file.
 
 The 50-hour windows of `PgAutodumpDumpStale` and `PgAutodumpCycleMissing` are two runs of the default 24-hour `DUMP_INTERVAL` plus time for the run, so one late run does not page. If you change `DUMP_INTERVAL`, or trigger dumps on another cadence, set both windows to two intervals plus the time a run takes.
 

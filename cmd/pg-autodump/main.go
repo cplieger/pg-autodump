@@ -1,7 +1,8 @@
 // Command pg-autodump is the composition root. With no argument it runs the
 // HTTP server; `pg-autodump run` performs exactly one dump cycle and exits;
-// `pg-autodump health` runs the file-marker probe for the Docker HEALTHCHECK
-// (healthy iff the most recent cycle fully succeeded); `pg-autodump trigger`
+// `pg-autodump health` asks the server's GET /healthz for the Docker
+// HEALTHCHECK (healthy iff the most recent cycle fully succeeded and, with the
+// built-in timer, finished within the lease); `pg-autodump trigger`
 // POSTs to the local server's /dump. `trigger` and `run` differ on a busy
 // cycle: `trigger` gets 429 (demand dropped, next tick covers it) while `run`
 // queues its demand and exits 0 (the active runner owes it a cycle). Pick per
@@ -44,8 +45,7 @@ func run(args []string, getenv func(string) string) int {
 	}
 	switch sub {
 	case "health":
-		health.RunProbe(healthMarkerPath, probeOptions(getenv)...) // stats the marker and calls os.Exit
-		return 0                                                   // unreachable
+		return probeHealth(os.Stderr, getenv, healthProbeTimeout)
 	case "trigger":
 		return runTrigger(getenv)
 	case "run":
@@ -58,35 +58,49 @@ func run(args []string, getenv func(string) string) int {
 	}
 }
 
-// healthMarkerPath is the file the Docker HEALTHCHECK stats; the server and
-// any exec'd `pg-autodump run` both write it. A var so tests can point it at
+// healthMarkerPath is the file GET /healthz reads; the server and any exec'd
+// `pg-autodump run` both write it. A var so tests can point it at
 // a temp dir.
 var healthMarkerPath = health.DefaultPath
 
-// probeOptions returns the healthcheck's freshness policy; an unloadable
-// config disarms it.
-func probeOptions(getenv func(string) string) []health.ProbeOption {
-	cfg, _, err := config.Load(getenv)
-	if err != nil {
-		return nil
-	}
-	return []health.ProbeOption{health.WithMaxAge(probeLease(&cfg).Duration())}
-}
-
-// probeLease sizes the marker's freshness deadline for the probe and GET
-// /healthz: every completed cycle refreshes the marker, so in built-in timer
-// mode a marker older than two intervals plus one worst-case cycle means the
-// ticker is wedged. A zero Interval (external-trigger mode) disables the
-// lease: no cadence to judge.
+// probeLease sizes the marker's freshness deadline for GET /healthz: every
+// completed cycle refreshes the marker, so in built-in timer mode a marker
+// older than two intervals plus one worst-case cycle means the ticker is
+// wedged. A zero Interval (external-trigger mode) disables the lease: no
+// cadence to judge.
 func probeLease(cfg *config.Config) health.Lease {
 	return health.Lease{Interval: cfg.DumpInterval, Cycles: 2, Timeout: cycleRuntime(cfg), Attempts: 1}
 }
 
-// healthzSignal is the verdict GET /healthz serves: the marker within the
-// lease the probe passes to WithMaxAge, so the two never disagree.
-func healthzSignal(marker *health.Marker, cfg *config.Config) health.Signal {
-	return marker.Within(probeLease(cfg).Duration())
+// The fixed sentences GET /healthz lists; they carry no error text because the
+// endpoint answers without a token.
+const (
+	reasonNoVerdict = "no fully successful dump cycle is on record: the last one failed, " +
+		"the first after start is still running, pg-autodump is shutting down, or /tmp is not writable"
+	reasonTimerStopped = "no dump cycle has finished within two dump intervals plus one cycle's longest run, " +
+		"so the built-in timer has stopped"
+)
+
+// healthzChecks are GET /healthz's verdict: the marker present, and a present
+// marker inside probeLease. At most one fails at a time, so the reason tells a
+// failed cycle from a stopped timer.
+func healthzChecks(marker *health.Marker, cfg *config.Config) []health.Check {
+	return []health.Check{
+		{Signal: marker, Reason: reasonNoVerdict},
+		{Signal: leaseSignal{marker: marker, within: marker.Within(probeLease(cfg).Duration())}, Reason: reasonTimerStopped},
+	}
 }
+
+// leaseSignal is healthy unless the marker is present and older than the lease;
+// an absent marker is reasonNoVerdict's fault, not this one's.
+type leaseSignal struct {
+	marker *health.Marker
+	within health.Signal
+}
+
+var _ health.Signal = leaseSignal{}
+
+func (s leaseSignal) Healthy() bool { return !s.marker.Healthy() || s.within.Healthy() }
 
 // startupRecord is the last-run record as read at boot; the boot health
 // verdict and the built-in ticker share it instead of re-reading the file.
@@ -282,7 +296,7 @@ func runServer(getenv func(string) string) int {
 	srv := httpapi.NewServer(&httpapi.Deps{
 		AuthToken: cfg.AuthToken,
 		Trigger:   trigger,
-		Health:    healthzSignal(marker, &cfg),
+		Healthz:   health.CheckHandler(healthzChecks(marker, &cfg)...),
 		Metrics:   reg.Handler(),
 		Log:       log,
 	})

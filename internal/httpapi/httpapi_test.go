@@ -83,7 +83,7 @@ func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *s
 	return NewServer(&Deps{
 		AuthToken: token,
 		Trigger:   trigger,
-		Health:    okSignal{ok: true},
+		Healthz:   health.Handler(okSignal{ok: true}),
 		Metrics:   metricsPage(),
 		Log:       discard(),
 	})
@@ -257,7 +257,7 @@ func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Ma
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	return NewServer(&Deps{Trigger: trigger, Health: marker, Metrics: metricsPage(), Log: discard()}), marker
+	return NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()}), marker
 }
 
 func healthz(t *testing.T, srv *http.Server) int {
@@ -281,7 +281,7 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	srv := NewServer(&Deps{Trigger: trigger, Health: marker, Metrics: metricsPage(), Log: discard()})
+	srv := NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()})
 	marker.Set(true)
 
 	rec := post(t, srv, "")
@@ -355,7 +355,7 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
-		Health:  okSignal{ok: true},
+		Healthz: health.Handler(okSignal{ok: true}),
 		Metrics: metricsPage(),
 		Log:     logger,
 	})

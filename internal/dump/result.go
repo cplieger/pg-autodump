@@ -73,6 +73,15 @@ const (
 	ReasonSkipped         Reason = "skipped"
 )
 
+// Reasons returns every Reason value.
+func Reasons() []Reason {
+	return []Reason{
+		ReasonOK, ReasonEmpty, ReasonTruncated, ReasonTimeout, ReasonKilled, ReasonPGError,
+		ReasonConnectError, ReasonAuthError, ReasonVersionMismatch, ReasonOther, ReasonDuplicate,
+		ReasonInvalid, ReasonMkdirFailed, ReasonRenameFailed, ReasonSkipped,
+	}
+}
+
 // Result is one database's outcome from a dump run.
 type Result struct {
 	Host          string
@@ -81,6 +90,7 @@ type Result struct {
 	Detail        string // human line for the HTTP body, e.g. "ok (4823104 bytes)"
 	Bytes         int64
 	ServerVersion int // server major version from the probe (server_version_num/10000), 0 if unknown
+	Port          int
 	Duration      time.Duration
 }
 

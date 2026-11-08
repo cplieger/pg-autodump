@@ -32,6 +32,15 @@ type HealthSink interface {
 	Set(ok bool)
 }
 
+// Recorder receives each cycle's results, one per DB_SPECS entry in order.
+type Recorder interface {
+	// CountDumps counts every result, a cycle shutdown cut short included.
+	CountDumps(results []Result)
+	// RecordVerdict records a cycle that ran to its end at end; a cycle
+	// shutdown cut short has no verdict and is not passed.
+	RecordVerdict(results []Result, end time.Time)
+}
+
 // Params configures an Orchestrator. The pg boundary is injected; the rest are
 // validated config values.
 type Params struct {
@@ -39,7 +48,9 @@ type Params struct {
 	Logger *slog.Logger
 	Now    func() time.Time // injectable clock; defaults to time.Now
 	// Health receives the verdict of every cycle; nil records no health.
-	Health      HealthSink
+	Health HealthSink
+	// Metrics receives every cycle's results; nil records none.
+	Metrics     Recorder
 	DumpDir     string
 	Specs       []spec.DBSpec
 	DumpTimeout time.Duration
@@ -57,6 +68,7 @@ type Orchestrator struct {
 	freeSpace   func(string) (int64, error) // injectable disk-space probe; defaults to statfsFreeKB
 	stamp       *scheduler.Stamp
 	health      HealthSink
+	metrics     Recorder
 	dumpDir     string
 	specs       []spec.DBSpec
 	dumpTimeout time.Duration
@@ -87,6 +99,7 @@ func New(p *Params) *Orchestrator {
 		freeSpace:   statfsFreeKB,
 		stamp:       scheduler.NewStamp(StampPath(dir)),
 		health:      p.Health,
+		metrics:     p.Metrics,
 		dumpDir:     dir,
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,
@@ -151,6 +164,9 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 		}
 	}
 	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
+	if o.metrics != nil {
+		o.metrics.CountDumps(results)
+	}
 
 	// A cycle cut short by shutdown has no verdict to record: this ctx is
 	// cancelled only by the drain's CancelInFlight or a one-shot run's signal,
@@ -166,7 +182,9 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 	if o.health != nil {
 		o.health.Set(ok)
 	}
-
+	if o.metrics != nil {
+		o.metrics.RecordVerdict(results, o.now())
+	}
 	return results
 }
 
@@ -201,7 +219,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 			detail = perr.Error()
 		}
 		return o.finish(&Result{
-			Host: s.Host, DBName: s.DBName, Reason: reason,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: reason,
 			Detail: detail, ServerVersion: major, Duration: o.now().Sub(start),
 		}, perr)
 	}
@@ -215,7 +233,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
 	if err := o.ensureServerDir(dir); err != nil {
 		return o.finish(&Result{
-			Host: s.Host, DBName: s.DBName, Reason: ReasonMkdirFailed,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: ReasonMkdirFailed,
 			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
 			ServerVersion: major, Duration: o.now().Sub(start),
 		}, nil)
@@ -223,6 +241,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 
 	res := stageAndReplace(dumpCtx, o.pg, dir, dumpFileName(s.DBName, o.keep, start), conn)
 	res.Host = s.Host
+	res.Port = s.Port
 	res.DBName = s.DBName
 	res.ServerVersion = major
 	res.Duration = o.now().Sub(start)
@@ -295,18 +314,22 @@ func (o *Orchestrator) finish(r *Result, diagErr error) Result {
 	return *r
 }
 
-// invalidResult builds the Result for a spec that failed validation, using the
-// raw token as the database label when the parsed name is empty.
+// invalidResult builds the Result for a spec that failed validation.
 func invalidResult(s *spec.DBSpec) Result {
 	reason := ReasonInvalid
 	if s.Duplicate {
 		reason = ReasonDuplicate
 	}
-	db := s.DBName
-	if db == "" {
-		db = s.Raw
+	return Result{Host: s.Host, Port: s.Port, DBName: ResultDB(s), Reason: reason, Detail: s.Invalid}
+}
+
+// ResultDB is the DBName every Result for s carries: the parsed name, or the
+// raw token when an invalid entry has none.
+func ResultDB(s *spec.DBSpec) string {
+	if s.DBName == "" {
+		return s.Raw
 	}
-	return Result{Host: s.Host, DBName: db, Reason: reason, Detail: s.Invalid}
+	return s.DBName
 }
 
 // levelFor maps a Reason to the slog level its log line should use.

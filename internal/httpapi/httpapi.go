@@ -1,5 +1,6 @@
 // Package httpapi is the HTTP control surface: POST /dump (optional bearer
-// auth) and GET /healthz (the health marker, via the health library). It owns no domain
+// auth), GET /healthz (the health marker, via the health library) and GET
+// /metrics. It owns no domain
 // logic; the dump run is driven through a Trigger that both the handler and the
 // optional built-in ticker share, so single-flight lives in exactly one place.
 package httpapi
@@ -83,8 +84,10 @@ func (t *Trigger) Run() ([]dump.Result, scheduler.Outcome, error) {
 
 // Deps are the wiring NewServer needs.
 type Deps struct {
-	Trigger   *Trigger
-	Health    health.Signal
+	Trigger *Trigger
+	Health  health.Signal
+	// Metrics serves GET /metrics.
+	Metrics   http.Handler
 	Log       *slog.Logger
 	AuthToken string
 }
@@ -98,6 +101,7 @@ func NewServer(d *Deps) *http.Server {
 	mux := http.NewServeMux()
 	mux.Handle("POST /dump", authMiddleware(d.AuthToken, dumpHandler(d.Trigger, log)))
 	mux.Handle("GET /healthz", health.Handler(d.Health))
+	mux.Handle("GET /metrics", d.Metrics)
 
 	// Outermost first: the auth-failure throttle sits outside Logging so a
 	// bad-bearer flood gets 429s without an access line each, and
@@ -105,7 +109,7 @@ func NewServer(d *Deps) *http.Server {
 	// 500. client_ip is the bare socket peer: no proxy fronts this sidecar.
 	handler := httpserver.Chain(mux,
 		authFailureLimiter(d.AuthToken),
-		httpserver.Logging(httpserver.WithLogger(log), httpserver.WithProbeLogLevel("/healthz"), httpserver.WithClientIP()),
+		httpserver.Logging(httpserver.WithLogger(log), httpserver.WithProbeLogLevel("/healthz", "/metrics"), httpserver.WithClientIP()),
 		httpserver.Recoverer(httpserver.WithRecoverLogger(log)),
 		httpserver.SecurityHeaders(),
 	)

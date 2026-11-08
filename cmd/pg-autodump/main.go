@@ -212,11 +212,12 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 
 // newOrchestrator wires the dump orchestrator from validated config, shared by
 // serve and run so the two entry points never drift.
-func newOrchestrator(cfg *config.Config, log *slog.Logger, sink dump.HealthSink) *dump.Orchestrator {
+func newOrchestrator(cfg *config.Config, log *slog.Logger, sink dump.HealthSink, metrics dump.Recorder) *dump.Orchestrator {
 	return dump.New(&dump.Params{
 		PG:          pg.New(cfg.PGPassFile, cfg.StmtTimeout),
 		Logger:      log,
 		Health:      sink,
+		Metrics:     metrics,
 		DumpDir:     cfg.DumpDir,
 		Specs:       cfg.Specs,
 		DumpTimeout: cfg.DumpTimeout,
@@ -268,12 +269,14 @@ func runServer(getenv func(string) string) int {
 	reclaimAtStartup(ctx, cfg.DumpDir, log)
 
 	guard := &dump.Guard{}
-	orch := newOrchestrator(&cfg, log, latch)
+	reg, metrics := obs.NewRegistry(cfg.Specs, rec.last, rec.known)
+	orch := newOrchestrator(&cfg, log, latch, metrics)
 	trigger := httpapi.NewTrigger(guard, cycle, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{
 		AuthToken: cfg.AuthToken,
 		Trigger:   trigger,
 		Health:    marker,
+		Metrics:   reg.Handler(),
 		Log:       log,
 	})
 
@@ -357,7 +360,7 @@ func runOnce(getenv func(string) string) int {
 		log.Error("cycle coordination unavailable", "err", err)
 		return 1
 	}
-	orch := newOrchestrator(&cfg, log, marker)
+	orch := newOrchestrator(&cfg, log, marker, nil)
 
 	// Capture the first execution's results as this invocation's own run; the
 	// closure may run again for demand queued by OTHER processes, which

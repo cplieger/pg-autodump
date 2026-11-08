@@ -40,7 +40,7 @@ func (fakePG) VerifyTOC(context.Context, string) error { return nil }
 
 // runCycle runs one cycle over specs through the real orchestrator, recording
 // into m.
-func runCycle(ctx context.Context, t *testing.T, dumpDir string, specs []spec.DBSpec, m *Metrics) []dump.Result {
+func runCycle(ctx context.Context, t *testing.T, dumpDir string, specs []spec.DBSpec, m *Metrics) {
 	t.Helper()
 	orch := dump.New(&dump.Params{
 		PG:          fakePG{},
@@ -52,7 +52,7 @@ func runCycle(ctx context.Context, t *testing.T, dumpDir string, specs []spec.DB
 		Concurrency: 2,
 		Keep:        1,
 	})
-	return orch.Run(ctx)
+	orch.Run(ctx)
 }
 
 // series reads every sample on reg, keyed name{label values joined by ","}.

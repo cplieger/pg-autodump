@@ -63,12 +63,12 @@ func run(args []string, getenv func(string) string) int {
 // a temp dir.
 var healthMarkerPath = health.DefaultPath
 
-// probeLease sizes the marker's freshness deadline for GET /healthz: every
+// healthzLease sizes the marker's freshness deadline for GET /healthz: every
 // completed cycle refreshes the marker, so in built-in timer mode a marker
 // older than two intervals plus one worst-case cycle means the ticker is
 // wedged. A zero Interval (external-trigger mode) disables the lease: no
 // cadence to judge.
-func probeLease(cfg *config.Config) health.Lease {
+func healthzLease(cfg *config.Config) health.Lease {
 	return health.Lease{Interval: cfg.DumpInterval, Cycles: 2, Timeout: cycleRuntime(cfg), Attempts: 1}
 }
 
@@ -82,12 +82,12 @@ const (
 )
 
 // healthzChecks are GET /healthz's verdict: the marker present, and a present
-// marker inside probeLease. At most one fails at a time, so the reason tells a
+// marker inside healthzLease. At most one fails at a time, so the reason tells a
 // failed cycle from a stopped timer.
 func healthzChecks(marker *health.Marker, cfg *config.Config) []health.Check {
 	return []health.Check{
 		{Signal: marker, Reason: reasonNoVerdict},
-		{Signal: leaseSignal{marker: marker, within: marker.Within(probeLease(cfg).Duration())}, Reason: reasonTimerStopped},
+		{Signal: leaseSignal{marker: marker, within: marker.Within(healthzLease(cfg).Duration())}, Reason: reasonTimerStopped},
 	}
 }
 

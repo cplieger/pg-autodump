@@ -128,8 +128,9 @@ func absDumpDir(dir string) string {
 // be the only run in flight (callers hold the in-process guard and the cycle
 // lock), because it first reclaims every temp file as a crash orphan. A cycle
 // with a verdict ends with the "dump cycle complete" record and writes
-// CycleOK to the last-run record, the health sink and the metrics. A cycle shutdown cut short logs "dump cycle cut short" instead
-// and records no verdict, so the previous one stands.
+// CycleOK to the last-run record, the health sink and the metrics. A cycle
+// shutdown cut short logs "dump cycle cut short" instead and records no
+// verdict, so the previous one stands.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()

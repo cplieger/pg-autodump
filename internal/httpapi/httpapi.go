@@ -1,7 +1,7 @@
 // Package httpapi is the HTTP control surface: POST /dump (optional bearer
-// auth), GET /healthz and GET /metrics. It owns no domain logic; the dump run is driven through a Trigger
-// that both the handler and the optional built-in ticker share, so
-// single-flight lives in exactly one place.
+// auth), GET /healthz and GET /metrics. It owns no domain logic; the dump run
+// is driven through a Trigger that both the handler and the optional built-in
+// ticker share, so single-flight lives in exactly one place.
 package httpapi
 
 import (

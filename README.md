@@ -46,7 +46,7 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; a scraper on another host needs AUTH_TOKEN and the port published to its network
+      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
@@ -141,7 +141,7 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 

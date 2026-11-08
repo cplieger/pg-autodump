@@ -295,7 +295,7 @@ func TestWindowsAreTwoDefaultIntervalsPlusARun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease := probeLease(&cfg).Duration(); want <= lease {
+	if lease := healthzLease(&cfg).Duration(); want <= lease {
 		t.Fatalf("window %s is not above the default health lease %s", want, lease)
 	}
 	for alert, expr := range ruleExprs(t, logqlRules) {

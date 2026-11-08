@@ -119,7 +119,7 @@ func TestRunOnceUnhealthyWhenPreflightFails(t *testing.T) {
 // The lease is two intervals plus one worst-case cycle, and a fresh marker
 // passes it: the sizing pins one cycle's runtime, not the trigger client's
 // two-cycle wait.
-func TestProbeLeaseDuration(t *testing.T) {
+func TestHealthzLeaseDuration(t *testing.T) {
 	env := map[string]string{"DUMP_INTERVAL": "1h", "DB_SPECS": "h:5432:db:u", "DUMP_TIMEOUT": "300", "DUMP_CONCURRENCY": "2"}
 	getenv := func(k string) string { return env[k] }
 	cfg, _, err := config.Load(getenv)
@@ -127,16 +127,16 @@ func TestProbeLeaseDuration(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 1 wave * (300s dump + 10s probe) + 30s slack = 340s; two 1h intervals on top.
-	if got, want := probeLease(&cfg).Duration(), 2*time.Hour+340*time.Second; got != want {
-		t.Errorf("probeLease(DUMP_INTERVAL=1h, one database).Duration() = %s, want %s", got, want)
+	if got, want := healthzLease(&cfg).Duration(), 2*time.Hour+340*time.Second; got != want {
+		t.Errorf("healthzLease(DUMP_INTERVAL=1h, one database).Duration() = %s, want %s", got, want)
 	}
 	env["DUMP_INTERVAL"] = "off"
 	cfg, _, err = config.Load(getenv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := probeLease(&cfg).Duration(); got != 0 {
-		t.Errorf("probeLease(DUMP_INTERVAL=off).Duration() = %s, want 0 (disabled)", got)
+	if got := healthzLease(&cfg).Duration(); got != 0 {
+		t.Errorf("healthzLease(DUMP_INTERVAL=off).Duration() = %s, want 0 (disabled)", got)
 	}
 }
 

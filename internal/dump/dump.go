@@ -127,9 +127,8 @@ func absDumpDir(dir string) string {
 // invalid and duplicate specs yield a Result without being dispatched. It must
 // be the only run in flight (callers hold the in-process guard and the cycle
 // lock), because it first reclaims every temp file as a crash orphan. A cycle
-// with a verdict ends with the "dump cycle complete" record the log alert
-// rules read and writes CycleOK to the last-run record, the health sink and
-// the metrics. A cycle shutdown cut short logs "dump cycle cut short" instead
+// with a verdict ends with the "dump cycle complete" record and writes
+// CycleOK to the last-run record, the health sink and the metrics. A cycle shutdown cut short logs "dump cycle cut short" instead
 // and records no verdict, so the previous one stands.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
@@ -172,8 +171,8 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 	// by the drain's CancelInFlight or a one-shot run's signal, and killed dumps
 	// are an operator action (levelFor). Recording one would leave a container
 	// recreated mid-cycle unhealthy until the next trigger, so the previous
-	// verdict stands and the drain latch owns shutdown health. The log alerts
-	// read the cycle complete record as the verdict, so it is never written here.
+	// verdict stands and the drain latch owns shutdown health. The cycle
+	// complete record states a verdict, so it is never written here.
 	if ctx.Err() != nil {
 		o.log.Warn("dump cycle cut short", "total", len(results), "ok", okN, "failed", failedN)
 		return results
@@ -297,7 +296,7 @@ func (o *Orchestrator) ensureServerDir(dir string) error {
 // finish logs a result and returns it by value so callers can
 // `return o.finish(&res, nil)`. diagErr is an optional probe diagnostic
 // recorded in the log line only, never in r.Detail, so the HTTP response
-// body is unchanged while operators keep the root cause in Loki.
+// body is unchanged while the log keeps the root cause.
 func (o *Orchestrator) finish(r *Result, diagErr error) Result {
 	attrs := []any{
 		"host", r.Host, "db", r.DBName, "reason", string(r.Reason),
@@ -342,8 +341,6 @@ func levelFor(r Reason) slog.Level {
 	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
 		// ReasonKilled comes only from a graceful shutdown cancelling an
 		// in-flight dump: an expected operator action, not a dump failure.
-		// The log alerts never see it, because a cut-short cycle writes no
-		// cycle complete record (Run).
 		return slog.LevelWarn
 	default:
 		return slog.LevelError

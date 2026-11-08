@@ -11,6 +11,7 @@ pg-autodump connects to your databases over the network as an ordinary PostgreSQ
 - Anyone who reaches `POST /dump` can at most write another dump made by the read-only role into the volume. Keep the port on loopback or a private network, or set `AUTH_TOKEN`.
 - When `AUTH_TOKEN` is empty and `LISTEN_ADDR` is not loopback, pg-autodump logs a warning at start.
 - The `POST /dump` answer never carries `pg_dump` or `pg_restore` error text, so an open endpoint shows no schema or table names.
+- `GET /healthz` and `GET /metrics` need no token. `/metrics` shows database names and the host and port of each server, so publish the port only to your network.
 
 ## Hardened compose settings
 
@@ -60,3 +61,4 @@ The client tools need a C library, which is why the image is Alpine rather than 
 | github.com/cplieger/go/scheduler | [GitHub](https://github.com/cplieger/go/tree/main/scheduler) |
 | github.com/cplieger/go/slogx | [GitHub](https://github.com/cplieger/go/tree/main/slogx) |
 | github.com/cplieger/go/httpserver | [GitHub](https://github.com/cplieger/go/tree/main/httpserver) |
+| github.com/cplieger/go/measure | [GitHub](https://github.com/cplieger/go/tree/main/measure) |

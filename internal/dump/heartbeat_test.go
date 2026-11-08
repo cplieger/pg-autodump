@@ -12,7 +12,7 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// The README's alerting section keys a Loki absence rule on this line's text and tally.
+// alerts/logql.yaml's PgAutodumpCycleMissing and PgAutodumpDumpFailed read this record's text and counts.
 func TestOrchestratorRunHeartbeatTally(t *testing.T) {
 	var buf bytes.Buffer
 	fake := &fakePG{

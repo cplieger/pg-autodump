@@ -73,12 +73,19 @@ func probeOptions(getenv func(string) string) []health.ProbeOption {
 	return []health.ProbeOption{health.WithMaxAge(probeLease(&cfg).Duration())}
 }
 
-// probeLease sizes the marker's freshness deadline: every completed cycle
-// refreshes the marker, so in built-in timer mode a marker older than two
-// intervals plus one worst-case cycle means the ticker is wedged. A zero
-// Interval (external-trigger mode) disables the lease: no cadence to judge.
+// probeLease sizes the marker's freshness deadline for the probe and GET
+// /healthz: every completed cycle refreshes the marker, so in built-in timer
+// mode a marker older than two intervals plus one worst-case cycle means the
+// ticker is wedged. A zero Interval (external-trigger mode) disables the
+// lease: no cadence to judge.
 func probeLease(cfg *config.Config) health.Lease {
 	return health.Lease{Interval: cfg.DumpInterval, Cycles: 2, Timeout: cycleRuntime(cfg), Attempts: 1}
+}
+
+// healthzSignal is the verdict GET /healthz serves: the marker within the
+// lease the probe passes to WithMaxAge, so the two never disagree.
+func healthzSignal(marker *health.Marker, cfg *config.Config) health.Signal {
+	return marker.Within(probeLease(cfg).Duration())
 }
 
 // startupRecord is the last-run record as read at boot; the boot health
@@ -275,7 +282,7 @@ func runServer(getenv func(string) string) int {
 	srv := httpapi.NewServer(&httpapi.Deps{
 		AuthToken: cfg.AuthToken,
 		Trigger:   trigger,
-		Health:    marker,
+		Health:    healthzSignal(marker, &cfg),
 		Metrics:   reg.Handler(),
 		Log:       log,
 	})

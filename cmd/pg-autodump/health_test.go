@@ -2,6 +2,8 @@ package main
 
 import (
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +12,7 @@ import (
 	"github.com/cplieger/go/health"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
+	"github.com/cplieger/pg-autodump/internal/httpapi"
 )
 
 // The boot marker is healthy only when the preflight passes AND the last-run
@@ -239,5 +242,54 @@ func TestBeginDrainLatchesUnhealthy(t *testing.T) {
 
 	if marker.Healthy() {
 		t.Error("marker restored by a cycle completing during the drain; want it to stay removed")
+	}
+}
+
+// GET /healthz and the Docker probe give one verdict on the lease: in timer
+// mode a marker older than two intervals plus one cycle is unhealthy on both,
+// a fresh one healthy on both, and in external-trigger mode, with no cadence
+// to judge, an old marker stays healthy on both.
+func TestHealthzAndProbeAgreeOnTheLease(t *testing.T) {
+	cases := []struct {
+		name      string
+		interval  string
+		age       time.Duration
+		wantProbe int
+		wantCode  int
+	}{
+		{name: "timer_marker_older_than_the_lease", interval: "1h", age: 3 * time.Hour, wantProbe: 1, wantCode: http.StatusServiceUnavailable},
+		{name: "timer_fresh_marker", interval: "1h", age: time.Minute, wantProbe: 0, wantCode: http.StatusOK},
+		{name: "external_old_marker", interval: "off", age: 30 * 24 * time.Hour, wantProbe: 0, wantCode: http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"DB_SPECS": "h:5432:db:u", "DUMP_INTERVAL": tc.interval}
+			getenv := func(k string) string { return env[k] }
+			cfg, _, err := config.Load(getenv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), ".healthy")
+			marker := health.NewMarker(path)
+			marker.Set(true)
+			old := time.Now().Add(-tc.age)
+			if err := os.Chtimes(path, old, old); err != nil {
+				t.Fatal(err)
+			}
+			srv := httpapi.NewServer(&httpapi.Deps{
+				Health:  healthzSignal(marker, &cfg),
+				Metrics: http.NotFoundHandler(),
+				Log:     discardLogger(),
+			})
+
+			if got := health.ProbeCheck(path, probeOptions(getenv)...); got != tc.wantProbe {
+				t.Errorf("probe on a %s-old marker = %d, want %d", tc.age, got, tc.wantProbe)
+			}
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			if rec.Code != tc.wantCode {
+				t.Errorf("GET /healthz on a %s-old marker = %d, want %d", tc.age, rec.Code, tc.wantCode)
+			}
+		})
 	}
 }

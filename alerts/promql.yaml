@@ -1,0 +1,55 @@
+# Alert rules for pg-autodump as a Prometheus rule group, for Prometheus, Mimir,
+# vmalert or any ruler that reads Prometheus rules. This file is the alternative
+# to alerts/logql.yaml: load one of the two, not both. The rules read GET
+# /metrics on LISTEN_ADDR; scrape it as job `pg-autodump`. Thresholds and
+# severity labels are starting points. The 50h window is two runs of the default
+# 24h DUMP_INTERVAL plus time for the run; set it to two intervals plus a run's
+# time. PgAutodumpDumpStale and PgAutodumpDown exist only in this file; in
+# alerts/logql.yaml, PgAutodumpCycleMissing covers the same problems. Notes are
+# in docs/monitoring.md.
+groups:
+  - name: pg-autodump
+    rules:
+      # Two arms, because neither covers the other: `up == 0` catches a target
+      # that fails its scrape and keeps its labels, `absent(up{...})` catches a
+      # target that is gone. Use an exact job matcher, never a regex.
+      - alert: PgAutodumpDown
+        expr: up{job="pg-autodump"} == 0 or absent(up{job="pg-autodump"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-autodump is not being scraped"
+          description: >
+            No successful scrape for 5m: the container is stopped,
+            crash-looping or refusing to start, or the scrape cannot reach
+            LISTEN_ADDR. Check the container's state and its log.
+      # A state rule: it holds while the database's latest dump failed and
+      # resolves at its next good dump. After a restart the series reads the
+      # last-run record, so a failure on record keeps firing.
+      - alert: PgAutodumpDumpFailed
+        expr: pg_autodump_dump_ok == 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pg-autodump: the latest dump of {{ $labels.db }} failed"
+          description: >
+            The latest dump of {{ $labels.db }} on {{ $labels.server }}
+            failed, so its backup is getting older. The last good dump is
+            kept. The `dump <reason>` log line for the database names the
+            cause.
+      # A database with no dump yet has no series, so a new install or a
+      # newly added database stays quiet until its first dump.
+      - alert: PgAutodumpDumpStale
+        expr: time() - pg_autodump_newest_dump_timestamp_seconds > 50 * 3600
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-autodump: no new dump of {{ $labels.db }} in 50h"
+          description: >
+            The newest verified dump of {{ $labels.db }} on
+            {{ $labels.server }} is older than 50h. Dumps may be failing, or
+            the timer or your trigger may have stopped. Check the container,
+            its schedule and PgAutodumpDumpFailed.

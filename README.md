@@ -141,14 +141,14 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump has no metrics endpoint. It logs one line per database and one `dump cycle complete` line per run to standard error. [Monitoring and alerts](docs/monitoring.md) lists the log lines and has two Loki alert rules, one for a failed dump and one for a missing completion heartbeat after 26 hours.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the scheduling modes and the file layout.
 - [Security](docs/hardening.md) has the hardened compose settings, the backup role's limits and what the image contains.
 - [How it works](docs/how-it-works.md) shows how a dump is checked and replaced, how runs take turns and what health means.
-- [Monitoring and alerts](docs/monitoring.md) lists the log lines and the Loki alert rules.
+- [Monitoring and alerts](docs/monitoring.md) lists the log lines and the alert rules.
 
 ## Credits
 

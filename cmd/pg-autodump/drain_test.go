@@ -190,7 +190,7 @@ func TestStartTicker_DoneClosesWhenTheTimerReturns(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		var buf syncBuffer
 		trig, pgf, log := cycleTrigger(t, &buf, func(log *slog.Logger) *scheduler.Exclusive {
-			return scheduler.NewExclusive(t.TempDir(), log)
+			return scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(log))
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		fresh := startupRecord{known: true, remaining: time.Hour}

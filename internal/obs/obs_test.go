@@ -58,9 +58,9 @@ func TestDirWritable(t *testing.T) {
 		if err == nil {
 			t.Fatal("dirWritable(read-only dir) = nil, want an error")
 		}
-		if !strings.Contains(err.Error(), filesafe.ProbeStageCreate.String()) {
+		if !strings.Contains(err.Error(), filesafe.ProbePhaseCreate.String()) {
 			t.Errorf("dirWritable() error = %v, want it to name the %q stage",
-				err, filesafe.ProbeStageCreate)
+				err, filesafe.ProbePhaseCreate)
 		}
 		if strings.Contains(err.Error(), "not attempted") {
 			t.Errorf("dirWritable() error = %v, a real refusal must not be reported as an unattempted probe", err)
@@ -74,7 +74,7 @@ func TestDirWritable(t *testing.T) {
 func TestProbeVerdictNamesAModeTheFilesystemWidened(t *testing.T) {
 	res := filesafe.ProbeResult{
 		Dir:   "/dumps",
-		Stage: filesafe.ProbeStageCreate,
+		Phase: filesafe.ProbePhaseCreate,
 		Err:   fmt.Errorf("%w: /dumps/.atomicfile-1.tmp: asked for 0600, filesystem stored 0670", filesafe.ErrModeNotStored),
 	}
 	err := probeVerdict(res)

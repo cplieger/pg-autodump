@@ -39,7 +39,7 @@ func TestRunFullSuccessSetsHealthy(t *testing.T) {
 		{Host: "h1", Port: 5432, DBName: "app", User: "u"},
 		{Host: "h2", Port: 5432, DBName: "app", User: "u"},
 	})
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Fatal("marker present before any cycle ran; the fixture must start unhealthy")
 	}
 
@@ -49,7 +49,7 @@ func TestRunFullSuccessSetsHealthy(t *testing.T) {
 			t.Fatalf("spec[%d] reason = %q, want ok (detail %q)", i, r.Reason, r.Detail)
 		}
 	}
-	if !marker.CheckHealthy() {
+	if !marker.Healthy() {
 		t.Fatal("cycle completed with 0 failures; want the health marker set, got absent")
 	}
 }
@@ -74,7 +74,7 @@ func TestRunPartialFailureMarksUnhealthy(t *testing.T) {
 	if res[0].Reason != ReasonOK || res[1].Reason != ReasonConnectError {
 		t.Fatalf("reasons = %q, %q; want ok + connect_error (a partial failure)", res[0].Reason, res[1].Reason)
 	}
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Fatal("one database failed; want the health marker removed, got present")
 	}
 }
@@ -90,7 +90,7 @@ func TestRunNoDatabasesIsNotSuccess(t *testing.T) {
 	if res := orch.Run(deadlineCtx(t)); len(res) != 0 {
 		t.Fatalf("results = %d, want 0 for an empty spec set", len(res))
 	}
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Error("no database configured; want the health marker removed, got present")
 	}
 	rec, known := scheduler.NewStamp(StampPath(orch.dumpDir)).Last()
@@ -123,7 +123,7 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 	if res[0].Reason != ReasonKilled {
 		t.Fatalf("reason = %q, want killed; the cycle must be cut short for the rest to assert anything", res[0].Reason)
 	}
-	if !marker.CheckHealthy() {
+	if !marker.Healthy() {
 		t.Error("marker removed by a shutdown-cancelled cycle; want the previous cycle's verdict to stand")
 	}
 	if _, known := scheduler.NewStamp(StampPath(orch.dumpDir)).Last(); known {

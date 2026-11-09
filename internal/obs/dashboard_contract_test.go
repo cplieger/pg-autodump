@@ -482,8 +482,7 @@ func closingParen(s string) int {
 // outerGrouping is the sorted by-labels of expr's outermost aggregation, or
 // false when the outermost operation is not an aggregation with a by clause.
 // A round() around the whole expression is looked through, since it keeps
-// every label; rounding the sum keeps a count exact where summing rounded
-// increases would not.
+// every label.
 func outerGrouping(expr string) ([]string, bool) {
 	rest := strings.TrimSpace(expr)
 	if inner, ok := strings.CutPrefix(rest, "round"); ok {

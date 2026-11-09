@@ -670,7 +670,7 @@
         "spec": {
           "id": 20,
           "title": "Databases",
-          "description": "One row per database: whether its latest dump succeeded, the age of its newest dump, its size, how long the latest attempt took, and the dumps that failed in the selected range. Dump age turns yellow at 48 hours, twice the default 24-hour DUMP_INTERVAL. Failures leave out dumps a stop cut short. Size and Duration read - until the first run after a start, and Latest dump until the database has a dump or a failure.",
+          "description": "One row per database: whether its latest dump succeeded, the age of its newest dump, its size, how long the latest attempt took, and the dumps that failed in the selected range. Dump age turns yellow at 48 hours, twice the default 24-hour DUMP_INTERVAL. Failures leave out dumps a stop cut short. After a start, Duration reads - until the first run, Size until the first successful dump, and Latest dump until the database has a dump or a failure.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -775,7 +775,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "sum by (server, db) (round(increase(pg_autodump_dumps_total{instance=\"$instance\", result!~\"ok|killed|skipped\"}[$__range])))",
+                        "expr": "round(sum by (server, db) (increase(pg_autodump_dumps_total{instance=\"$instance\", result!~\"ok|killed|skipped\"}[$__range])))",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,

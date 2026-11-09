@@ -38,7 +38,7 @@ func cycleTrigger(t *testing.T, buf *syncBuffer, cycle func(*slog.Logger) *sched
 func closedGate(t *testing.T) func(*slog.Logger) *scheduler.Exclusive {
 	dir := t.TempDir()
 	return func(log *slog.Logger) *scheduler.Exclusive {
-		return scheduler.NewExclusive(dir, log, scheduler.WithGate(func() bool { return false }))
+		return scheduler.NewExclusive(dir, scheduler.WithLogger(log), scheduler.WithGate(func() bool { return false }))
 	}
 }
 
@@ -110,7 +110,7 @@ func TestRunTicker_ScheduledTickBehindAForeignCycleLogsInProgress(t *testing.T) 
 	defer lock.Unlock()
 	var buf syncBuffer
 	trig, pgf, log := cycleTrigger(t, &buf, func(log *slog.Logger) *scheduler.Exclusive {
-		return scheduler.NewExclusive(cycleDir, log)
+		return scheduler.NewExclusive(cycleDir, scheduler.WithLogger(log))
 	})
 	fresh := startupRecord{known: true, remaining: time.Millisecond}
 

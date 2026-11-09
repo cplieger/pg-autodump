@@ -12,7 +12,7 @@ import (
 
 // reclaimAllOrphans is the maxAge for filesafe.CleanupStaleTemps when every
 // leftover temp is known to be an orphan: the smallest positive age reaps
-// them all, while a non-positive age would make CleanupStaleTemps a no-op.
+// them all, and CleanupStaleTemps refuses a non-positive age.
 const reclaimAllOrphans = time.Nanosecond
 
 // ReclaimOrphans removes crash-orphaned temp files under dumpDir: every

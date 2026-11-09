@@ -128,18 +128,18 @@ func TestProbeOptionsFreshness(t *testing.T) {
 	cases := []struct {
 		name string
 		env  map[string]string
-		want int
+		want bool
 	}{
-		{name: "builtin_mode_stale_marker_unhealthy", env: map[string]string{"DUMP_INTERVAL": "1h", "DB_SPECS": "h:5432:db:u"}, want: 1},
-		{name: "external_mode_stale_marker_healthy", env: map[string]string{"DUMP_INTERVAL": "off", "DB_SPECS": "h:5432:db:u"}, want: 0},
-		{name: "fatal_config_disarms", env: map[string]string{"DUMP_INTERVAL": "1h", "DUMP_DIR": "/dumps/../etc"}, want: 0},
+		{name: "builtin_mode_stale_marker_unhealthy", env: map[string]string{"DUMP_INTERVAL": "1h", "DB_SPECS": "h:5432:db:u"}, want: false},
+		{name: "external_mode_stale_marker_healthy", env: map[string]string{"DUMP_INTERVAL": "off", "DB_SPECS": "h:5432:db:u"}, want: true},
+		{name: "fatal_config_disarms", env: map[string]string{"DUMP_INTERVAL": "1h", "DUMP_DIR": "/dumps/../etc"}, want: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			path := staleMarker(t)
 			getenv := func(k string) string { return tc.env[k] }
-			if got := health.ProbeCheck(path, probeOptions(getenv)...); got != tc.want {
-				t.Errorf("ProbeCheck(72h-old marker, env=%v) = %d, want %d", tc.env, got, tc.want)
+			if got := health.Inspect(path, probeOptions(getenv)...).Healthy(); got != tc.want {
+				t.Errorf("Inspect(72h-old marker, env=%v).Healthy() = %v, want %v", tc.env, got, tc.want)
 			}
 		})
 	}
@@ -219,7 +219,7 @@ func TestBootHealthWritesTheBootVerdict(t *testing.T) {
 			if !rec.known {
 				t.Error("bootHealth reported an unknown record over a seeded one; the ticker shares this reading")
 			}
-			if got := marker.CheckHealthy(); got != tc.want {
+			if got := marker.Healthy(); got != tc.want {
 				t.Errorf("marker present after bootHealth(interval=%s, record=%q) = %v, want %v",
 					tc.interval, tc.record, got, tc.want)
 			}
@@ -237,7 +237,7 @@ func TestBeginDrainLatchesUnhealthy(t *testing.T) {
 	beginDrain(t.Context(), latch, discardLogger())(t.Context())
 	latch.Set(true) // a cycle finishing during the drain
 
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Error("marker restored by a cycle completing during the drain; want it to stay removed")
 	}
 }

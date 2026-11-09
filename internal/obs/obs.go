@@ -64,7 +64,7 @@ func probeVerdict(res filesafe.ProbeResult) error {
 	if res.OK() {
 		return nil
 	}
-	if res.Stage == filesafe.ProbeStageRemove {
+	if res.Phase == filesafe.ProbePhaseRemove {
 		slog.Warn("dump dir refuses to remove its writability probe; reclaimed by the stale-temp sweep",
 			"dir", res.Dir, "probe", res.Name, "err", res.Err)
 		return nil
@@ -74,5 +74,5 @@ func probeVerdict(res filesafe.ProbeResult) error {
 			"check the volume for an inherited ACL or mount option that widens new files: %w",
 			res.Dir, res.Err)
 	}
-	return fmt.Errorf("dump dir %q failed the write probe at %q: %w", res.Dir, res.Stage, res.Err)
+	return fmt.Errorf("dump dir %q failed the write probe at %q: %w", res.Dir, res.Phase, res.Err)
 }

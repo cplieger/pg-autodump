@@ -60,7 +60,7 @@ func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, ni
 // can contend on it like an exec'd `pg-autodump run` process would.
 func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
 	t.Helper()
-	return newTestServerWithCycle(t, pg, token, scheduler.NewExclusive(cycleDir, discard()))
+	return newTestServerWithCycle(t, pg, token, scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard())))
 }
 
 func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *scheduler.Exclusive) *http.Server {
@@ -230,7 +230,7 @@ func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Ma
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
 	return NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()}), marker
 }
 
@@ -254,7 +254,7 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
 	srv := NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()})
 	marker.Set(true)
 
@@ -265,7 +265,7 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "no databases configured") {
 		t.Errorf("POST /dump with no databases: body = %q, want it to say no databases are configured", body)
 	}
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Error("marker present after a cycle over zero databases; want it removed")
 	}
 }
@@ -280,7 +280,7 @@ func TestDumpFailureMarksUnhealthy(t *testing.T) {
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Error("marker present after a failed cycle; want it removed")
 	}
 	if got := healthz(t, srv); got != http.StatusServiceUnavailable {
@@ -296,7 +296,7 @@ func TestDumpSuccessAfterFailureRestoresHealth(t *testing.T) {
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("failing POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.CheckHealthy() {
+	if marker.Healthy() {
 		t.Fatal("marker present after the failed cycle; the recovery test needs an unhealthy start")
 	}
 
@@ -304,7 +304,7 @@ func TestDumpSuccessAfterFailureRestoresHealth(t *testing.T) {
 	if rec := post(t, srv, ""); rec.Code != http.StatusOK {
 		t.Fatalf("recovering POST /dump status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
-	if !marker.CheckHealthy() {
+	if !marker.Healthy() {
 		t.Error("marker absent after a fully successful cycle; want it restored")
 	}
 	if got := healthz(t, srv); got != http.StatusOK {
@@ -325,7 +325,7 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	cycle := scheduler.NewExclusive(t.TempDir(), discard())
+	cycle := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()))
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
@@ -396,7 +396,7 @@ func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 // unchanged.
 func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	guard := &dump.Guard{}
-	cycle := scheduler.NewExclusive(t.TempDir(), nil)
+	cycle := scheduler.NewExclusive(t.TempDir())
 
 	trNil := NewTrigger(guard, cycle, nil, nil)
 	if trNil.log == nil {
@@ -422,7 +422,7 @@ func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch,
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch,
 		slog.New(slog.NewTextHandler(&buf, nil)))
 
 	results, outcome, err := trigger.Run()
@@ -460,7 +460,7 @@ func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
 // says another run holds the cycle.
 func TestDumpDuringShutdownReturns503(t *testing.T) {
 	pg := &stubPG{}
-	gated := scheduler.NewExclusive(t.TempDir(), discard(), scheduler.WithGate(func() bool { return false }))
+	gated := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()), scheduler.WithGate(func() bool { return false }))
 	srv := newTestServerWithCycle(t, pg, "", gated)
 
 	rec := post(t, srv, "")
@@ -502,7 +502,7 @@ func TestTriggerRunReportsWhyNothingRan(t *testing.T) {
 	}
 
 	t.Run("shutdown gate closed", func(t *testing.T) {
-		gated := scheduler.NewExclusive(t.TempDir(), discard(), scheduler.WithGate(func() bool { return false }))
+		gated := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()), scheduler.WithGate(func() bool { return false }))
 		results, outcome, err := newTrigger(t, &stubPG{}, gated).Run()
 		check(t, results, outcome, err, scheduler.OutcomeGated)
 	})
@@ -513,12 +513,12 @@ func TestTriggerRunReportsWhyNothingRan(t *testing.T) {
 			t.Fatalf("TryLock(cycle.lock) = ok=%v err=%v, want held", ok, err)
 		}
 		defer lock.Unlock()
-		results, outcome, err := newTrigger(t, &stubPG{}, scheduler.NewExclusive(cycleDir, discard())).Run()
+		results, outcome, err := newTrigger(t, &stubPG{}, scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard()))).Run()
 		check(t, results, outcome, err, scheduler.OutcomeSkipped)
 	})
 	t.Run("guard held in this process", func(t *testing.T) {
 		pg := &stubPG{entered: make(chan struct{}), release: make(chan struct{})}
-		tr := newTrigger(t, pg, scheduler.NewExclusive(t.TempDir(), discard()))
+		tr := newTrigger(t, pg, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())))
 		first := make(chan scheduler.Outcome, 1)
 		go func() {
 			_, outcome, _ := tr.Run()
@@ -548,7 +548,7 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 
 	<-pg.entered // server cycle now in flight, cycle lock held
 
-	requester := scheduler.NewExclusive(cycleDir, discard())
+	requester := scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard()))
 	outcome, err := requester.Run(func() error {
 		t.Error("requester executed the job; want it queued behind the in-flight cycle")
 		return nil

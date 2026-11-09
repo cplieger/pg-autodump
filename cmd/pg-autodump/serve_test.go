@@ -77,7 +77,7 @@ func TestServe_ServeExitStopsTheTimerAndWaitsForTheInFlightDump(t *testing.T) {
 			Concurrency: 1,
 			Keep:        1,
 		})
-		trig := httpapi.NewTrigger(guard, scheduler.NewExclusive(t.TempDir(), log), orch, log)
+		trig := httpapi.NewTrigger(guard, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(log)), orch, log)
 		ctx, stop := context.WithCancel(context.Background())
 		defer stop()
 		fresh := startupRecord{known: true, remaining: time.Hour}

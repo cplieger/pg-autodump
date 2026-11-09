@@ -105,16 +105,16 @@ func NewServer(d *Deps) *http.Server {
 	// 500. client_ip is the bare socket peer: no proxy fronts this sidecar.
 	handler := httpserver.Chain(mux,
 		authFailureLimiter(d.AuthToken),
-		httpserver.Logging(httpserver.WithLogger(log), httpserver.ProbeLogLevel("/healthz"), httpserver.WithClientIP()),
+		httpserver.Logging(httpserver.WithLogger(log), httpserver.WithProbeLogLevel("/healthz"), httpserver.WithClientIP()),
 		httpserver.Recoverer(httpserver.WithRecoverLogger(log)),
 		httpserver.SecurityHeaders(),
 	)
 
-	return httpserver.New(handler,
-		httpserver.WithReadHeaderTimeout(readHeaderTimeout),
-		httpserver.WithReadTimeout(readHeaderTimeout),
-		httpserver.WithIdleTimeout(60*time.Second),
-	)
+	srv := httpserver.New(handler)
+	srv.ReadHeaderTimeout = readHeaderTimeout
+	srv.ReadTimeout = readHeaderTimeout
+	srv.IdleTimeout = 60 * time.Second
+	return srv
 }
 
 // dumpHandler runs one dump and writes one text line per database. Status is

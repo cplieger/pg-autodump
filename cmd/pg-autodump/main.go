@@ -190,7 +190,7 @@ func newCycleExclusive(ctx context.Context, log *slog.Logger) (*scheduler.Exclus
 	if err := ensureCycleDir(cycleDir, log); err != nil {
 		return nil, err
 	}
-	return scheduler.NewExclusive(cycleDir, log,
+	return scheduler.NewExclusive(cycleDir, scheduler.WithLogger(log),
 		scheduler.WithGate(func() bool { return ctx.Err() == nil })), nil
 }
 
@@ -312,7 +312,8 @@ func serve(ctx context.Context, stop context.CancelFunc, srv *http.Server, ln ne
 	// the marker is a file the healthcheck reads, which closing the listener
 	// does not cover.
 	teardown := drainInFlightDump(guard, tickerDone, grace, log)
-	return httpserver.Run(ctx, srv, ln, teardown,
+	return httpserver.Run(ctx, srv, ln,
+		httpserver.WithTeardown(teardown),
 		httpserver.WithShutdownGrace(grace),
 		httpserver.WithPreDrain(beginDrain(ctx, latch, log)),
 		httpserver.WithServeExit(func(exitCtx context.Context) {

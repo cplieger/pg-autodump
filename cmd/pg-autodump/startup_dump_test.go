@@ -68,7 +68,7 @@ func tickerFixture(t *testing.T, dir string, buf *syncBuffer) (*httpapi.Trigger,
 		Concurrency: 1,
 		Keep:        1,
 	})
-	cycle := scheduler.NewExclusive(t.TempDir(), log)
+	cycle := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(log))
 	return httpapi.NewTrigger(&dump.Guard{}, cycle, orch, log), pgf, log
 }
 

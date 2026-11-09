@@ -1,12 +1,12 @@
 # Monitoring and alerts
 
-pg-autodump serves a metrics page and ships metric alert rules, so a Prometheus-compatible stack learns when a dump fails, when a database's newest dump gets old and when pg-autodump stops answering. If you run Loki and no metric store, a log rule file gives you the failure alert and an alert for runs that stopped. This page lists what each setup gets, the metrics, the log lines, the rules and what the healthcheck proves.
+pg-autodump serves a metrics page and ships metric alert rules, so a Prometheus-compatible stack learns when a dump fails, when a database's newest dump gets old and when pg-autodump stops answering. If you run Loki and no metric store, a log rule file gives you the failure alert and an alert for runs that stopped. This page lists what each setup gets, the metrics, the Grafana dashboard, the log lines, the rules and what the healthcheck proves.
 
 ## What you get
 
 | You run | You get | You set up |
 | --- | --- | --- |
-| Prometheus, Mimir or VictoriaMetrics, with Alertmanager (the monitoring guide's starting stack adds Loki) | `PgAutodumpDumpFailed` per database, `PgAutodumpDumpStale` per database, `PgAutodumpDown`, and graphs of dump size, duration and free space | A scrape of `/metrics` as job `pg-autodump`, and [`alerts/promql.yaml`](../alerts/promql.yaml) in your ruler |
+| Prometheus, Mimir or VictoriaMetrics, with Alertmanager (the monitoring guide's starting stack adds Loki) | `PgAutodumpDumpFailed` per database, `PgAutodumpDumpStale` per database, `PgAutodumpDown`, and the [dashboard](#dashboard) of every database's dumps and the free space | A scrape of `/metrics` as job `pg-autodump`, and [`alerts/promql.yaml`](../alerts/promql.yaml) in your ruler |
 | Loki and Alertmanager, no metric store | `PgAutodumpDumpFailed` for the container and `PgAutodumpCycleMissing` | [`alerts/logql.yaml`](../alerts/logql.yaml) in Loki's ruler, and a log collector that keeps INFO lines |
 | Grafana-managed alerting only | The same rules, imported into Grafana | A Prometheus or Loki data source, and the rules of one file |
 | Docker or Unraid only | Docker health, which turns unhealthy while the last run failed or the timer stopped | An uptime prober on `/healthz`, or something that watches Docker health |
@@ -28,11 +28,7 @@ The resident server always serves `GET /metrics` on `LISTEN_ADDR`, `:9847` by de
 
 Every database in `DB_SPECS` has its labelled series from the start: the counters, size and duration at `0`, and `pg_autodump_dump_ok` from the last-run record. A database you remove from `DB_SPECS` has no series after the restart that applies the change.
 
-The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work. pg-autodump bundles no dashboard. These queries are a start in Grafana's Metrics Drilldown:
-
-- `time() - pg_autodump_newest_dump_timestamp_seconds`: the age of each database's newest dump.
-- `pg_autodump_dump_bytes`: dump size per database over time.
-- `increase(pg_autodump_dumps_total{result!="ok"}[7d])`: failed dumps per database and reason in the last week.
+The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work. The bundled [dashboard](#dashboard) shows the `pg_autodump_*` series in Grafana.
 
 A scrape config for the default port:
 
@@ -46,6 +42,16 @@ scrape_configs:
 Keep the job name `pg-autodump`, because `PgAutodumpDown` reads it. A scraper on another host needs the port published to that network. Set `AUTH_TOKEN` too, since anyone who reaches the port can start a dump.
 
 The metrics come from the resident server. A one-shot container whose command is `run` serves no `/metrics`, so in that setup load `alerts/logql.yaml` or alert on your scheduler's job result instead. A `run` started with `docker exec` writes the dump files but not the server's metrics, so `PgAutodumpDumpStale` notices its failures after 50 hours and `PgAutodumpDumpFailed` does not.
+
+## Dashboard
+
+[`grafana-dashboard.json`](../grafana-dashboard.json) imports as the pg-autodump dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. When you run more than one container, the pg-autodump variable picks the instance to show. It has one page of three rows:
+
+- Needs attention appears only while `PgAutodumpDumpFailed`, `PgAutodumpDumpStale` or `PgAutodumpDown` fires, with one tile per rule. Each tile reads its rule's `ALERTS` series, which Prometheus and the Mimir ruler store beside your metrics, so the row stays hidden while those rules are not loaded.
+- Databases shows whether the latest run succeeded, when it ended, how many databases are listed and the free space, then a table with one row per database: whether its latest dump succeeded, the age of its newest dump, its size, how long the latest attempt took and the dumps that failed in the selected range. The dump age turns yellow at 48 hours, twice the default `DUMP_INTERVAL`. The failure count leaves out `killed` and `skipped`, the results of a stop.
+- Space and trend charts the free space for dumps and each database's dump size over the selected range.
+
+The dashboard is versioned with the image, and the `grafana-dashboard.json` of release `<tag>` matches the metrics that image serves. Each release attaches it with its checksum at `https://github.com/cplieger/pg-autodump/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/pg-autodump/dashboard:<tag>`. The file sets `metadata.name` to `pg-autodump`, which Grafana uses as the dashboard UID, so importing a newer copy over the old one updates it in place.
 
 ## Logs
 

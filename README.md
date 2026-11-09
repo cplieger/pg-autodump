@@ -141,14 +141,14 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. [Monitoring and alerts](docs/monitoring.md) says which. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) says which rules to load. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the scheduling modes and the file layout.
 - [Security](docs/hardening.md) has the hardened compose settings, the backup role's limits and what the image contains.
 - [How it works](docs/how-it-works.md) shows how a dump is checked and replaced, how runs take turns and what health means.
-- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the log lines, both rule files and who tells you backups stopped.
+- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the dashboard, the log lines, both rule files and who tells you backups stopped.
 
 ## Credits
 

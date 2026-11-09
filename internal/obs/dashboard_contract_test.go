@@ -38,8 +38,9 @@ type dashPanel struct {
 		Description string `json:"description"`
 		Data        struct {
 			Spec struct {
-				Queries      []dashQuery `json:"queries"`
-				QueryOptions struct {
+				Queries         []dashQuery      `json:"queries"`
+				Transformations []transformation `json:"transformations"`
+				QueryOptions    struct {
 					MaxDataPoints int `json:"maxDataPoints"`
 				} `json:"queryOptions"`
 			} `json:"spec"`
@@ -64,6 +65,10 @@ type dashPanel struct {
 			} `json:"spec"`
 		} `json:"vizConfig"`
 	} `json:"spec"`
+}
+
+type transformation struct {
+	Group string `json:"group"`
 }
 
 type conditionRule struct {
@@ -401,6 +406,18 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 			t.Errorf("Databases reads no %s", series)
 		}
 	}
+	// NewRegistry seeds dump_ok 1, dump_bytes 0 and dump_duration_seconds 0 at
+	// each start, which no dump has measured.
+	seeds := map[string]*regexp.Regexp{
+		"Size":        regexp.MustCompile(`pg_autodump_dump_bytes\{[^}]*\}\s*>\s*0\b`),
+		"Duration":    regexp.MustCompile(`pg_autodump_dump_duration_seconds\{[^}]*\}\s*>\s*0\b`),
+		"Latest dump": regexp.MustCompile(`pg_autodump_dump_ok\{[^}]*\}\s*==\s*0\s+or\s+\(\s*pg_autodump_dump_ok\{[^}]*\}\s+and\s+on\s*\(\s*server,\s*db\s*\)\s*pg_autodump_newest_dump_timestamp_seconds\{`),
+	}
+	for column, want := range seeds {
+		if !want.MatchString(exprs) {
+			t.Errorf("%s shows the start-up seed as a measured value, want a query matching %v", column, want)
+		}
+	}
 	var yellow []float64
 	for _, o := range databases.Spec.VizConfig.Spec.FieldConfig.Overrides {
 		if o.Matcher.Options != "Newest dump age" {
@@ -429,6 +446,104 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 	}
 	if want := 2 * config.DefaultDumpInterval.Seconds(); !slices.Equal(yellow, []float64{want}) {
 		t.Errorf("Newest dump age turns yellow at %v s, want %v s, twice the default DUMP_INTERVAL", yellow, want)
+	}
+}
+
+var aggregationRe = regexp.MustCompile(`^(?:sum|min|max|avg|count|group)\b\s*`)
+
+var byClauseRe = regexp.MustCompile(`^by\s*\(([^)]*)\)\s*`)
+
+// closingParen is the index of the parenthesis closing the one s starts with,
+// or -1.
+func closingParen(s string) int {
+	if !strings.HasPrefix(s, "(") {
+		return -1
+	}
+	depth, quoted := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case quoted && c == '\\':
+			i++
+		case c == '"':
+			quoted = !quoted
+		case quoted:
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+			if depth == 0 {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+// outerGrouping is the sorted by-labels of expr's outermost aggregation, or
+// false when the outermost operation is not an aggregation with a by clause.
+func outerGrouping(expr string) ([]string, bool) {
+	rest := strings.TrimSpace(expr)
+	agg := aggregationRe.FindString(rest)
+	if agg == "" {
+		return nil, false
+	}
+	rest = rest[len(agg):]
+	var by []string
+	readBy := func() {
+		if g := byClauseRe.FindStringSubmatch(rest); g != nil {
+			for l := range strings.SplitSeq(g[1], ",") {
+				if l = strings.TrimSpace(l); l != "" {
+					by = append(by, l)
+				}
+			}
+			rest = rest[len(g[0]):]
+		}
+	}
+	readBy()
+	end := closingParen(rest)
+	if end < 0 {
+		return nil, false
+	}
+	rest = strings.TrimSpace(rest[end+1:])
+	if by == nil {
+		readBy()
+	}
+	if by == nil || rest != "" {
+		return nil, false
+	}
+	slices.Sort(by)
+	return by, true
+}
+
+// TestDashboardMergedTablesJoinEachRowOnItsKey fails when a table that merges
+// its queries has a query that is not an aggregation by the same labels as the
+// others. Grafana's merge joins rows only on the fields every frame shares and
+// splits a row whose other shared fields differ, so a bare selector's __name__
+// gives one database several rows:
+// https://github.com/grafana/grafana/blob/main/packages/grafana-data/src/transformations/transformers/merge.ts
+func TestDashboardMergedTablesJoinEachRowOnItsKey(t *testing.T) {
+	d := loadDashboard(t)
+	merged := 0
+	for name, p := range d.Spec.Elements {
+		if !slices.ContainsFunc(p.Spec.Data.Spec.Transformations, func(tr transformation) bool { return tr.Group == "merge" }) {
+			continue
+		}
+		merged++
+		var key []string
+		for i, e := range panelExprs(&p) {
+			by, ok := outerGrouping(e)
+			switch {
+			case !ok:
+				t.Errorf("%s %q query %d is not an aggregation by the table's key: %s", name, p.Spec.Title, i, e)
+			case key == nil:
+				key = by
+			case !slices.Equal(by, key):
+				t.Errorf("%s %q query %d aggregates by %v, an earlier query by %v", name, p.Spec.Title, i, by, key)
+			}
+		}
+	}
+	if merged == 0 {
+		t.Error("no table merges its queries; the check no longer reads the dashboard")
 	}
 }
 

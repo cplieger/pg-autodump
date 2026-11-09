@@ -670,7 +670,7 @@
         "spec": {
           "id": 20,
           "title": "Databases",
-          "description": "One row per database: whether its latest dump succeeded, the age of its newest dump, its size, how long the latest attempt took, and the dumps that failed in the selected range. Dump age turns yellow at 48 hours, twice the default 24-hour DUMP_INTERVAL. Failures leave out dumps a stop cut short.",
+          "description": "One row per database: whether its latest dump succeeded, the age of its newest dump, its size, how long the latest attempt took, and the dumps that failed in the selected range. Dump age turns yellow at 48 hours, twice the default 24-hour DUMP_INTERVAL. Failures leave out dumps a stop cut short. Size and Duration read - until the first run after a start, and Latest dump until the database has a dump or a failure.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -687,7 +687,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "pg_autodump_dump_ok{instance=\"$instance\"}",
+                        "expr": "max by (server, db) (pg_autodump_dump_ok{instance=\"$instance\"} == 0 or (pg_autodump_dump_ok{instance=\"$instance\"} and on (server, db) pg_autodump_newest_dump_timestamp_seconds{instance=\"$instance\"}))",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,
@@ -709,7 +709,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "time() - pg_autodump_newest_dump_timestamp_seconds{instance=\"$instance\"}",
+                        "expr": "max by (server, db) (time() - pg_autodump_newest_dump_timestamp_seconds{instance=\"$instance\"})",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,
@@ -731,7 +731,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "pg_autodump_dump_bytes{instance=\"$instance\"}",
+                        "expr": "max by (server, db) (pg_autodump_dump_bytes{instance=\"$instance\"} > 0)",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,
@@ -753,7 +753,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "pg_autodump_dump_duration_seconds{instance=\"$instance\"}",
+                        "expr": "max by (server, db) (pg_autodump_dump_duration_seconds{instance=\"$instance\"} > 0)",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,
@@ -775,7 +775,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "round(sum by (server, db) (increase(pg_autodump_dumps_total{instance=\"$instance\", result!~\"ok|killed|skipped\"}[$__range])))",
+                        "expr": "sum by (server, db) (round(increase(pg_autodump_dumps_total{instance=\"$instance\", result!~\"ok|killed|skipped\"}[$__range])))",
                         "legendFormat": "",
                         "instant": true,
                         "range": false,
@@ -801,10 +801,7 @@
                   "spec": {
                     "options": {
                       "excludeByName": {
-                        "Time": true,
-                        "instance": true,
-                        "job": true,
-                        "__name__": true
+                        "Time": true
                       },
                       "indexByName": {
                         "server": 0,

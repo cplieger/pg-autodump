@@ -190,7 +190,8 @@ COPY --from=test /tmp/tests-passed /tmp/tests-passed
 
 COPY licenses/ /usr/share/licenses/
 
-# Health via the binary's own probe (file marker): no shell, no curl, no port.
+# Health via the binary's own probe, which asks GET /healthz on loopback: no
+# shell, no curl.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=6m \
     CMD ["/usr/local/bin/pg-autodump", "health"]
 

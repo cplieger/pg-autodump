@@ -2,19 +2,25 @@ package dump
 
 import "syscall"
 
-// statfsFreeKB returns the free space (in KB) available to an unprivileged
-// user on the filesystem backing dir, via statfs. It is the Orchestrator's
-// default disk-space probe, held behind the o.freeSpace seam so the
-// low-space decision can be tested at exact thresholds.
+// FreeBytes returns the free space in bytes available to an unprivileged
+// user on the filesystem backing dir, via statfs.
 //
 // Linux-only via syscall.Statfs, consistent with the rest of the module.
-func statfsFreeKB(dir string) (int64, error) {
+func FreeBytes(dir string) (int64, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return 0, err
 	}
 	//nolint:gosec // G115: filesystem block counts fit int64 (largest pool << 2^63).
-	return int64(st.Bavail) * st.Bsize / 1024, nil
+	return int64(st.Bavail) * st.Bsize, nil
+}
+
+// statfsFreeKB is the Orchestrator's default disk-space probe, held behind
+// the o.freeSpace seam so the low-space decision can be tested at exact
+// thresholds.
+func statfsFreeKB(dir string) (int64, error) {
+	free, err := FreeBytes(dir)
+	return free / 1024, err
 }
 
 // checkDiskSpace logs a warning when the free space on the dump directory is

@@ -1,11 +1,13 @@
 package dump
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +113,8 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 		return 1, "", ctx.Err()
 	}}
 	orch, marker := healthOrchestrator(t, pgf, []spec.DBSpec{{Host: "h", Port: 5432, DBName: "app", User: "u"}})
+	var logs bytes.Buffer
+	orch.log = slog.New(slog.NewTextHandler(&logs, nil))
 	marker.Set(true)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -128,5 +132,12 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 	}
 	if _, known := scheduler.NewStamp(StampPath(orch.dumpDir)).Last(); known {
 		t.Error("last-run record written by a shutdown-cancelled cycle; want none")
+	}
+	out := logs.String()
+	if strings.Contains(out, "dump cycle complete") {
+		t.Errorf("a shutdown-cancelled cycle wrote the dump cycle complete record the log alerts read; want none, log %q", out)
+	}
+	if !strings.Contains(out, `level=WARN msg="dump cycle cut short" total=1 ok=0 failed=1`) {
+		t.Errorf("a shutdown-cancelled cycle did not log one WARN dump cycle cut short line with its counts, log %q", out)
 	}
 }

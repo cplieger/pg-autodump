@@ -32,6 +32,15 @@ type HealthSink interface {
 	Set(ok bool)
 }
 
+// Recorder receives each cycle's results, one per DB_SPECS entry in order.
+type Recorder interface {
+	// CountDumps counts every result, a cycle shutdown cut short included.
+	CountDumps(results []Result)
+	// RecordVerdict records a cycle that ran to its end at end; a cycle
+	// shutdown cut short has no verdict and is not passed.
+	RecordVerdict(results []Result, end time.Time)
+}
+
 // Params configures an Orchestrator. The pg boundary is injected; the rest are
 // validated config values.
 type Params struct {
@@ -39,7 +48,9 @@ type Params struct {
 	Logger *slog.Logger
 	Now    func() time.Time // injectable clock; defaults to time.Now
 	// Health receives the verdict of every cycle; nil records no health.
-	Health      HealthSink
+	Health HealthSink
+	// Metrics receives every cycle's results; nil records none.
+	Metrics     Recorder
 	DumpDir     string
 	Specs       []spec.DBSpec
 	DumpTimeout time.Duration
@@ -57,6 +68,7 @@ type Orchestrator struct {
 	freeSpace   func(string) (int64, error) // injectable disk-space probe; defaults to statfsFreeKB
 	stamp       *scheduler.Stamp
 	health      HealthSink
+	metrics     Recorder
 	dumpDir     string
 	specs       []spec.DBSpec
 	dumpTimeout time.Duration
@@ -87,6 +99,7 @@ func New(p *Params) *Orchestrator {
 		freeSpace:   statfsFreeKB,
 		stamp:       scheduler.NewStamp(StampPath(dir)),
 		health:      p.Health,
+		metrics:     p.Metrics,
 		dumpDir:     dir,
 		specs:       p.Specs,
 		dumpTimeout: p.DumpTimeout,
@@ -113,10 +126,11 @@ func absDumpDir(dir string) string {
 // Run executes every spec and returns one Result per database in spec order;
 // invalid and duplicate specs yield a Result without being dispatched. It must
 // be the only run in flight (callers hold the in-process guard and the cycle
-// lock), because it first reclaims every temp file as a crash orphan. It ends
-// with the "dump cycle complete" line the Loki absence rule keys on and, unless
-// shutdown cancelled the cycle, writes CycleOK to the last-run record and the
-// health sink.
+// lock), because it first reclaims every temp file as a crash orphan. A cycle
+// with a verdict ends with the "dump cycle complete" record and writes
+// CycleOK to the last-run record, the health sink and the metrics. A cycle
+// shutdown cut short logs "dump cycle cut short" instead and records no
+// verdict, so the previous one stands.
 func (o *Orchestrator) Run(ctx context.Context) []Result {
 	ReclaimOrphans(ctx, o.dumpDir, o.log)
 	o.checkDiskSpace()
@@ -150,23 +164,29 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 			failedN++
 		}
 	}
-	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
+	if o.metrics != nil {
+		o.metrics.CountDumps(results)
+	}
 
-	// A cycle cut short by shutdown has no verdict to record: this ctx is
-	// cancelled only by the drain's CancelInFlight or a one-shot run's signal,
-	// and killed dumps are an expected operator action rather than a dump
-	// failure (see levelFor). Recording one would leave a container recreated
-	// mid-cycle unhealthy until the next trigger, so the previous cycle's
-	// verdict stands and the drain latch owns shutdown health.
+	// A cycle cut short by shutdown has no verdict: this ctx is cancelled only
+	// by the drain's CancelInFlight or a one-shot run's signal, and killed dumps
+	// are an operator action (levelFor). Recording one would leave a container
+	// recreated mid-cycle unhealthy until the next trigger, so the previous
+	// verdict stands and the drain latch owns shutdown health. The cycle
+	// complete record states a verdict, so it is never written here.
 	if ctx.Err() != nil {
+		o.log.Warn("dump cycle cut short", "total", len(results), "ok", okN, "failed", failedN)
 		return results
 	}
+	o.log.Info("dump cycle complete", "total", len(results), "ok", okN, "failed", failedN)
 	ok := CycleOK(results)
 	o.recordCycle(ok)
 	if o.health != nil {
 		o.health.Set(ok)
 	}
-
+	if o.metrics != nil {
+		o.metrics.RecordVerdict(results, o.now())
+	}
 	return results
 }
 
@@ -201,7 +221,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 			detail = perr.Error()
 		}
 		return o.finish(&Result{
-			Host: s.Host, DBName: s.DBName, Reason: reason,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: reason,
 			Detail: detail, ServerVersion: major, Duration: o.now().Sub(start),
 		}, perr)
 	}
@@ -215,7 +235,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
 	if err := o.ensureServerDir(dir); err != nil {
 		return o.finish(&Result{
-			Host: s.Host, DBName: s.DBName, Reason: ReasonMkdirFailed,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: ReasonMkdirFailed,
 			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
 			ServerVersion: major, Duration: o.now().Sub(start),
 		}, nil)
@@ -223,6 +243,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 
 	res := stageAndReplace(dumpCtx, o.pg, dir, dumpFileName(s.DBName, o.keep, start), conn)
 	res.Host = s.Host
+	res.Port = s.Port
 	res.DBName = s.DBName
 	res.ServerVersion = major
 	res.Duration = o.now().Sub(start)
@@ -276,7 +297,7 @@ func (o *Orchestrator) ensureServerDir(dir string) error {
 // finish logs a result and returns it by value so callers can
 // `return o.finish(&res, nil)`. diagErr is an optional probe diagnostic
 // recorded in the log line only, never in r.Detail, so the HTTP response
-// body is unchanged while operators keep the root cause in Loki.
+// body is unchanged while the log keeps the root cause.
 func (o *Orchestrator) finish(r *Result, diagErr error) Result {
 	attrs := []any{
 		"host", r.Host, "db", r.DBName, "reason", string(r.Reason),
@@ -295,18 +316,22 @@ func (o *Orchestrator) finish(r *Result, diagErr error) Result {
 	return *r
 }
 
-// invalidResult builds the Result for a spec that failed validation, using the
-// raw token as the database label when the parsed name is empty.
+// invalidResult builds the Result for a spec that failed validation.
 func invalidResult(s *spec.DBSpec) Result {
 	reason := ReasonInvalid
 	if s.Duplicate {
 		reason = ReasonDuplicate
 	}
-	db := s.DBName
-	if db == "" {
-		db = s.Raw
+	return Result{Host: s.Host, Port: s.Port, DBName: ResultDB(s), Reason: reason, Detail: s.Invalid}
+}
+
+// ResultDB is the DBName every Result for s carries: the parsed name, or the
+// raw token when an invalid entry has none.
+func ResultDB(s *spec.DBSpec) string {
+	if s.DBName == "" {
+		return s.Raw
 	}
-	return Result{Host: s.Host, DBName: db, Reason: reason, Detail: s.Invalid}
+	return s.DBName
 }
 
 // levelFor maps a Reason to the slog level its log line should use.
@@ -315,9 +340,8 @@ func levelFor(r Reason) slog.Level {
 	case ReasonOK:
 		return slog.LevelInfo
 	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
-		// ReasonKilled is only produced by a graceful shutdown cancelling an
-		// in-flight dump, so it's an expected operator action, not a dump
-		// failure — Warn avoids false-firing the Loki dump-failure alert.
+		// ReasonKilled comes only from a graceful shutdown cancelling an
+		// in-flight dump: an expected operator action, not a dump failure.
 		return slog.LevelWarn
 	default:
 		return slog.LevelError

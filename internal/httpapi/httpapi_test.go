@@ -17,6 +17,7 @@ import (
 	"github.com/cplieger/go/httpserver"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
+	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
@@ -56,6 +57,11 @@ func (s okSignal) Healthy() bool { return s.ok }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func metricsPage() http.Handler {
+	reg, _ := obs.NewRegistry("", nil, scheduler.RunRecord{}, false)
+	return reg.Handler()
+}
+
 // newTestServerInDir puts the cross-process cycle lock in cycleDir, so tests
 // can contend on it like an exec'd `pg-autodump run` process would.
 func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
@@ -77,7 +83,8 @@ func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *s
 	return NewServer(&Deps{
 		AuthToken: token,
 		Trigger:   trigger,
-		Health:    okSignal{ok: true},
+		Healthz:   health.Handler(okSignal{ok: true}),
+		Metrics:   metricsPage(),
 		Log:       discard(),
 	})
 }
@@ -215,6 +222,25 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+// GET /metrics answers a scraper that carries no bearer, as /healthz does,
+// even when AUTH_TOKEN guards POST /dump.
+func TestMetricsNeedsNoBearer(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "s3cret")
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /metrics with AUTH_TOKEN set and no bearer: status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "pg_autodump_last_cycle_ok") {
+		t.Errorf("GET /metrics body lacks pg_autodump_last_cycle_ok:\n%s", body)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/metrics", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /metrics: status = %d, want 405", rec.Code)
+	}
+}
+
 // newHealthTestServer wires the orchestrator's health sink and /healthz onto
 // one real marker. Production wires a health.Latch over that marker in
 // runServer, which this fixture does not cover.
@@ -231,7 +257,7 @@ func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Ma
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	return NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()}), marker
+	return NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()}), marker
 }
 
 func healthz(t *testing.T, srv *http.Server) int {
@@ -255,7 +281,7 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	srv := NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()})
+	srv := NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()})
 	marker.Set(true)
 
 	rec := post(t, srv, "")
@@ -329,7 +355,8 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
-		Health:  okSignal{ok: true},
+		Healthz: health.Handler(okSignal{ok: true}),
+		Metrics: metricsPage(),
 		Log:     logger,
 	})
 }

@@ -1,0 +1,42 @@
+# Alert rules for pg-autodump as a Loki ruler (LogQL) group. Load this file or
+# alerts/promql.yaml, not both. The rules read the `dump cycle complete` record
+# every finished cycle writes once at INFO, so keep INFO lines if your log
+# collector filters by level. A cycle a stop cuts short writes no record and
+# changes no alert. Change the `container` selector to the label your log
+# collector sets. Thresholds, windows and severity labels are starting points.
+# The 50h windows are two runs of the default 24h DUMP_INTERVAL plus time for
+# the run; set them to two intervals plus a run's time. PgAutodumpCycleMissing
+# exists only here; PgAutodumpDumpStale and PgAutodumpDown cover it in
+# alerts/promql.yaml. Notes are in docs/monitoring.md.
+groups:
+  - name: pg-autodump
+    rules:
+      # A state rule: it reads the latest record in the window, so it fires at
+      # the first failed cycle and resolves at the next good one. The range
+      # equals PgAutodumpCycleMissing's, so a failed record is still the latest
+      # value when that rule takes over. `| logfmt failed` extracts only that
+      # field; a bare `| logfmt` would turn every line into its own series.
+      - alert: PgAutodumpDumpFailed
+        expr: |
+          last_over_time({container="pg-autodump"} |= `msg="dump cycle complete"` | logfmt failed | unwrap failed [50h]) by (container) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "pg-autodump: a database dump failed"
+          description: >
+            The latest `dump cycle complete` record counts a failed database,
+            so its backup is getting older. The last good dump is kept. The
+            cycle's `dump <reason>` lines name the database and the cause.
+      - alert: PgAutodumpCycleMissing
+        expr: |
+          absent_over_time({container="pg-autodump"} |= `msg="dump cycle complete"` [50h])
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pg-autodump: no dump cycle complete line in 50h"
+          description: >
+            No `dump cycle complete` line arrived in 50h, so backups may have
+            stopped. Check that the container and its timer or trigger are
+            running, and that its logs still reach Loki.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
 // dumpTimeFormat is the UTC timestamp embedded in retained dump filenames. It
@@ -71,6 +73,36 @@ func timestampedDumpNames(entries []os.DirEntry, dbname string) []string {
 		}
 	}
 	return names
+}
+
+// NewestDump returns the modification time of the newest verified dump of s
+// under dumpDir, the stable "<dbname>.dump" or a retained timestamped one;
+// found is false when there is none.
+func NewestDump(dumpDir string, s *spec.DBSpec) (newest time.Time, found bool, err error) {
+	entries, err := os.ReadDir(filepath.Join(dumpDir, spec.ServerDir(s.Host, s.Port)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	names := timestampedDumpNames(entries, s.DBName)
+	for _, e := range entries {
+		if e.Name() != s.DBName+".dump" && !slices.Contains(names, e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, fs.ErrNotExist) { // pruned since ReadDir
+			continue
+		}
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if info.Mode().IsRegular() && (!found || info.ModTime().After(newest)) {
+			newest, found = info.ModTime(), true
+		}
+	}
+	return newest, found, nil
 }
 
 // removeDumps deletes each named file under dir, returning the number

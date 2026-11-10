@@ -65,7 +65,7 @@ docker run --rm \
 
 - The exit code is `0` when every listed database dumped. It is not `0` when any database failed, or when the PostgreSQL tools cannot run, `/dumps` is not writable or `DB_SPECS` is empty.
 - A stop signal during a run stops the `pg_dump` in progress cleanly. That database is reported as `killed`, and the exit code is not `0`.
-- `run` opens no HTTP port and ignores `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL` and `SHUTDOWN_TIMEOUT`. The image's healthcheck is meant for the resident server and says nothing useful about a container that runs once and exits.
+- `run` opens no HTTP port and ignores `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL` and `SHUTDOWN_TIMEOUT`, so it has no `/metrics`; alert on your scheduler's job result. The image's healthcheck asks the resident server's `/healthz` and says nothing useful about a container that runs once and exits.
 - Runs inside one container never overlap. Separate one-shot containers do not share this lock, so their scheduler must keep them from overlapping. When `run` is started inside a container where a run is already going, it exits `0` at once, and the running process does one more run as soon as the current one ends. The per-database results of that run are in the running process's log. This makes a stray manual `run` safe, and it is not meant for running both modes on a schedule.
 
 `trigger` and `run` behave differently on a busy container. `trigger` gets `429` and exits with an error, while `run` queues its request and exits `0`.
@@ -110,6 +110,7 @@ The server listens on `LISTEN_ADDR`, `:9847` by default.
 - `POST /dump` runs every dump and answers with one `host/database: result` line per database, such as `mydb-host/myapp: ok (4823104 bytes)`. For a `pg_error`, `truncated` or `other` failure the line holds only that word, and the full `pg_dump` or `pg_restore` error text goes to the log.
 - `200` means every database dumped. `500` means at least one failed or no database is configured, and the body then reads `no databases configured`. `429` means a run is already in progress. `503` means the container is stopping, so no run started. `401` means `AUTH_TOKEN` is set and the request had no valid `Authorization: Bearer <token>` header.
 - After repeated bad tokens, `POST /dump` answers `429` with a `Retry-After` header for a while. A valid token is never held back.
-- `GET /healthz` answers `200 ok` or `503 unhealthy` from the same file the Docker healthcheck reads.
+- `GET /metrics` serves Prometheus metrics and needs no token. [Monitoring and alerts](monitoring.md#metrics) lists the series.
+- `GET /healthz` needs no token and answers `200` with `{"status":"ok"}`, or `503` with `{"status":"unhealthy","reasons":[...]}`. The Docker healthcheck asks this endpoint, so the two never disagree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) says what healthy means.
 
 Without `AUTH_TOKEN` the endpoint is open, which is fine on loopback or a private network. pg-autodump logs a warning at start when it is open and listens beyond loopback.

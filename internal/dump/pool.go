@@ -22,7 +22,7 @@ import (
 func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(context.Context, *spec.DBSpec) Result) []Result {
 	results := make([]Result, len(specs))
 	for i := range specs {
-		results[i] = Result{Host: specs[i].Host, DBName: specs[i].DBName, Reason: ReasonSkipped}
+		results[i] = Result{Host: specs[i].Host, Port: specs[i].Port, DBName: specs[i].DBName, Reason: ReasonSkipped}
 	}
 
 	sem := make(chan struct{}, n)

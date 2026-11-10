@@ -46,7 +46,7 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN
+      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
@@ -116,19 +116,19 @@ Instead of a `.pgpass` file, you can set `PGPASSWORD`, which libpq uses for ever
 
 | Port | Description |
 | --- | --- |
-| `9847` | `POST /dump` starts a dump, `GET /healthz` reports health |
+| `9847` | `POST /dump` starts a dump, `GET /healthz` reports health, `GET /metrics` serves Prometheus metrics |
 
 ## Security
 
 The container runs as an ordinary user with no Docker socket. It needs only network access to your databases, the password file and a writable `/dumps` folder. Use a role that can only read, as in the quick start.
 
-Port 9847 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log.
+Port 9847 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log. `/healthz` and `/metrics` need no token, and `/metrics` shows database and host names, so publish the port only to your network.
 
 Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/hardening.md) covers the hardened compose settings, the backup role's limits and what the image contains.
 
 ## Troubleshooting
 
-The healthcheck runs `pg-autodump health`, which reads a file written after each run. Healthy means the last run dumped and checked every database. Unhealthy means a database failed or a run could not start. It stays unhealthy until a run fully succeeds, and a restart does not clear it.
+The healthcheck runs `pg-autodump health`, which asks `/healthz` over the container's loopback. Healthy means the last run dumped and checked every database. Unhealthy means a database failed or a run could not start. It stays unhealthy until a run fully succeeds, and a restart does not clear it. An unhealthy container notifies nobody; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
 
 With the built-in timer, a new container is unhealthy while its first dump runs, unless the last run fully succeeded less than one interval ago. It also turns unhealthy when no run has finished in two intervals, 48 hours by default, plus the time one run may take.
 
@@ -141,14 +141,14 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump has no metrics endpoint. It logs one line per database and one `dump cycle complete` line per run to standard error. [Monitoring and alerts](docs/monitoring.md) lists the log lines and has two Loki alert rules, one for a failed dump and one for a missing completion heartbeat after 26 hours.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) says which rules to load. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 
 - [Configuration](docs/configuration.md) explains every setting, the scheduling modes and the file layout.
 - [Security](docs/hardening.md) has the hardened compose settings, the backup role's limits and what the image contains.
 - [How it works](docs/how-it-works.md) shows how a dump is checked and replaced, how runs take turns and what health means.
-- [Monitoring and alerts](docs/monitoring.md) lists the log lines and the Loki alert rules.
+- [Monitoring and alerts](docs/monitoring.md) lists the metrics, the dashboard, the log lines, both rule files and who tells you backups stopped.
 
 ## Credits
 

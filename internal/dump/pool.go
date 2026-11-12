@@ -7,18 +7,13 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// runPool dumps every valid spec using a bounded pool of n workers (n is
-// clamped to [1, len(specs)] by the caller). Results are written into a
-// fixed-size slice indexed by spec position, so ordering is deterministic
-// regardless of completion order.
+// runPool dumps every spec with at most n workers (the caller clamps n to
+// [1, len(specs)]) and returns exactly one Result per spec, indexed by spec
+// position. On cancellation it waits for in-flight workers; undispatched
+// specs keep a reasonSkipped result.
 //
-// No per-host serialization: the common topology is one Postgres server with
-// several databases, and serializing per host would force that case fully
-// serial. The global cap n is the operator's single knob for load.
-//
-// On cancellation the dispatcher stops handing out work and waits for
-// in-flight workers to unwind; undispatched indices keep their pre-filled
-// reasonSkipped result, so every spec yields exactly one Result.
+// There is no per-host limit: the usual setup is one server with several
+// databases, which a per-host limit would make fully serial.
 func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(context.Context, *spec.DBSpec) Result) []Result {
 	results := make([]Result, len(specs))
 	for i := range specs {

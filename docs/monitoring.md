@@ -13,7 +13,7 @@ pg-autodump serves a metrics page and ships metric alert rules, so a Prometheus-
 
 ## Metrics
 
-The resident server always serves `GET /metrics` on `LISTEN_ADDR`, `:9847` by default, with no token, even when `AUTH_TOKEN` is set. The labels carry your database names and a folder name built from each host and port, so publish the port only to your own network. The `server` label is the per-server folder name under `/dumps`, such as `mydb-host_5432`, and `db` is the database name.
+The resident server always serves `GET /metrics` on `LISTEN_ADDR`, `:9472` by default, with no token, even when `AUTH_TOKEN` is set. The labels carry your database names and a folder name built from each host and port, so publish the port only to your own network. The `server` label is the per-server folder name under `/dumps`, such as `mydb-host_5432`, and `db` is the database name.
 
 | Series | Type | Labels | Meaning |
 | --- | --- | --- | --- |
@@ -36,7 +36,7 @@ A scrape config for the default port:
 scrape_configs:
   - job_name: pg-autodump
     static_configs:
-      - targets: ["pg-autodump:9847"]
+      - targets: ["pg-autodump:9472"]
 ```
 
 Keep the job name `pg-autodump`, because `PgAutodumpDown` reads it. A scraper on another host needs the port published to that network. Set `AUTH_TOKEN` too, since anyone who reaches the port can start a dump.
@@ -94,7 +94,7 @@ The log rules read the container's own log stream. That stream covers the reside
 
 | Route | Method | Port | Login | Answers |
 | --- | --- | --- | --- | --- |
-| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `:9847` by default | none | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
+| `/healthz` | `GET`, `HEAD` | `LISTEN_ADDR`, `:9472` by default | none | `200 {"status":"ok"}`, or `503 {"status":"unhealthy","reasons":[...]}` |
 | `/metrics` | `GET` | the same port | none; keep the port on your network | Prometheus text format |
 
 **What healthy means.** The server answers, and the most recent run fully succeeded: every database dumped and verified. With the built-in timer, that run must also have finished within two intervals plus the longest time one run may take, 48 hours by default plus that time, or the timer has stopped. pg-autodump is unhealthy while the first run after a start is still going, unless the last-run record shows a fully successful run within one interval. It is unhealthy while it shuts down, and when `/tmp` is not writable. A `503` answer carries one of two fixed sentences: no fully successful run is on record, which covers a failed run, a first run still going, a shutdown and an unwritable `/tmp`, since the endpoint cannot tell those apart; or the built-in timer has stopped. A database server that is down fails its dump, so it makes the container unhealthy until a run succeeds: the failed run is the fault this app reports.
@@ -111,4 +111,4 @@ The log rules read the container's own log stream. That stream covers the reside
 
 If separate monitoring already alerts when this scheduled job produces no result, `PgAutodumpCycleMissing` and `PgAutodumpDumpStale` repeat that coverage. Keep whichever signal you trust more.
 
-**Probing from outside.** Check `GET http://<host>:9847/healthz` and pass on status 200 only; do not match the body. Use a 5-second timeout, check every 60 seconds, alert after 3 failures, and wait 6 minutes after a first start, or the time your first dump takes. With `DUMP_INTERVAL=off` a new container reports healthy before its first trigger, because it has nothing to report yet.
+**Probing from outside.** Check `GET http://<host>:9472/healthz` and pass on status 200 only; do not match the body. Use a 5-second timeout, check every 60 seconds, alert after 3 failures, and wait 6 minutes after a first start, or the time your first dump takes. With `DUMP_INTERVAL=off` a new container reports healthy before its first trigger, because it has nothing to report yet.

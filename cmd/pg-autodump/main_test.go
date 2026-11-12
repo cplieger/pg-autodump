@@ -21,16 +21,16 @@ func TestLocalAddr(t *testing.T) {
 		listen string
 		want   string
 	}{
-		{"port_only_default", ":9847", "127.0.0.1:9847"},
-		{"wildcard_v4", "0.0.0.0:9847", "127.0.0.1:9847"},
-		{"wildcard_v6", "[::]:9847", "127.0.0.1:9847"},
+		{"port_only_default", ":9472", "127.0.0.1:9472"},
+		{"wildcard_v4", "0.0.0.0:9472", "127.0.0.1:9472"},
+		{"wildcard_v6", "[::]:9472", "127.0.0.1:9472"},
 		// An explicit host is preserved verbatim: localhost and ::1 both
 		// resolve to loopback, and preserving an IPv6-only-loopback host is
 		// the point of the fix.
 		{"host_and_port", "localhost:5432", "localhost:5432"},
-		{"bare_port_no_colon", "9847", "127.0.0.1:9847"},
-		{"loopback_v6_only", "[::1]:9847", "[::1]:9847"},
-		{"loopback_v4_explicit", "127.0.0.1:9847", "127.0.0.1:9847"},
+		{"bare_port_no_colon", "9472", "127.0.0.1:9472"},
+		{"loopback_v6_only", "[::1]:9472", "[::1]:9472"},
+		{"loopback_v4_explicit", "127.0.0.1:9472", "127.0.0.1:9472"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

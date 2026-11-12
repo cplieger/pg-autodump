@@ -46,7 +46,7 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
+      - "127.0.0.1:9472:9472"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
@@ -81,7 +81,7 @@ pg-autodump dumps every database right after the first start. Run `docker logs p
 
 ## Starting a dump yourself
 
-The built-in timer dumps every 24 hours. To dump right now, run `curl -fsS -X POST http://127.0.0.1:9847/dump` on the Docker host, or `docker exec pg-autodump pg-autodump trigger`. The answer has one line per database and status `200` when every database dumped. Status `500` means at least one failed, and `429` means a dump is already running.
+The built-in timer dumps every 24 hours. To dump right now, run `curl -fsS -X POST http://127.0.0.1:9472/dump` on the Docker host, or `docker exec pg-autodump pg-autodump trigger`. The answer has one line per database and status `200` when every database dumped. Status `500` means at least one failed, and `429` means a dump is already running.
 
 To let cron, a systemd timer or another scheduler decide when dumps run, set `DUMP_INTERVAL=off` and call `trigger` from it. `pg-autodump run`, started as a container of its own, does one dump and exits, with exit code `0` only when every database dumped. [Configuration](docs/configuration.md#scheduling) covers both.
 
@@ -101,7 +101,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | `DUMP_TIMEOUT` | Seconds one database may take to dump, at least 10 | `300` |
 | `DUMP_CONCURRENCY` | Databases dumped at the same time | `2` |
 | `AUTH_TOKEN` | When set, `POST /dump` needs the header `Authorization: Bearer <token>` | _(unset)_ |
-| `LISTEN_ADDR` | Address the HTTP server listens on | `:9847` |
+| `LISTEN_ADDR` | Address the HTTP server listens on | `:9472` |
 | `SHUTDOWN_TIMEOUT` | How long a stop waits for a running dump, such as `315s`. Keep `stop_grace_period` about 5s longer than this | `DUMP_TIMEOUT` plus 15s |
 | `PGPASSFILE` | Path of the password file inside the container | `/secrets/.pgpass` |
 | `DUMP_DIR` | Folder the dumps go to inside the container. A path with a `..` part stops the container from starting | `/dumps` |
@@ -116,13 +116,13 @@ Instead of a `.pgpass` file, you can set `PGPASSWORD`, which libpq uses for ever
 
 | Port | Description |
 | --- | --- |
-| `9847` | `POST /dump` starts a dump, `GET /healthz` reports health, `GET /metrics` serves Prometheus metrics |
+| `9472` | `POST /dump` starts a dump, `GET /healthz` reports health, `GET /metrics` serves Prometheus metrics |
 
 ## Security
 
 The container runs as an ordinary user with no Docker socket. It needs only network access to your databases, the password file and a writable `/dumps` folder. Use a role that can only read, as in the quick start.
 
-Port 9847 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log. `/healthz` and `/metrics` need no token, and `/metrics` shows database and host names, so publish the port only to your network.
+Port 9472 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log. `/healthz` and `/metrics` need no token, and `/metrics` shows database and host names, so publish the port only to your network.
 
 Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/hardening.md) covers the hardened compose settings, the backup role's limits and what the image contains.
 
@@ -141,7 +141,7 @@ The image waits 6 minutes before it counts a starting container as unhealthy. Wi
 
 ## Monitoring
 
-pg-autodump serves Prometheus metrics at `/metrics` on port 9847 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) says which rules to load. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9472 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) says which rules to load. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 

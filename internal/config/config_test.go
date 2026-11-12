@@ -28,6 +28,11 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ListenAddr != defaultListenAddr || cfg.DumpDir != defaultDumpDir || cfg.PGPassFile != defaultPGPassFile {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
+	// The default port is documented, published in the example compose file
+	// and named by scrape and probe targets; moving it is a breaking change.
+	if cfg.ListenAddr != ":9472" {
+		t.Fatalf("default LISTEN_ADDR = %q, want :9472", cfg.ListenAddr)
+	}
 	if cfg.DumpTimeout != defaultDumpTimeout || cfg.DumpConcurrency != defaultConcurrency {
 		t.Fatalf("numeric defaults not applied: %+v", cfg)
 	}
@@ -420,18 +425,18 @@ func TestListenerOpenAndPublic(t *testing.T) {
 		listen    string
 		want      bool
 	}{
-		{"open wildcard", "", ":9847", true},
-		{"open 0.0.0.0", "", "0.0.0.0:9847", true},
-		{"open ipv6 wildcard", "", "[::]:9847", true},
-		{"open specific non-loopback", "", "192.168.1.5:9847", true},
-		{"open loopback v4", "", "127.0.0.1:9847", false},
-		{"open loopback v6", "", "[::1]:9847", false},
-		{"open localhost", "", "localhost:9847", false},
+		{"open wildcard", "", ":9472", true},
+		{"open 0.0.0.0", "", "0.0.0.0:9472", true},
+		{"open ipv6 wildcard", "", "[::]:9472", true},
+		{"open specific non-loopback", "", "192.168.1.5:9472", true},
+		{"open loopback v4", "", "127.0.0.1:9472", false},
+		{"open loopback v6", "", "[::1]:9472", false},
+		{"open localhost", "", "localhost:9472", false},
 		{"open portless addr (unparseable -> fail-safe public)", "", "justahost", true},
-		{"open non-localhost named host", "", "db.internal:9847", true},
+		{"open non-localhost named host", "", "db.internal:9472", true},
 		{"token set, portless addr", "secret", "justahost", false},
-		{"token set, wildcard", "secret", ":9847", false},
-		{"token set, public", "secret", "0.0.0.0:9847", false},
+		{"token set, wildcard", "secret", ":9472", false},
+		{"token set, public", "secret", "0.0.0.0:9472", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -613,7 +613,7 @@ func addSaturating(a, b time.Duration) time.Duration {
 func localAddr(listen string) string {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		// No port (e.g. a bare "9847"): treat the whole string as the port.
+		// No port (e.g. a bare "9472"): treat the whole string as the port.
 		return net.JoinHostPort("127.0.0.1", listen)
 	}
 	// A wildcard/unspecified bind is reachable on loopback; an explicit

@@ -313,11 +313,11 @@ func TestHealthSubcommandAsksTheEndpoint(t *testing.T) {
 // naming it, instead of asking a guessed address.
 func TestHealthSubcommandRejectsAnUnusableListenAddr(t *testing.T) {
 	getenv := func(k string) string {
-		return map[string]string{"LISTEN_ADDR": "9847", "DB_SPECS": "h:5432:db:u"}[k]
+		return map[string]string{"LISTEN_ADDR": "9472", "DB_SPECS": "h:5432:db:u"}[k]
 	}
 	var stderr bytes.Buffer
 	if got := probeHealth(&stderr, getenv, time.Second); got != 1 {
-		t.Errorf("health with LISTEN_ADDR=9847 = %d, want 1", got)
+		t.Errorf("health with LISTEN_ADDR=9472 = %d, want 1", got)
 	}
 	if !strings.Contains(stderr.String(), "LISTEN_ADDR") {
 		t.Errorf("health's diagnostic = %q, want it to name LISTEN_ADDR", stderr.String())

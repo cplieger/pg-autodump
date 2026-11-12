@@ -23,7 +23,7 @@ import (
 
 // Defaults for every tunable.
 const (
-	defaultListenAddr   = ":9847"
+	defaultListenAddr   = ":9472"
 	defaultDumpDir      = "/dumps"
 	defaultPGPassFile   = "/secrets/.pgpass"
 	defaultDumpTimeout  = 300 * time.Second

@@ -8,7 +8,7 @@ tests:
   - name: a failing scrape pages after 5m and keeps the target's labels
     interval: 1m
     input_series:
-      - series: 'up{job="pg-autodump", instance="pg-autodump:9847"}'
+      - series: 'up{job="pg-autodump", instance="pg-autodump:9472"}'
         values: "1 0x10"
     alert_rule_test:
       - eval_time: 4m
@@ -20,7 +20,7 @@ tests:
           - exp_labels:
               severity: warning
               job: pg-autodump
-              instance: pg-autodump:9847
+              instance: pg-autodump:9472
             exp_annotations:
               summary: "pg-autodump is not being scraped"
               description: "No successful scrape for 5m: the container is stopped, crash-looping or refusing to start, or the scrape cannot reach LISTEN_ADDR. Check the container's state and its log.\n"
@@ -44,9 +44,9 @@ tests:
   - name: PgAutodumpDumpFailed holds for the failing database only and clears at its next good dump
     interval: 1h
     input_series:
-      - series: 'pg_autodump_dump_ok{job="pg-autodump", instance="pg-autodump:9847", server="db1_5432", db="app"}'
+      - series: 'pg_autodump_dump_ok{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="app"}'
         values: "1 0x23 1x4"
-      - series: 'pg_autodump_dump_ok{job="pg-autodump", instance="pg-autodump:9847", server="db1_5432", db="billing"}'
+      - series: 'pg_autodump_dump_ok{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="billing"}'
         values: "1x28"
     alert_rule_test:
       - eval_time: 0m
@@ -58,7 +58,7 @@ tests:
           - exp_labels:
               severity: critical
               job: pg-autodump
-              instance: pg-autodump:9847
+              instance: pg-autodump:9472
               server: db1_5432
               db: app
             exp_annotations:
@@ -72,7 +72,7 @@ tests:
     interval: 1h
     input_series:
       # The newest dump was written at the epoch, then again at 52h.
-      - series: 'pg_autodump_newest_dump_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9847", server="db1_5432", db="app"}'
+      - series: 'pg_autodump_newest_dump_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="app"}'
         values: "0x51 187200x5"
     alert_rule_test:
       - eval_time: 49h
@@ -84,7 +84,7 @@ tests:
           - exp_labels:
               severity: warning
               job: pg-autodump
-              instance: pg-autodump:9847
+              instance: pg-autodump:9472
               server: db1_5432
               db: app
             exp_annotations:

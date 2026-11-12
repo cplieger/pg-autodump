@@ -53,7 +53,7 @@ On a stop signal, the container turns unhealthy, stops accepting HTTP requests a
 
 ## Health
 
-The healthcheck runs `pg-autodump health`, a request to `/healthz` over loopback, which needs no shell or `curl`. The verdict comes from a file under `/tmp` that every finished run writes, whether the timer, `POST /dump`, `trigger` or a `run` inside the container started it.
+The healthcheck runs `pg-autodump health`, a request to `/healthz` over loopback, which needs no shell or `curl`. The server keeps the verdict in memory and sets it at the end of every run it does, whether the timer, `POST /dump` or `trigger` started it. A `pg-autodump run` started inside the container reports by its exit code and leaves the server's verdict alone; it does write the last-run record, which the server reads at its next start.
 
 - Healthy means the most recent run fully succeeded.
 - Unhealthy means a database failed or a run could not start. A run cannot start when a PostgreSQL tool cannot run, `/dumps` is not writable or `DB_SPECS` is empty. It stays unhealthy until a run fully succeeds.
@@ -68,4 +68,4 @@ At start, health follows the [last-run record](configuration.md#the-startup-dump
 
 The image sets a 6-minute start period, one default `DUMP_TIMEOUT` round plus some margin. A healthy check inside that window ends it early, and a container still dumping is reported unhealthy only after it. Size `healthcheck.start_period` in your compose file for the time your first dump takes.
 
-With the built-in timer, health also fails when the file is older than two intervals plus one run's longest time, which catches a timer that stopped firing. `GET /healthz` applies that age limit, and the Docker healthcheck asks `/healthz`, so the two always agree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.
+With the built-in timer, health also fails when no run has refreshed a healthy verdict in two intervals plus one run's longest time, which catches a timer that stopped firing. `GET /healthz` applies that age limit, and the Docker healthcheck asks `/healthz`, so the two always agree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.

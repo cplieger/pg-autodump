@@ -87,7 +87,7 @@ tests:
               instance: pg-autodump:9472
             exp_annotations:
               summary: "pg-autodump: dumps are overdue"
-              description: "No dump cycle has fully succeeded by the deadline the built-in timer set: two DUMP_INTERVAL runs after the last fully successful cycle, plus one cycle's longest run. Dumps may be failing, or the timer may have stopped. Check the container, its schedule and PgAutodumpDumpFailed.\n"
+              description: "The built-in timer's deadline passed over 15m ago with no fully successful dump cycle. Dumps may be failing, or the timer may have stopped. Check the container, its log and PgAutodumpDumpFailed.\n"
       - eval_time: 92m
         alertname: PgAutodumpDumpStale
         exp_alerts: []

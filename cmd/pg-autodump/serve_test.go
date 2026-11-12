@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
@@ -27,7 +26,7 @@ type heldPG struct {
 	release chan struct{}
 }
 
-func (p *heldPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*heldPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -42,7 +41,7 @@ func (p *heldPG) Dump(ctx context.Context, _ dump.Conn, w io.Writer) (int, strin
 	return 0, "", nil
 }
 
-func (p *heldPG) VerifyTOC(context.Context, string) error { return nil }
+func (*heldPG) VerifyTOC(context.Context, string) error { return nil }
 
 var errAcceptFailed = errors.New("accept failed")
 
@@ -55,9 +54,9 @@ func (l *failingListener) Accept() (net.Conn, error) {
 	return nil, errAcceptFailed
 }
 
-func (l *failingListener) Close() error { return nil }
+func (*failingListener) Close() error { return nil }
 
-func (l *failingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
+func (*failingListener) Addr() net.Addr { return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)} }
 
 // A server that exits on its own gets no signal, so nothing else stops the
 // timer, and the process exits once serve returns: serve must stop the timer
@@ -91,10 +90,10 @@ func TestServe_ServeExitStopsTheTimerAndWaitsForTheInFlightDump(t *testing.T) {
 		<-pgf.started
 
 		ln := &failingListener{fail: make(chan struct{})}
-		latch := health.NewLatch(health.NewMarker(filepath.Join(t.TempDir(), "healthy")))
+		st := health.NewStatus(health.WithLogger(log))
 		served := make(chan error, 1)
 		go func() {
-			served <- serve(ctx, stop, &http.Server{}, ln, guard, tickerDone, latch, testGrace, log)
+			served <- serve(ctx, stop, &http.Server{}, ln, guard, tickerDone, st, testGrace, log)
 		}()
 		close(ln.fail)
 		synctest.Wait()

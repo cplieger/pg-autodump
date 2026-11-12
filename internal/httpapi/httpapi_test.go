@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
@@ -30,7 +30,7 @@ type stubPG struct {
 	dumpCalls atomic.Int32
 }
 
-func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -49,7 +49,7 @@ func (p *stubPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, string,
 	return 0, "", nil
 }
 
-func (p *stubPG) VerifyTOC(context.Context, string) error { return nil }
+func (*stubPG) VerifyTOC(context.Context, string) error { return nil }
 
 type okSignal struct{ ok bool }
 
@@ -58,7 +58,7 @@ func (s okSignal) Healthy() bool { return s.ok }
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func metricsPage() http.Handler {
-	reg, _ := obs.NewRegistry("", nil, scheduler.RunRecord{}, false)
+	reg, _ := obs.NewRegistry("", nil, &obs.Boot{})
 	return reg.Handler()
 }
 
@@ -83,7 +83,7 @@ func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *s
 	return NewServer(&Deps{
 		AuthToken: token,
 		Trigger:   trigger,
-		Healthz:   health.Handler(okSignal{ok: true}),
+		Healthz:   health.CheckHandler(health.Check{Signal: okSignal{ok: true}}),
 		Metrics:   metricsPage(),
 		Log:       discard(),
 	})
@@ -242,22 +242,21 @@ func TestMetricsNeedsNoBearer(t *testing.T) {
 }
 
 // newHealthTestServer wires the orchestrator's health sink and /healthz onto
-// one real marker. Production wires a health.Latch over that marker in
-// runServer, which this fixture does not cover.
-func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Marker) {
+// one health Status, as runServer does.
+func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Status) {
 	t.Helper()
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	st := health.NewStatus(health.WithLogger(slog.New(slog.DiscardHandler)))
 	orch := dump.New(&dump.Params{
 		PG:          pg,
 		Logger:      discard(),
-		Health:      marker,
+		Health:      st,
 		DumpDir:     t.TempDir(),
 		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	return NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()}), marker
+	return NewServer(&Deps{Trigger: trigger, Healthz: health.CheckHandler(health.Check{Signal: st}), Metrics: metricsPage(), Log: discard()}), st
 }
 
 func healthz(t *testing.T, srv *http.Server) int {
@@ -268,21 +267,21 @@ func healthz(t *testing.T, srv *http.Server) int {
 }
 
 // A POST /dump over zero configured databases dumped nothing: 500, a body that
-// says so, and the marker removed, so an empty DB_SPECS cannot read as a
+// says so, and the verdict unhealthy, so an empty DB_SPECS cannot read as a
 // successful cycle.
 func TestDumpNoDatabasesReturns500(t *testing.T) {
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	st := health.NewStatus(health.WithLogger(slog.New(slog.DiscardHandler)))
 	orch := dump.New(&dump.Params{
 		PG:          &stubPG{},
 		Logger:      discard(),
-		Health:      marker,
+		Health:      st,
 		DumpDir:     t.TempDir(),
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
 	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
-	srv := NewServer(&Deps{Trigger: trigger, Healthz: health.Handler(marker), Metrics: metricsPage(), Log: discard()})
-	marker.Set(true)
+	srv := NewServer(&Deps{Trigger: trigger, Healthz: health.CheckHandler(health.Check{Signal: st}), Metrics: metricsPage(), Log: discard()})
+	st.Set(true)
 
 	rec := post(t, srv, "")
 	if rec.Code != http.StatusInternalServerError {
@@ -291,23 +290,23 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "no databases configured") {
 		t.Errorf("POST /dump with no databases: body = %q, want it to say no databases are configured", body)
 	}
-	if marker.Healthy() {
-		t.Error("marker present after a cycle over zero databases; want it removed")
+	if st.Healthy() {
+		t.Error("verdict healthy after a cycle over zero databases; want it unhealthy")
 	}
 }
 
 // A POST /dump whose cycle has a failed database answers 500 AND marks the
-// container unhealthy: the marker the boot left behind is removed and
+// container unhealthy: the healthy verdict the boot left is replaced and
 // /healthz turns 503.
 func TestDumpFailureMarksUnhealthy(t *testing.T) {
-	srv, marker := newHealthTestServer(t, &stubPG{exit: 1})
-	marker.Set(true)
+	srv, st := newHealthTestServer(t, &stubPG{exit: 1})
+	st.Set(true)
 
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.Healthy() {
-		t.Error("marker present after a failed cycle; want it removed")
+	if st.Healthy() {
+		t.Error("verdict healthy after a failed cycle; want it unhealthy")
 	}
 	if got := healthz(t, srv); got != http.StatusServiceUnavailable {
 		t.Errorf("/healthz after a failed cycle = %d, want 503", got)
@@ -315,23 +314,23 @@ func TestDumpFailureMarksUnhealthy(t *testing.T) {
 }
 
 // Health follows the most recent cycle: a fully successful POST /dump after a
-// failed one restores the marker without a restart.
+// failed one restores the healthy verdict without a restart.
 func TestDumpSuccessAfterFailureRestoresHealth(t *testing.T) {
 	pg := &stubPG{exit: 1}
-	srv, marker := newHealthTestServer(t, pg)
+	srv, st := newHealthTestServer(t, pg)
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("failing POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.Healthy() {
-		t.Fatal("marker present after the failed cycle; the recovery test needs an unhealthy start")
+	if st.Healthy() {
+		t.Fatal("verdict healthy after the failed cycle; the recovery test needs an unhealthy start")
 	}
 
 	pg.exit = 0
 	if rec := post(t, srv, ""); rec.Code != http.StatusOK {
 		t.Fatalf("recovering POST /dump status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
-	if !marker.Healthy() {
-		t.Error("marker absent after a fully successful cycle; want it restored")
+	if !st.Healthy() {
+		t.Error("verdict unhealthy after a fully successful cycle; want it healthy")
 	}
 	if got := healthz(t, srv); got != http.StatusOK {
 		t.Errorf("/healthz after the recovering cycle = %d, want 200", got)
@@ -355,7 +354,7 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
-		Healthz: health.Handler(okSignal{ok: true}),
+		Healthz: health.CheckHandler(health.Check{Signal: okSignal{ok: true}}),
 		Metrics: metricsPage(),
 		Log:     logger,
 	})
@@ -374,7 +373,7 @@ func (f *failingWriter) Header() http.Header {
 	return f.header
 }
 
-func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (*failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func (f *failingWriter) WriteHeader(code int) { f.code = code }
 

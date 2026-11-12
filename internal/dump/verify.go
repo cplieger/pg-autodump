@@ -138,17 +138,17 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 		// A target occupied by a directory, FIFO, device, or socket is
 		// refused here rather than at Commit; the prior dump is intact and
 		// this classifies as rename_failed, not a generic temp-create fault
-		// (ReasonOther would misname the destination problem as a temp one).
+		// (reasonOther would misname the destination problem as a temp one).
 		if errors.Is(err, filesafe.ErrNotRegular) {
 			return Result{
-				Reason: ReasonRenameFailed,
+				Reason: reasonRenameFailed,
 				Detail: "target is not a regular file: " + err.Error(),
 			}
 		}
 		// A ctx cancel/deadline at temp-create time is killed/timeout, not a
 		// generic fault; abortOr mirrors the VerifyTOC/Commit gates so every
 		// gate classifies a cancellation uniformly.
-		return abortOr(ctx, &Result{Reason: ReasonOther, Detail: "cannot create temp file: " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonOther, Detail: "cannot create temp file: " + err.Error()})
 	}
 	committed := false
 	defer func() {
@@ -163,7 +163,7 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 		return ctxAbortResult(ctxErr)
 	}
 	if dumpErr != nil && exitCode == 0 {
-		return Result{Reason: ReasonOther, Detail: dumpErr.Error()}
+		return Result{Reason: reasonOther, Detail: dumpErr.Error()}
 	}
 	if exitCode != 0 {
 		return Result{Reason: ReasonPGError, Detail: stderrDetail(stderrTail)}
@@ -171,19 +171,19 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 
 	info, statErr := os.Stat(pending.Name())
 	if statErr != nil {
-		return Result{Reason: ReasonOther, Detail: "stat temp file: " + statErr.Error()}
+		return Result{Reason: reasonOther, Detail: "stat temp file: " + statErr.Error()}
 	}
 	size := info.Size()
 	if size == 0 {
-		return Result{Reason: ReasonEmpty, Detail: "dump produced an empty file"}
+		return Result{Reason: reasonEmpty, Detail: "dump produced an empty file"}
 	}
 
 	if err := p.VerifyTOC(ctx, pending.Name()); err != nil {
-		return abortOr(ctx, &Result{Reason: ReasonTruncated, Detail: "pg_restore --list failed (TOC unreadable): " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonTruncated, Detail: "pg_restore --list failed (TOC unreadable): " + err.Error()})
 	}
 
 	if _, err := pending.Commit(ctx); err != nil {
-		return abortOr(ctx, &Result{Reason: ReasonRenameFailed, Detail: "atomic replace failed: " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonRenameFailed, Detail: "atomic replace failed: " + err.Error()})
 	}
 	committed = true
 

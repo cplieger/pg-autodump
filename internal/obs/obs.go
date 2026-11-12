@@ -1,5 +1,5 @@
 // Package obs wires startup observability to pg-autodump's domain: a preflight
-// check that gates the health marker at boot and a one-shot run's cycle.
+// check that gates the boot health verdict and a one-shot run's cycle.
 package obs
 
 import (

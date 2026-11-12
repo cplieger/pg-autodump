@@ -21,17 +21,17 @@ import (
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
-// Defaults for every tunable. Exported so tests and docs share one source.
+// Defaults for every tunable.
 const (
-	DefaultListenAddr   = ":9847"
-	DefaultDumpDir      = "/dumps"
-	DefaultPGPassFile   = "/secrets/.pgpass"
-	DefaultDumpTimeout  = 300 * time.Second
-	MinDumpTimeout      = 10 * time.Second
-	DefaultConcurrency  = 2
+	defaultListenAddr   = ":9472"
+	defaultDumpDir      = "/dumps"
+	defaultPGPassFile   = "/secrets/.pgpass"
+	defaultDumpTimeout  = 300 * time.Second
+	minDumpTimeout      = 10 * time.Second
+	defaultConcurrency  = 2
 	DefaultDumpInterval = 24 * time.Hour
-	DefaultDumpKeep     = 7       // retained timestamped copies per DB; set 1 for a single stable <dbname>.dump (overwrite)
-	DefaultFreeKBWarn   = 1 << 20 // 1 GiB
+	defaultDumpKeep     = 7       // retained timestamped copies per DB; set 1 for a single stable <dbname>.dump (overwrite)
+	defaultFreeKBWarn   = 1 << 20 // 1 GiB
 	shutdownSlack       = 15 * time.Second
 	stmtTimeoutSlack    = 60 * time.Second
 )
@@ -69,9 +69,9 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	src := envx.Source{Get: getenv}
 	dumpDir, dumpDirErr := loadDumpDir(getenv("DUMP_DIR"))
 	cfg := Config{
-		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), DefaultListenAddr),
+		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), defaultListenAddr),
 		DumpDir:    dumpDir,
-		PGPassFile: firstNonEmpty(getenv("PGPASSFILE"), DefaultPGPassFile),
+		PGPassFile: firstNonEmpty(getenv("PGPASSFILE"), defaultPGPassFile),
 		AuthToken:  getenv("AUTH_TOKEN"),
 	}
 
@@ -84,9 +84,9 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	// deadline fires first; the server-side bound only matters for an
 	// uncleanly-dropped network path.
 	cfg.StmtTimeout = cfg.DumpTimeout + stmtTimeoutSlack
-	cfg.DumpConcurrency = loadPositiveInt(src, "DUMP_CONCURRENCY", DefaultConcurrency, &w)
+	cfg.DumpConcurrency = loadPositiveInt(src, "DUMP_CONCURRENCY", defaultConcurrency, &w)
 	cfg.DumpInterval = loadInterval(src, &w)
-	cfg.DumpKeep = loadPositiveInt(src, "DUMP_KEEP", DefaultDumpKeep, &w)
+	cfg.DumpKeep = loadPositiveInt(src, "DUMP_KEEP", defaultDumpKeep, &w)
 	cfg.FreeKBWarn = loadFreeKB(src, &w)
 	cfg.ShutdownTimeout = loadShutdownTimeout(src, cfg.DumpTimeout, &w)
 
@@ -116,7 +116,7 @@ func (w *warnings) addf(format string, args ...any) {
 // so a name merely containing dots (e.g. "/dumps/a..b") is accepted.
 func loadDumpDir(v string) (string, error) {
 	if v == "" {
-		return DefaultDumpDir, nil
+		return defaultDumpDir, nil
 	}
 	if pathinside.HasDotDot(v) {
 		return "", fmt.Errorf("DUMP_DIR %q must not contain a %q path component, so pg-autodump refuses to start. Set a directory without path traversal", v, "..")
@@ -128,16 +128,16 @@ func loadDumpTimeout(src envx.Source, w *warnings) time.Duration {
 	secs, ok, err := src.IntStrict("DUMP_TIMEOUT")
 	switch {
 	case err != nil:
-		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", rawValue(err), DefaultDumpTimeout)
-		return DefaultDumpTimeout
+		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", rawValue(err), defaultDumpTimeout)
+		return defaultDumpTimeout
 	case !ok:
-		return DefaultDumpTimeout
+		return defaultDumpTimeout
 	case secs <= 0:
-		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", strconv.Itoa(secs), DefaultDumpTimeout)
-		return DefaultDumpTimeout
-	case time.Duration(secs)*time.Second < MinDumpTimeout:
-		w.addf("DUMP_TIMEOUT %ds is below the minimum, so it is clamped to %s", secs, MinDumpTimeout)
-		return MinDumpTimeout
+		w.addf("DUMP_TIMEOUT %q is not a positive integer, so the default %s is used", strconv.Itoa(secs), defaultDumpTimeout)
+		return defaultDumpTimeout
+	case time.Duration(secs)*time.Second < minDumpTimeout:
+		w.addf("DUMP_TIMEOUT %ds is below the minimum, so it is clamped to %s", secs, minDumpTimeout)
+		return minDumpTimeout
 	default:
 		return time.Duration(secs) * time.Second
 	}
@@ -195,13 +195,13 @@ func loadFreeKB(src envx.Source, w *warnings) int64 {
 	kb, ok, err := src.IntStrict("DUMP_FREE_KB_WARN")
 	switch {
 	case err != nil:
-		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", rawValue(err), DefaultFreeKBWarn)
-		return DefaultFreeKBWarn
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", rawValue(err), defaultFreeKBWarn)
+		return defaultFreeKBWarn
 	case !ok:
-		return DefaultFreeKBWarn
+		return defaultFreeKBWarn
 	case kb < 0:
-		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", strconv.Itoa(kb), DefaultFreeKBWarn)
-		return DefaultFreeKBWarn
+		w.addf("DUMP_FREE_KB_WARN %q is not a non-negative integer, so the default %d is used", strconv.Itoa(kb), defaultFreeKBWarn)
+		return defaultFreeKBWarn
 	default:
 		return int64(kb)
 	}

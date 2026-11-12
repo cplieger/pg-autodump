@@ -24,6 +24,8 @@ type Metrics struct {
 	duration  *measure.LabeledGauge
 	cycleTime *measure.Gauge
 	cycleOK   *measure.Gauge
+	deadline  *measure.Gauge
+	gap       time.Duration
 }
 
 var _ dump.Recorder = (*Metrics)(nil)
@@ -36,13 +38,29 @@ func databaseOf(r *dump.Result) database {
 	return database{server: spec.ServerDir(r.Host, r.Port), db: r.DBName}
 }
 
+// Boot is what the server knows at start.
+type Boot struct {
+	Start time.Time
+	// Last is the last-run record read at boot; Known is false when there is
+	// none.
+	Last scheduler.RunRecord
+	// Version is the running build's, served in build_info.
+	Version string
+	// Gap is how long after a fully successful cycle the next one is due; 0
+	// while the built-in timer is off.
+	Gap   time.Duration
+	Known bool
+}
+
 // NewRegistry builds the registry GET /metrics serves and the Metrics every
 // cycle records into. Every entry of specs has its series from the start, and
-// last, the last-run record read at boot (known is false when there is none),
-// seeds the last-result and last-cycle gauges: the record does not say which
-// database failed, so a failed record seeds every entry failed. The files
-// under dumpDir are read at each scrape.
-func NewRegistry(dumpDir string, specs []spec.DBSpec, last scheduler.RunRecord, known bool) (*measure.Registry, *Metrics) {
+// boot.Last seeds the last-result and last-cycle gauges: the record does not
+// say which database failed, so a failed record seeds every entry failed. The
+// cycle deadline starts at the last success on record, or boot.Start when
+// there is none, plus boot.Gap. The files under dumpDir are read at each
+// scrape.
+func NewRegistry(dumpDir string, specs []spec.DBSpec, boot *Boot) (*measure.Registry, *Metrics) {
+	last, known := boot.Last, boot.Known
 	m := &Metrics{
 		dumps: measure.NewLabeledCounter("dumps_total",
 			"Dumps by database and result.", append(slices.Clone(perDB), "result")),
@@ -56,9 +74,16 @@ func NewRegistry(dumpDir string, specs []spec.DBSpec, last scheduler.RunRecord, 
 			"Unix time the latest dump cycle ended; read from the last-run record at start."),
 		cycleOK: measure.NewGauge("last_cycle_ok",
 			"1 when every database dumped and verified in the latest cycle, else 0."),
+		deadline: measure.NewGauge("cycle_deadline_timestamp_seconds",
+			"Unix time by which the next fully successful dump cycle is due; 0 while DUMP_INTERVAL is off."),
+		gap: boot.Gap,
 	}
+	buildInfo := measure.NewLabeledGauge("build_info",
+		"Always 1; version is the running build's release tag.", []string{"version"})
+	buildInfo.Set(1, boot.Version)
 	reg := measure.NewRegistry(metricsPrefix)
-	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK, newDumpDirCollector(dumpDir, specs))
+	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK, m.deadline,
+		buildInfo, newDumpDirCollector(dumpDir, specs))
 
 	okSeed := 1.0
 	if known && !last.OK {
@@ -78,6 +103,11 @@ func NewRegistry(dumpDir string, specs []spec.DBSpec, last scheduler.RunRecord, 
 		m.cycleTime.Set(unixSeconds(last.Time))
 		m.cycleOK.Set(digit(last.OK))
 	}
+	lastSuccess := boot.Start
+	if known && last.OK {
+		lastSuccess = last.Time
+	}
+	m.setDeadline(lastSuccess)
 	return reg, m
 }
 
@@ -135,11 +165,25 @@ func (m *Metrics) RecordVerdict(results []dump.Result, end time.Time) {
 		m.dumpOK.Set(digit(v), d.server, d.db)
 	}
 	m.cycleTime.Set(unixSeconds(end))
-	m.cycleOK.Set(digit(dump.CycleOK(results)))
+	cycleOK := dump.CycleOK(results)
+	m.cycleOK.Set(digit(cycleOK))
+	if cycleOK {
+		m.setDeadline(end)
+	}
 }
 
+// setDeadline dates the cycle deadline one gap after a success at
+// lastSuccess; with no gap it stays 0.
+func (m *Metrics) setDeadline(lastSuccess time.Time) {
+	if m.gap > 0 {
+		m.deadline.Set(unixSeconds(lastSuccess.Add(m.gap)))
+	}
+}
+
+// unixSeconds avoids UnixNano, which overflows past 2262 and a saturated gap
+// reaches it.
 func unixSeconds(t time.Time) float64 {
-	return float64(t.UnixNano()) / float64(time.Second)
+	return float64(t.Unix()) + float64(t.Nanosecond())/float64(time.Second)
 }
 
 func digit(b bool) float64 {

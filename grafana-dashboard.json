@@ -134,7 +134,7 @@
         "spec": {
           "id": 2,
           "title": "Newest dump",
-          "description": "Shows while the PgAutodumpDumpStale alert fires: a database has had no new dump in 50 hours. Check that the timer or your trigger still runs. Needs the rules from alerts/promql.yaml in a ruler that stores its `ALERTS` series beside the metrics, as Prometheus and Mimir do.",
+          "description": "Shows while the PgAutodumpDumpStale alert fires. With the built-in timer, it means no run fully succeeded by the cycle deadline, and with DUMP_INTERVAL=off, it means a database has had no new dump in 50 hours. Check that the timer or your trigger still runs and that dumps succeed. Needs the rules from alerts/promql.yaml in a ruler that stores its `ALERTS` series beside the metrics, as Prometheus and Mimir do.",
           "links": [],
           "data": {
             "kind": "QueryGroup",

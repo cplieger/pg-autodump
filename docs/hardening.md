@@ -25,7 +25,7 @@ The image runs as a non-root user. Add these lines to the service in `compose.ya
       - "/tmp:size=16m,mode=1777"
 ```
 
-The `/tmp` tmpfs is required with `read_only`, because the health file and the run lock live there. Mode 1777 lets the non-root user write to it.
+pg-autodump writes to two places. `/dumps` holds the dumps, the temporary file of each dump until it is checked, and the last-run record. `/tmp/pg-autodump` holds the run lock, which keeps two runs in one container from overlapping. With `read_only: true`, the 16 MB `/tmp` tmpfs is required for that lock only: without a writable `/tmp`, the server refuses to start and `run` exits `1`. Mode 1777 lets the non-root user write to it. Health needs no folder, because the server keeps its verdict in memory and `/healthz` serves it from there.
 
 ## The backup role
 
@@ -55,7 +55,7 @@ The client tools need a C library, which is why the image is Alpine rather than 
 | tini | [GitHub](https://github.com/krallin/tini) |
 | github.com/cplieger/go/filesafe | [GitHub](https://github.com/cplieger/go/tree/main/filesafe) |
 | github.com/cplieger/go/envx | [GitHub](https://github.com/cplieger/go/tree/main/envx) |
-| github.com/cplieger/go/health | [GitHub](https://github.com/cplieger/go/tree/main/health) |
+| github.com/cplieger/go/health/v2 | [GitHub](https://github.com/cplieger/go/tree/main/health) |
 | github.com/cplieger/go/keyenc | [GitHub](https://github.com/cplieger/go/tree/main/keyenc) |
 | github.com/cplieger/go/pathinside | [GitHub](https://github.com/cplieger/go/tree/main/pathinside) |
 | github.com/cplieger/go/scheduler | [GitHub](https://github.com/cplieger/go/tree/main/scheduler) |

@@ -17,8 +17,8 @@ import (
 	"github.com/cplieger/go/keyenc"
 )
 
-// DefaultPort is the PostgreSQL port assumed when a spec omits one.
-const DefaultPort = 5432
+// defaultPort is the PostgreSQL port assumed when a spec omits one.
+const defaultPort = 5432
 
 // maxServerDirLen bounds the per-server subdirectory name (ServerDir) to the
 // common Linux filesystem per-component limit (NAME_MAX = 255 bytes on
@@ -75,12 +75,12 @@ func Parse(raw string) []DBSpec {
 // parseOne validates a single token. It accepts the plain
 // host[:port]:dbname:user form (host a hostname or IPv4 literal) and the
 // bracketed IPv6 form [addr][:port]:dbname:user (the brackets disambiguate the
-// address colons from the field separators). The port defaults to DefaultPort
+// address colons from the field separators). The port defaults to defaultPort
 // when omitted and is numeric 1..65535 otherwise. Any other shape, an invalid
 // host, or a host whose ServerDir would exceed the filesystem component limit
 // is Invalid.
 func parseOne(tok string) DBSpec {
-	s := DBSpec{Raw: tok, Port: DefaultPort}
+	s := DBSpec{Raw: tok, Port: defaultPort}
 
 	host, portStr, dbname, user, invalid := splitFields(tok)
 	if invalid != "" {

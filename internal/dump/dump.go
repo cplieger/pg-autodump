@@ -26,8 +26,7 @@ import (
 const ProbeTimeoutCap = 10 * time.Second
 
 // HealthSink receives each cycle's verdict: true when every configured
-// database dumped and verified, false otherwise. Both *health.Marker and
-// *health.Latch satisfy it.
+// database dumped and verified, false otherwise. *health.Status satisfies it.
 type HealthSink interface {
 	Set(ok bool)
 }
@@ -172,7 +171,7 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 	// by the drain's CancelInFlight or a one-shot run's signal, and killed dumps
 	// are an operator action (levelFor). Recording one would leave a container
 	// recreated mid-cycle unhealthy until the next trigger, so the previous
-	// verdict stands and the drain latch owns shutdown health. The cycle
+	// verdict stands and the drain owns shutdown health. The cycle
 	// complete record states a verdict, so it is never written here.
 	if ctx.Err() != nil {
 		o.log.Warn("dump cycle cut short", "total", len(results), "ok", okN, "failed", failedN)
@@ -217,7 +216,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	if kind != FailNone || perr != nil {
 		reason := classify(0, probeErr, kind)
 		detail := string(reason)
-		if reason == ReasonOther && perr != nil {
+		if reason == reasonOther && perr != nil {
 			detail = perr.Error()
 		}
 		return o.finish(&Result{
@@ -235,7 +234,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
 	if err := o.ensureServerDir(dir); err != nil {
 		return o.finish(&Result{
-			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: ReasonMkdirFailed,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: reasonMkdirFailed,
 			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
 			ServerVersion: major, Duration: o.now().Sub(start),
 		}, nil)
@@ -339,8 +338,8 @@ func levelFor(r Reason) slog.Level {
 	switch r {
 	case ReasonOK:
 		return slog.LevelInfo
-	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
-		// ReasonKilled comes only from a graceful shutdown cancelling an
+	case ReasonInvalid, ReasonDuplicate, reasonSkipped, reasonKilled:
+		// reasonKilled comes only from a graceful shutdown cancelling an
 		// in-flight dump: an expected operator action, not a dump failure.
 		return slog.LevelWarn
 	default:

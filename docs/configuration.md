@@ -105,7 +105,7 @@ pg-autodump never reads, moves or deletes other files at the root of `/dumps`.
 
 ## HTTP endpoints
 
-The server listens on `LISTEN_ADDR`, `:9847` by default.
+The server listens on `LISTEN_ADDR`, `:9472` by default.
 
 - `POST /dump` runs every dump and answers with one `host/database: result` line per database, such as `mydb-host/myapp: ok (4823104 bytes)`. For a `pg_error`, `truncated` or `other` failure the line holds only that word, and the full `pg_dump` or `pg_restore` error text goes to the log.
 - `200` means every database dumped. `500` means at least one failed or no database is configured, and the body then reads `no databases configured`. `429` means a run is already in progress. `503` means the container is stopping, so no run started. `401` means `AUTH_TOKEN` is set and the request had no valid `Authorization: Bearer <token>` header.

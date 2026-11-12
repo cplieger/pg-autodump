@@ -15,7 +15,7 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9847:9847"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
+      - "127.0.0.1:9472:9472"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,

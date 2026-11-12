@@ -29,7 +29,7 @@ func TestStageAndReplace(t *testing.T) {
 		{
 			name:       "empty dump is rejected",
 			pg:         &fakePG{dump: func(_ context.Context, _ Conn, _ io.Writer) (int, string, error) { return 0, "", nil }},
-			wantReason: ReasonEmpty,
+			wantReason: reasonEmpty,
 		},
 		{
 			name: "truncated dump is rejected",
@@ -40,7 +40,7 @@ func TestStageAndReplace(t *testing.T) {
 				},
 				verify: func(_ context.Context, _ string) error { return errors.New("TOC unreadable") },
 			},
-			wantReason: ReasonTruncated,
+			wantReason: reasonTruncated,
 		},
 		{
 			name:       "non-zero exit is pg_error",
@@ -87,7 +87,7 @@ func TestStageAndReplaceContextTimeout(t *testing.T) {
 		return 0, "", nil
 	}}
 	res := stageAndReplace(ctx, pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
-	if res.Reason != ReasonKilled {
+	if res.Reason != reasonKilled {
 		t.Fatalf("reason = %q, want killed", res.Reason)
 	}
 }
@@ -112,7 +112,7 @@ func TestStageAndReplaceCommitContextCancel(t *testing.T) {
 
 	res := stageAndReplace(ctx, pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 
-	if res.Reason != ReasonKilled {
+	if res.Reason != reasonKilled {
 		t.Fatalf("reason = %q, want killed (a cancel during Commit must not be reported as rename_failed)", res.Reason)
 	}
 }
@@ -136,7 +136,7 @@ func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 
 		res := stageAndReplace(ctx, pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 
-		if res.Reason != ReasonKilled {
+		if res.Reason != reasonKilled {
 			t.Fatalf("reason = %q, want killed (a cancel during VerifyTOC must not be reported as truncated)", res.Reason)
 		}
 	})
@@ -153,22 +153,22 @@ func TestStageAndReplaceVerifyContextCancel(t *testing.T) {
 
 		res := stageAndReplace(deadlineCtx(t), pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 
-		if res.Reason != ReasonTruncated {
+		if res.Reason != reasonTruncated {
 			t.Fatalf("reason = %q, want truncated (live ctx; only the cancel branch flips to killed)", res.Reason)
 		}
 	})
 }
 
 // A cancel landing before filesafe creates the temp file must classify as
-// killed/timeout, not the generic ReasonOther.
+// killed/timeout, not the generic reasonOther.
 func TestStageAndReplaceNewPendingContextCancel(t *testing.T) {
 	dir := t.TempDir()
 	// Pre-cancelled: t.Context() would not be dead before stageAndReplace runs.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	res := stageAndReplace(ctx, &fakePG{}, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
-	if res.Reason != ReasonKilled {
-		t.Fatalf("reason = %q, want killed (a cancel at temp-create must not be ReasonOther)", res.Reason)
+	if res.Reason != reasonKilled {
+		t.Fatalf("reason = %q, want killed (a cancel at temp-create must not be reasonOther)", res.Reason)
 	}
 }
 
@@ -188,12 +188,12 @@ func TestStageAndReplaceCommitRenameFailedLiveCtx(t *testing.T) {
 
 	res := stageAndReplace(deadlineCtx(t), pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 
-	if res.Reason != ReasonRenameFailed {
+	if res.Reason != reasonRenameFailed {
 		t.Fatalf("reason = %q, want rename_failed (a live-ctx Commit failure must classify as rename_failed, not killed)", res.Reason)
 	}
 }
 
-// A non-context dump error with a zero exit code classifies as ReasonOther
+// A non-context dump error with a zero exit code classifies as reasonOther
 // carrying the dump error text.
 func TestStageAndReplaceDumpErrorExitZero(t *testing.T) {
 	t.Parallel()
@@ -204,7 +204,7 @@ func TestStageAndReplaceDumpErrorExitZero(t *testing.T) {
 
 	res := stageAndReplace(deadlineCtx(t), pg, dir, "app.dump", Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
 
-	if res.Reason != ReasonOther {
+	if res.Reason != reasonOther {
 		t.Fatalf("reason = %q, want other (dump error with exit 0)", res.Reason)
 	}
 	if res.Detail != "pipe error" {
@@ -216,7 +216,7 @@ func TestStageAndReplaceUnwritableDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-dir")
 	res := stageAndReplace(deadlineCtx(t), &fakePG{}, missing, "app.dump",
 		Conn{Host: "h", Port: 5432, DBName: "app", User: "u"})
-	if res.Reason != ReasonOther {
+	if res.Reason != reasonOther {
 		t.Fatalf("reason = %q, want other (the temp file cannot be created in a missing dir)", res.Reason)
 	}
 	if res.Detail == "" {

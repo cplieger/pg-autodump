@@ -57,28 +57,28 @@ type Reason string
 // ReasonOK and the following constants are the valid Reason values for a dump result.
 const (
 	ReasonOK              Reason = "ok"
-	ReasonEmpty           Reason = "empty"
-	ReasonTruncated       Reason = "truncated"
-	ReasonTimeout         Reason = "timeout"
-	ReasonKilled          Reason = "killed"
+	reasonEmpty           Reason = "empty"
+	reasonTruncated       Reason = "truncated"
+	reasonTimeout         Reason = "timeout"
+	reasonKilled          Reason = "killed"
 	ReasonPGError         Reason = "pg_error"
-	ReasonConnectError    Reason = "connect_error"
-	ReasonAuthError       Reason = "auth_error"
-	ReasonVersionMismatch Reason = "version_mismatch"
-	ReasonOther           Reason = "other"
+	reasonConnectError    Reason = "connect_error"
+	reasonAuthError       Reason = "auth_error"
+	reasonVersionMismatch Reason = "version_mismatch"
+	reasonOther           Reason = "other"
 	ReasonDuplicate       Reason = "duplicate"
 	ReasonInvalid         Reason = "invalid"
-	ReasonMkdirFailed     Reason = "mkdir_failed"
-	ReasonRenameFailed    Reason = "rename_failed"
-	ReasonSkipped         Reason = "skipped"
+	reasonMkdirFailed     Reason = "mkdir_failed"
+	reasonRenameFailed    Reason = "rename_failed"
+	reasonSkipped         Reason = "skipped"
 )
 
 // Reasons returns every Reason value.
 func Reasons() []Reason {
 	return []Reason{
-		ReasonOK, ReasonEmpty, ReasonTruncated, ReasonTimeout, ReasonKilled, ReasonPGError,
-		ReasonConnectError, ReasonAuthError, ReasonVersionMismatch, ReasonOther, ReasonDuplicate,
-		ReasonInvalid, ReasonMkdirFailed, ReasonRenameFailed, ReasonSkipped,
+		ReasonOK, reasonEmpty, reasonTruncated, reasonTimeout, reasonKilled, ReasonPGError,
+		reasonConnectError, reasonAuthError, reasonVersionMismatch, reasonOther, ReasonDuplicate,
+		ReasonInvalid, reasonMkdirFailed, reasonRenameFailed, reasonSkipped,
 	}
 }
 
@@ -99,7 +99,7 @@ func (r *Result) OK() bool { return r.Reason == ReasonOK }
 
 // CycleOK reports whether a cycle fully succeeded: at least one database was
 // configured and every one dumped and verified. It is the one verdict behind
-// the health marker, the last-run record, the POST /dump status and the `run`
+// the health verdict, the last-run record, the POST /dump status and the `run`
 // exit code. A cycle over zero databases dumped nothing and is not a success.
 func CycleOK(results []Result) bool {
 	if len(results) == 0 {
@@ -121,7 +121,7 @@ func CycleOK(results []Result) bool {
 // returns its Detail, falling back to the reason word when Detail is empty.
 func (r *Result) BodyDetail() string {
 	switch r.Reason {
-	case ReasonPGError, ReasonTruncated, ReasonOther:
+	case ReasonPGError, reasonTruncated, reasonOther:
 		return string(r.Reason)
 	}
 	if r.Detail == "" {
@@ -137,22 +137,22 @@ func (r *Result) BodyDetail() string {
 func classify(exitCode int, ctxErr error, kind FailKind) Reason {
 	switch {
 	case errors.Is(ctxErr, context.DeadlineExceeded):
-		return ReasonTimeout
+		return reasonTimeout
 	case errors.Is(ctxErr, context.Canceled):
-		return ReasonKilled
+		return reasonKilled
 	}
 	switch kind {
 	case FailConnect:
-		return ReasonConnectError
+		return reasonConnectError
 	case FailAuth:
-		return ReasonAuthError
+		return reasonAuthError
 	case FailVersion:
-		return ReasonVersionMismatch
+		return reasonVersionMismatch
 	case FailNone:
 		// fall through to exit-code handling
 	}
 	if exitCode != 0 {
 		return ReasonPGError
 	}
-	return ReasonOther
+	return reasonOther
 }

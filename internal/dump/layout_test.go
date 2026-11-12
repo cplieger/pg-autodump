@@ -127,7 +127,7 @@ func TestRunMkdirFailedIsPerDB(t *testing.T) {
 	}
 	res := orchestratorFor(t, dir, 1, specs).Run(deadlineCtx(t))
 
-	if res[0].Reason != ReasonMkdirFailed {
+	if res[0].Reason != reasonMkdirFailed {
 		t.Fatalf("spec[0] reason = %q, want mkdir_failed (detail %q)", res[0].Reason, res[0].Detail)
 	}
 	if !strings.Contains(res[0].Detail, "h1_5432") {

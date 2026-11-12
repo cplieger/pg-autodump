@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
@@ -129,6 +130,37 @@ func TestHealthzLeaseDuration(t *testing.T) {
 	if got := healthzLease(&cfg).Duration(); got != 0 {
 		t.Errorf("healthzLease(DUMP_INTERVAL=off).Duration() = %s, want 0 (disabled)", got)
 	}
+}
+
+// The page runServer serves dates the cycle deadline one health lease after
+// the last success on record, so PgAutodumpDumpStale's deadline arm and
+// /healthz's freshness check judge the same moment.
+func TestServedCycleDeadlineIsTheHealthLease(t *testing.T) {
+	env := map[string]string{"DUMP_INTERVAL": "1h", "DB_SPECS": "h:5432:db:u", "DUMP_DIR": t.TempDir()}
+	cfg, _, err := config.Load(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
+	rec := startupRecord{last: scheduler.RunRecord{Time: last, OK: true}, known: true}
+
+	reg, _ := newRegistry(&cfg, rec, last.Add(time.Hour))
+
+	families, err := reg.Gather(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 1 wave * (300s dump + 10s probe) + 30s slack = 340s; two 1h intervals on top.
+	want := float64(last.Add(2*time.Hour + 340*time.Second).Unix())
+	for _, f := range families {
+		if f.Name == "pg_autodump_cycle_deadline_timestamp_seconds" {
+			if len(f.Samples) != 1 || f.Samples[0].Value != want {
+				t.Errorf("cycle deadline samples = %+v, want one at %v", f.Samples, want)
+			}
+			return
+		}
+	}
+	t.Error("the served page has no pg_autodump_cycle_deadline_timestamp_seconds")
 }
 
 // fakeClientPATH stages a stand-in for every PostgreSQL client binary the

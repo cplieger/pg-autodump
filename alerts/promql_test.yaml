@@ -68,9 +68,47 @@ tests:
         alertname: PgAutodumpDumpFailed
         exp_alerts: []
 
-  - name: PgAutodumpDumpStale fires once the newest dump is older than 50h and clears at a new dump
+  - name: PgAutodumpDumpStale fires once the cycle deadline plus 15m passes and clears when a success moves it
+    interval: 1m
+    input_series:
+      # Due at 1h; a fully successful cycle at 90m moves it.
+      - series: 'pg_autodump_cycle_deadline_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472"}'
+        values: "3600x89 100000x10"
+    alert_rule_test:
+      - eval_time: 74m
+        alertname: PgAutodumpDumpStale
+        exp_alerts: []
+      - eval_time: 76m
+        alertname: PgAutodumpDumpStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: pg-autodump
+              instance: pg-autodump:9472
+            exp_annotations:
+              summary: "pg-autodump: dumps are overdue"
+              description: "No dump cycle has fully succeeded by the deadline the built-in timer set: two DUMP_INTERVAL runs after the last fully successful cycle, plus one cycle's longest run. Dumps may be failing, or the timer may have stopped. Check the container, its schedule and PgAutodumpDumpFailed.\n"
+      - eval_time: 92m
+        alertname: PgAutodumpDumpStale
+        exp_alerts: []
+
+  - name: PgAutodumpDumpStale ignores the 50h window while the cycle deadline is ahead
     interval: 1h
     input_series:
+      - series: 'pg_autodump_cycle_deadline_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472"}'
+        values: "10000000000x60"
+      - series: 'pg_autodump_newest_dump_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="app"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 51h
+        alertname: PgAutodumpDumpStale
+        exp_alerts: []
+
+  - name: PgAutodumpDumpStale with the timer off fires once the newest dump is older than 50h and clears at a new dump
+    interval: 1h
+    input_series:
+      - series: 'pg_autodump_cycle_deadline_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472"}'
+        values: "0x60"
       # The newest dump was written at the epoch, then again at 52h.
       - series: 'pg_autodump_newest_dump_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="app"}'
         values: "0x51 187200x5"
@@ -88,8 +126,20 @@ tests:
               server: db1_5432
               db: app
             exp_annotations:
-              summary: "pg-autodump: no new dump of app in 50h"
-              description: "The newest verified dump of app on db1_5432 is older than 50h. Dumps may be failing, or the timer or your trigger may have stopped. Check the container, its schedule and PgAutodumpDumpFailed.\n"
+              summary: "pg-autodump: dumps are overdue for app"
+              description: "The newest verified dump of app on db1_5432 is older than 50h, with the built-in timer off. Dumps may be failing, or your trigger may have stopped. Check the container, your scheduler and PgAutodumpDumpFailed.\n"
       - eval_time: 53h
+        alertname: PgAutodumpDumpStale
+        exp_alerts: []
+
+  - name: a cycle deadline of 0 never fires the deadline arm
+    interval: 1m
+    input_series:
+      - series: 'pg_autodump_cycle_deadline_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472"}'
+        values: "0x30"
+      - series: 'pg_autodump_newest_dump_timestamp_seconds{job="pg-autodump", instance="pg-autodump:9472", server="db1_5432", db="app"}'
+        values: "0+60x30"
+    alert_rule_test:
+      - eval_time: 30m
         alertname: PgAutodumpDumpStale
         exp_alerts: []

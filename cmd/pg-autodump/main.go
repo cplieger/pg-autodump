@@ -26,6 +26,7 @@ import (
 	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/measure"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/pg-autodump/internal/config"
@@ -213,6 +214,15 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 	return nil
 }
 
+// newRegistry builds the page GET /metrics serves from the boot record. The
+// cycle deadline's gap is the health lease, so PgAutodumpDumpStale and the
+// /healthz freshness check judge a stopped timer at the same moment.
+func newRegistry(cfg *config.Config, rec startupRecord, start time.Time) (*measure.Registry, *obs.Metrics) {
+	return obs.NewRegistry(cfg.DumpDir, cfg.Specs, obs.Boot{
+		Last: rec.last, Known: rec.known, Start: start, Gap: healthzLease(cfg).Duration(),
+	})
+}
+
 // newOrchestrator wires the dump orchestrator from validated config, shared by
 // serve and run so the two entry points never drift.
 func newOrchestrator(cfg *config.Config, log *slog.Logger, sink dump.HealthSink, metrics dump.Recorder) *dump.Orchestrator {
@@ -268,7 +278,7 @@ func runServer(getenv func(string) string) int {
 	reclaimAtStartup(ctx, cfg.DumpDir, log)
 
 	guard := &dump.Guard{}
-	reg, metrics := obs.NewRegistry(cfg.DumpDir, cfg.Specs, rec.last, rec.known)
+	reg, metrics := newRegistry(&cfg, rec, time.Now())
 	orch := newOrchestrator(&cfg, log, st, metrics)
 	trigger := httpapi.NewTrigger(guard, cycle, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{

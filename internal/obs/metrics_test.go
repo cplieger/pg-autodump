@@ -97,7 +97,7 @@ func checkSeries(t *testing.T, got, want map[string]float64) {
 // and records the cycle's time and its failed verdict.
 func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u down:5432:app:u h2:5433:billing:u")
-	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
 	before := time.Now()
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
@@ -133,7 +133,7 @@ func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 // the two results arrive in.
 func TestADuplicateEntryKeepsItsDatabaseFailed(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
 
@@ -164,7 +164,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reg, _ := NewRegistry(t.TempDir(), specs, tc.rec, tc.known)
+			reg, _ := NewRegistry(t.TempDir(), specs, Boot{Last: tc.rec, Known: tc.known})
 			got := series(t, reg)
 			for _, db := range []struct{ server, name string }{{"h1_5432", "app"}, {"_5432", "not-a-spec"}} {
 				for _, r := range dump.Reasons() {
@@ -196,7 +196,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 // record.
 func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, scheduler.RunRecord{}, false)
+	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -209,16 +209,85 @@ func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 	})
 }
 
+// The cycle deadline at start counts the gap from the last success on record,
+// or from the start when the record shows none, and reads 0 with the built-in
+// timer off.
+func TestCycleDeadlineAtStart(t *testing.T) {
+	specs := spec.Parse("h1:5432:app:u")
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	last := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
+	const gap = 49 * time.Hour
+	cases := []struct {
+		name string
+		boot Boot
+		want time.Time
+	}{
+		{name: "no_record", boot: Boot{Start: start, Gap: gap}, want: start.Add(gap)},
+		{name: "successful_record", boot: Boot{Last: scheduler.RunRecord{Time: last, OK: true}, Known: true, Start: start, Gap: gap}, want: last.Add(gap)},
+		{name: "failed_record", boot: Boot{Last: scheduler.RunRecord{Time: last}, Known: true, Start: start, Gap: gap}, want: start.Add(gap)},
+		{name: "timer_off", boot: Boot{Last: scheduler.RunRecord{Time: last, OK: true}, Known: true, Start: start}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			reg, _ := NewRegistry(t.TempDir(), specs, tc.boot)
+			want := 0.0
+			if !tc.want.IsZero() {
+				want = float64(tc.want.Unix())
+			}
+			checkSeries(t, series(t, reg), map[string]float64{key("cycle_deadline_timestamp_seconds", ""): want})
+		})
+	}
+}
+
+// A fully successful cycle moves the deadline to its end plus the gap; a
+// failed cycle leaves it, so a timer whose cycles keep failing crosses it.
+func TestCycleDeadlineMovesOnlyOnASuccess(t *testing.T) {
+	const gap = 49 * time.Hour
+	start := time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC)
+	bootDeadline := float64(start.Add(gap).Unix())
+	dumpDir := t.TempDir()
+	good := spec.Parse("h1:5432:app:u")
+	failed := spec.Parse("h1:5432:app:u down:5432:app:u")
+	reg, m := NewRegistry(dumpDir, failed, Boot{Start: start, Gap: gap})
+
+	runCycle(t.Context(), t, dumpDir, failed, m)
+	if got := series(t, reg)[key("cycle_deadline_timestamp_seconds", "")]; got != bootDeadline {
+		t.Errorf("deadline after a failed cycle = %v, want the start's %v", got, bootDeadline)
+	}
+
+	before := time.Now()
+	runCycle(t.Context(), t, dumpDir, good, m)
+	after := time.Now()
+	got := series(t, reg)[key("cycle_deadline_timestamp_seconds", "")]
+	if lo, hi := float64(before.Add(gap).Unix()), float64(after.Add(gap).Unix()+1); got < lo || got > hi {
+		t.Errorf("deadline after a successful cycle = %v, want the cycle's end plus %s, in [%v, %v]", got, gap, lo, hi)
+	}
+}
+
+// With the built-in timer off a successful cycle leaves the deadline at 0, the
+// value the stall rule reads as "an outside scheduler runs the cycles".
+func TestCycleDeadlineStaysZeroWithTheTimerOff(t *testing.T) {
+	specs := spec.Parse("h1:5432:app:u")
+	reg, m := NewRegistry(t.TempDir(), specs, Boot{Start: time.Now()})
+
+	runCycle(t.Context(), t, t.TempDir(), specs, m)
+
+	checkSeries(t, series(t, reg), map[string]float64{
+		key("last_cycle_ok", ""):                    1,
+		key("cycle_deadline_timestamp_seconds", ""): 0,
+	})
+}
+
 // DB_SPECS is read at start, so a database removed from it leaves the page at
 // the restart that applies the change: no family carries it any more.
 func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 	dumpDir := t.TempDir()
 	before := spec.Parse("h1:5432:app:u h1:5432:gone:u")
-	_, m := NewRegistry(dumpDir, before, scheduler.RunRecord{}, false)
+	_, m := NewRegistry(dumpDir, before, Boot{})
 	runCycle(t.Context(), t, dumpDir, before, m)
 
 	after := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(dumpDir, after, scheduler.RunRecord{Time: time.Now(), OK: true}, true)
+	reg, m := NewRegistry(dumpDir, after, Boot{Last: scheduler.RunRecord{Time: time.Now(), OK: true}, Known: true})
 	runCycle(t.Context(), t, dumpDir, after, m)
 
 	got := series(t, reg)
@@ -266,7 +335,7 @@ func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", newer.Add(2*time.Hour))
 	specs := spec.Parse("h1:5432:app:u h1:5432:keep:u h1:5432:never:u")
 
-	reg, _ := NewRegistry(dumpDir, specs, scheduler.RunRecord{}, false)
+	reg, _ := NewRegistry(dumpDir, specs, Boot{})
 
 	got := series(t, reg)
 	checkSeries(t, got, map[string]float64{

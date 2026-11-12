@@ -14,11 +14,9 @@ import (
 	"time"
 
 	"github.com/cplieger/go/measure"
-	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
-	"github.com/cplieger/pg-autodump/internal/obs"
 )
 
 const (
@@ -144,7 +142,7 @@ func seriesNames(expr string) []string {
 func exportedFamilies(t *testing.T) map[string][]string {
 	t.Helper()
 	cfg := cycleEnv(t, failedSpecs)
-	reg, metrics := obs.NewRegistry(cfg.DumpDir, cfg.Specs, scheduler.RunRecord{}, false)
+	reg, metrics := newRegistry(&cfg, startupRecord{}, time.Now())
 	runCycle(t.Context(), t, &cfg, metrics)
 	return familyLabels(t, reg)
 }

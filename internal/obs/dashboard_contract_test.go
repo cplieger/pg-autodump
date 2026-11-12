@@ -198,7 +198,7 @@ func servedSeries(t *testing.T) map[string][]string {
 	dumpDir := t.TempDir()
 	writeDump(t, dumpDir, "h1_5432", "app.dump", time.Date(2026, 11, 3, 2, 0, 0, 0, time.UTC))
 	reg, _ := NewRegistry(dumpDir, spec.Parse("h1:5432:app:u"),
-		scheduler.RunRecord{Time: time.Date(2026, 11, 3, 2, 1, 0, 0, time.UTC), OK: true}, true)
+		Boot{Last: scheduler.RunRecord{Time: time.Date(2026, 11, 3, 2, 1, 0, 0, time.UTC), OK: true}, Known: true})
 	families, err := reg.Gather(t.Context())
 	if err != nil {
 		t.Fatalf("Gather: %v", err)

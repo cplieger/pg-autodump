@@ -133,8 +133,7 @@ func TestHealthzLeaseDuration(t *testing.T) {
 }
 
 // The page runServer serves dates the cycle deadline one health lease after
-// the last success on record, so PgAutodumpDumpStale's deadline arm and
-// /healthz's freshness check judge the same moment.
+// the last success on record.
 func TestServedCycleDeadlineIsTheHealthLease(t *testing.T) {
 	env := map[string]string{"DUMP_INTERVAL": "1h", "DB_SPECS": "h:5432:db:u", "DUMP_DIR": t.TempDir()}
 	cfg, _, err := config.Load(func(k string) string { return env[k] })

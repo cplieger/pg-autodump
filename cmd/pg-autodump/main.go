@@ -218,8 +218,7 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 }
 
 // newRegistry builds the page GET /metrics serves from the boot record. The
-// cycle deadline's gap is the health lease, so PgAutodumpDumpStale and the
-// /healthz freshness check judge a stopped timer at the same moment.
+// cycle deadline's gap is the health lease.
 func newRegistry(cfg *config.Config, rec startupRecord, start time.Time) (*measure.Registry, *obs.Metrics) {
 	return obs.NewRegistry(cfg.DumpDir, cfg.Specs, &obs.Boot{
 		Last: rec.last, Known: rec.known, Start: start, Gap: healthzLease(cfg).Duration(), Version: version,

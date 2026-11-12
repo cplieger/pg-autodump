@@ -7,7 +7,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/cplieger/go/health/probe"
+	"github.com/cplieger/go/health/v2/probe"
 	"github.com/cplieger/pg-autodump/internal/config"
 )
 

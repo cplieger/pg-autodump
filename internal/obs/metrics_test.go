@@ -97,7 +97,7 @@ func checkSeries(t *testing.T, got, want map[string]float64) {
 // and records the cycle's time and its failed verdict.
 func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u down:5432:app:u h2:5433:billing:u")
-	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
+	reg, m := NewRegistry(t.TempDir(), specs, &Boot{})
 	before := time.Now()
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
@@ -133,7 +133,7 @@ func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 // the two results arrive in.
 func TestADuplicateEntryKeepsItsDatabaseFailed(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
+	reg, m := NewRegistry(t.TempDir(), specs, &Boot{})
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
 
@@ -164,7 +164,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reg, _ := NewRegistry(t.TempDir(), specs, Boot{Last: tc.rec, Known: tc.known})
+			reg, _ := NewRegistry(t.TempDir(), specs, &Boot{Last: tc.rec, Known: tc.known})
 			got := series(t, reg)
 			for _, db := range []struct{ server, name string }{{"h1_5432", "app"}, {"_5432", "not-a-spec"}} {
 				for _, r := range dump.Reasons() {
@@ -196,7 +196,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 // record.
 func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, Boot{})
+	reg, m := NewRegistry(t.TempDir(), specs, &Boot{})
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 
@@ -229,7 +229,7 @@ func TestCycleDeadlineAtStart(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			reg, _ := NewRegistry(t.TempDir(), specs, tc.boot)
+			reg, _ := NewRegistry(t.TempDir(), specs, &tc.boot)
 			want := 0.0
 			if !tc.want.IsZero() {
 				want = float64(tc.want.Unix())
@@ -248,7 +248,7 @@ func TestCycleDeadlineMovesOnlyOnASuccess(t *testing.T) {
 	dumpDir := t.TempDir()
 	good := spec.Parse("h1:5432:app:u")
 	failed := spec.Parse("h1:5432:app:u down:5432:app:u")
-	reg, m := NewRegistry(dumpDir, failed, Boot{Start: start, Gap: gap})
+	reg, m := NewRegistry(dumpDir, failed, &Boot{Start: start, Gap: gap})
 
 	runCycle(t.Context(), t, dumpDir, failed, m)
 	if got := series(t, reg)[key("cycle_deadline_timestamp_seconds", "")]; got != bootDeadline {
@@ -268,7 +268,7 @@ func TestCycleDeadlineMovesOnlyOnASuccess(t *testing.T) {
 // value the stall rule reads as "an outside scheduler runs the cycles".
 func TestCycleDeadlineStaysZeroWithTheTimerOff(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, Boot{Start: time.Now()})
+	reg, m := NewRegistry(t.TempDir(), specs, &Boot{Start: time.Now()})
 
 	runCycle(t.Context(), t, t.TempDir(), specs, m)
 
@@ -278,16 +278,37 @@ func TestCycleDeadlineStaysZeroWithTheTimerOff(t *testing.T) {
 	})
 }
 
+// The page carries build_info at 1 with the running version, so a rule or a
+// dashboard can join on it.
+func TestBuildInfoServesTheVersionAtOne(t *testing.T) {
+	reg, _ := NewRegistry(t.TempDir(), nil, &Boot{Version: "v9.8.7-dev.6"})
+
+	families, err := reg.Gather(t.Context())
+	if err != nil {
+		t.Fatalf("Gather: %v", err)
+	}
+	var samples []measure.Sample
+	for _, f := range families {
+		if f.Name == metricsPrefix+"_build_info" {
+			samples = f.Samples
+		}
+	}
+	checkSeries(t, series(t, reg), map[string]float64{key("build_info", "v9.8.7-dev.6"): 1})
+	if len(samples) != 1 {
+		t.Errorf("build_info has %d samples, want 1", len(samples))
+	}
+}
+
 // DB_SPECS is read at start, so a database removed from it leaves the page at
 // the restart that applies the change: no family carries it any more.
 func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 	dumpDir := t.TempDir()
 	before := spec.Parse("h1:5432:app:u h1:5432:gone:u")
-	_, m := NewRegistry(dumpDir, before, Boot{})
+	_, m := NewRegistry(dumpDir, before, &Boot{})
 	runCycle(t.Context(), t, dumpDir, before, m)
 
 	after := spec.Parse("h1:5432:app:u")
-	reg, m := NewRegistry(dumpDir, after, Boot{Last: scheduler.RunRecord{Time: time.Now(), OK: true}, Known: true})
+	reg, m := NewRegistry(dumpDir, after, &Boot{Last: scheduler.RunRecord{Time: time.Now(), OK: true}, Known: true})
 	runCycle(t.Context(), t, dumpDir, after, m)
 
 	got := series(t, reg)
@@ -335,7 +356,7 @@ func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", newer.Add(2*time.Hour))
 	specs := spec.Parse("h1:5432:app:u h1:5432:keep:u h1:5432:never:u")
 
-	reg, _ := NewRegistry(dumpDir, specs, Boot{})
+	reg, _ := NewRegistry(dumpDir, specs, &Boot{})
 
 	got := series(t, reg)
 	checkSeries(t, got, map[string]float64{

@@ -36,6 +36,9 @@ import (
 	"github.com/cplieger/pg-autodump/internal/pg"
 )
 
+// version is the release tag the image build stamps; "dev" when unstamped.
+var version = "dev"
+
 func main() { os.Exit(run(os.Args, os.Getenv)) }
 
 // run dispatches the subcommand and returns a process exit code.
@@ -218,8 +221,8 @@ func ensureCycleDir(dir string, log *slog.Logger) error {
 // cycle deadline's gap is the health lease, so PgAutodumpDumpStale and the
 // /healthz freshness check judge a stopped timer at the same moment.
 func newRegistry(cfg *config.Config, rec startupRecord, start time.Time) (*measure.Registry, *obs.Metrics) {
-	return obs.NewRegistry(cfg.DumpDir, cfg.Specs, obs.Boot{
-		Last: rec.last, Known: rec.known, Start: start, Gap: healthzLease(cfg).Duration(),
+	return obs.NewRegistry(cfg.DumpDir, cfg.Specs, &obs.Boot{
+		Last: rec.last, Known: rec.known, Start: start, Gap: healthzLease(cfg).Duration(), Version: version,
 	})
 }
 

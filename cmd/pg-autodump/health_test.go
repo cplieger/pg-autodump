@@ -163,6 +163,32 @@ func TestServedCycleDeadlineIsTheHealthLease(t *testing.T) {
 	t.Error("the served page has no pg_autodump_cycle_deadline_timestamp_seconds")
 }
 
+// The page runServer serves carries the binary's version in build_info, which
+// an unstamped build reports as "dev".
+func TestServedBuildInfoIsTheVersion(t *testing.T) {
+	env := map[string]string{"DB_SPECS": "h:5432:db:u", "DUMP_DIR": t.TempDir()}
+	cfg, _, err := config.Load(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, _ := newRegistry(&cfg, startupRecord{}, time.Now())
+
+	families, err := reg.Gather(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range families {
+		if f.Name == "pg_autodump_build_info" {
+			if len(f.Samples) != 1 || f.Samples[0].Value != 1 ||
+				len(f.Samples[0].Labels) != 1 || f.Samples[0].Labels[0].Value != "dev" {
+				t.Errorf("build_info samples = %+v, want one {version=\"dev\"} at 1", f.Samples)
+			}
+			return
+		}
+	}
+	t.Error("the served page has no pg_autodump_build_info")
+}
+
 // fakeClientPATH stages a stand-in for every PostgreSQL client binary the
 // preflight runs and puts that directory on PATH, so a boot can be driven
 // without the real clients installed.

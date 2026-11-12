@@ -58,7 +58,7 @@ func (s okSignal) Healthy() bool { return s.ok }
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
 func metricsPage() http.Handler {
-	reg, _ := obs.NewRegistry("", nil, obs.Boot{})
+	reg, _ := obs.NewRegistry("", nil, &obs.Boot{})
 	return reg.Handler()
 }
 

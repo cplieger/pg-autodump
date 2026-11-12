@@ -44,6 +44,8 @@ type Boot struct {
 	// Last is the last-run record read at boot; Known is false when there is
 	// none.
 	Last scheduler.RunRecord
+	// Version is the running build's, served in build_info.
+	Version string
 	// Gap is how long after a fully successful cycle the next one is due; 0
 	// while the built-in timer is off.
 	Gap   time.Duration
@@ -57,7 +59,7 @@ type Boot struct {
 // cycle deadline starts at the last success on record, or boot.Start when
 // there is none, plus boot.Gap. The files under dumpDir are read at each
 // scrape.
-func NewRegistry(dumpDir string, specs []spec.DBSpec, boot Boot) (*measure.Registry, *Metrics) {
+func NewRegistry(dumpDir string, specs []spec.DBSpec, boot *Boot) (*measure.Registry, *Metrics) {
 	last, known := boot.Last, boot.Known
 	m := &Metrics{
 		dumps: measure.NewLabeledCounter("dumps_total",
@@ -76,8 +78,12 @@ func NewRegistry(dumpDir string, specs []spec.DBSpec, boot Boot) (*measure.Regis
 			"Unix time by which the next fully successful dump cycle is due; 0 while DUMP_INTERVAL is off."),
 		gap: boot.Gap,
 	}
+	buildInfo := measure.NewLabeledGauge("build_info",
+		"Always 1; version is the running build's release tag.", []string{"version"})
+	buildInfo.Set(1, boot.Version)
 	reg := measure.NewRegistry(metricsPrefix)
-	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK, m.deadline, newDumpDirCollector(dumpDir, specs))
+	reg.MustRegister(m.dumps, m.dumpOK, m.bytes, m.duration, m.cycleTime, m.cycleOK, m.deadline,
+		buildInfo, newDumpDirCollector(dumpDir, specs))
 
 	okSeed := 1.0
 	if known && !last.OK {

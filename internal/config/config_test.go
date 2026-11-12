@@ -25,13 +25,13 @@ func TestLoadDefaults(t *testing.T) {
 	if len(warns) != 0 {
 		t.Fatalf("unexpected warnings: %v", warns)
 	}
-	if cfg.ListenAddr != DefaultListenAddr || cfg.DumpDir != DefaultDumpDir || cfg.PGPassFile != DefaultPGPassFile {
+	if cfg.ListenAddr != defaultListenAddr || cfg.DumpDir != defaultDumpDir || cfg.PGPassFile != defaultPGPassFile {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
-	if cfg.DumpTimeout != DefaultDumpTimeout || cfg.DumpConcurrency != DefaultConcurrency {
+	if cfg.DumpTimeout != defaultDumpTimeout || cfg.DumpConcurrency != defaultConcurrency {
 		t.Fatalf("numeric defaults not applied: %+v", cfg)
 	}
-	if cfg.DumpKeep != DefaultDumpKeep || cfg.DumpInterval != DefaultDumpInterval {
+	if cfg.DumpKeep != defaultDumpKeep || cfg.DumpInterval != DefaultDumpInterval {
 		t.Fatalf("keep/interval defaults not applied: %+v", cfg)
 	}
 	if cfg.StmtTimeout <= cfg.DumpTimeout {
@@ -50,10 +50,10 @@ func TestLoadEmptyEnvAllDefaults(t *testing.T) {
 	if len(warns) != 0 {
 		t.Fatalf("empty env should produce no warnings, got %v", warns)
 	}
-	if cfg.ListenAddr != DefaultListenAddr || cfg.DumpDir != DefaultDumpDir ||
-		cfg.PGPassFile != DefaultPGPassFile || cfg.DumpTimeout != DefaultDumpTimeout ||
-		cfg.DumpConcurrency != DefaultConcurrency || cfg.DumpInterval != DefaultDumpInterval ||
-		cfg.DumpKeep != DefaultDumpKeep || cfg.FreeKBWarn != DefaultFreeKBWarn {
+	if cfg.ListenAddr != defaultListenAddr || cfg.DumpDir != defaultDumpDir ||
+		cfg.PGPassFile != defaultPGPassFile || cfg.DumpTimeout != defaultDumpTimeout ||
+		cfg.DumpConcurrency != defaultConcurrency || cfg.DumpInterval != DefaultDumpInterval ||
+		cfg.DumpKeep != defaultDumpKeep || cfg.FreeKBWarn != defaultFreeKBWarn {
 		t.Fatalf("empty env did not yield all defaults: %+v", cfg)
 	}
 	if len(cfg.Specs) != 0 {
@@ -127,10 +127,10 @@ func TestLoadClampsAndWarns(t *testing.T) {
 		"DUMP_TIMEOUT":     "3",
 		"DUMP_CONCURRENCY": "abc",
 	})
-	if cfg.DumpTimeout != MinDumpTimeout {
-		t.Fatalf("DumpTimeout = %s, want clamped to %s", cfg.DumpTimeout, MinDumpTimeout)
+	if cfg.DumpTimeout != minDumpTimeout {
+		t.Fatalf("DumpTimeout = %s, want clamped to %s", cfg.DumpTimeout, minDumpTimeout)
 	}
-	if cfg.DumpConcurrency != DefaultConcurrency {
+	if cfg.DumpConcurrency != defaultConcurrency {
 		t.Fatalf("bad DUMP_CONCURRENCY should fall back to default")
 	}
 	if len(warns) < 2 {
@@ -167,8 +167,8 @@ func TestLoadDumpInterval(t *testing.T) {
 
 func TestLoadDumpKeep(t *testing.T) {
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
-	if def.DumpKeep != DefaultDumpKeep {
-		t.Fatalf("default DumpKeep = %d, want %d", def.DumpKeep, DefaultDumpKeep)
+	if def.DumpKeep != defaultDumpKeep {
+		t.Fatalf("default DumpKeep = %d, want %d", def.DumpKeep, defaultDumpKeep)
 	}
 
 	cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": "5"})
@@ -178,8 +178,8 @@ func TestLoadDumpKeep(t *testing.T) {
 
 	for _, bad := range []string{"0", "-1", "two", "1.5"} {
 		got, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_KEEP": bad})
-		if got.DumpKeep != DefaultDumpKeep {
-			t.Fatalf("DUMP_KEEP=%q: DumpKeep = %d, want default %d", bad, got.DumpKeep, DefaultDumpKeep)
+		if got.DumpKeep != defaultDumpKeep {
+			t.Fatalf("DUMP_KEEP=%q: DumpKeep = %d, want default %d", bad, got.DumpKeep, defaultDumpKeep)
 		}
 		if len(warns) == 0 {
 			t.Fatalf("DUMP_KEEP=%q: expected a warning", bad)
@@ -222,8 +222,8 @@ func TestLoadKeepBoundaryOneIsValid(t *testing.T) {
 func TestLoadFreeKBInvalidFallsBack(t *testing.T) {
 	for _, bad := range []string{"abc", "-1", "1.5"} {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_FREE_KB_WARN": bad})
-		if cfg.FreeKBWarn != DefaultFreeKBWarn {
-			t.Errorf("DUMP_FREE_KB_WARN=%q: FreeKBWarn = %d, want default %d", bad, cfg.FreeKBWarn, DefaultFreeKBWarn)
+		if cfg.FreeKBWarn != defaultFreeKBWarn {
+			t.Errorf("DUMP_FREE_KB_WARN=%q: FreeKBWarn = %d, want default %d", bad, cfg.FreeKBWarn, defaultFreeKBWarn)
 		}
 		if len(warns) == 0 {
 			t.Errorf("DUMP_FREE_KB_WARN=%q: expected a warning, got none", bad)
@@ -297,14 +297,14 @@ func TestLoadShutdownTimeoutRejectsBareInteger(t *testing.T) {
 func TestLoadDumpTimeout(t *testing.T) {
 	// The default must clear the same minimum the loader enforces on operator input.
 	def, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
-	if def.DumpTimeout < MinDumpTimeout {
-		t.Errorf("default DumpTimeout = %s, want at least MinDumpTimeout %s", def.DumpTimeout, MinDumpTimeout)
+	if def.DumpTimeout < minDumpTimeout {
+		t.Errorf("default DumpTimeout = %s, want at least minDumpTimeout %s", def.DumpTimeout, minDumpTimeout)
 	}
 
 	for _, bad := range []string{"abc", "0", "-5"} {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": bad})
-		if cfg.DumpTimeout != DefaultDumpTimeout {
-			t.Errorf("DUMP_TIMEOUT=%q: DumpTimeout = %s, want default %s", bad, cfg.DumpTimeout, DefaultDumpTimeout)
+		if cfg.DumpTimeout != defaultDumpTimeout {
+			t.Errorf("DUMP_TIMEOUT=%q: DumpTimeout = %s, want default %s", bad, cfg.DumpTimeout, defaultDumpTimeout)
 		}
 		if len(warns) == 0 {
 			t.Errorf("DUMP_TIMEOUT=%q: expected a warning, got none", bad)
@@ -312,8 +312,8 @@ func TestLoadDumpTimeout(t *testing.T) {
 	}
 
 	boundary, bwarns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "10"})
-	if boundary.DumpTimeout != MinDumpTimeout {
-		t.Errorf("DUMP_TIMEOUT=10: DumpTimeout = %s, want MinDumpTimeout %s (boundary, not clamped)", boundary.DumpTimeout, MinDumpTimeout)
+	if boundary.DumpTimeout != minDumpTimeout {
+		t.Errorf("DUMP_TIMEOUT=10: DumpTimeout = %s, want minDumpTimeout %s (boundary, not clamped)", boundary.DumpTimeout, minDumpTimeout)
 	}
 	if len(bwarns) != 0 {
 		t.Errorf("DUMP_TIMEOUT=10 (at minimum): want no warnings, got %v", bwarns)
@@ -446,11 +446,11 @@ func TestListenerOpenAndPublic(t *testing.T) {
 func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
 	t.Run("whitespace-only is unset, silent", func(t *testing.T) {
 		cfg, warns := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "DUMP_TIMEOUT": "   ", "DUMP_KEEP": "\t"})
-		if cfg.DumpTimeout != DefaultDumpTimeout {
-			t.Errorf("DumpTimeout = %s, want default %s", cfg.DumpTimeout, DefaultDumpTimeout)
+		if cfg.DumpTimeout != defaultDumpTimeout {
+			t.Errorf("DumpTimeout = %s, want default %s", cfg.DumpTimeout, defaultDumpTimeout)
 		}
-		if cfg.DumpKeep != DefaultDumpKeep {
-			t.Errorf("DumpKeep = %d, want default %d", cfg.DumpKeep, DefaultDumpKeep)
+		if cfg.DumpKeep != defaultDumpKeep {
+			t.Errorf("DumpKeep = %d, want default %d", cfg.DumpKeep, defaultDumpKeep)
 		}
 		if len(warns) != 0 {
 			t.Errorf("whitespace-only values must read as unset without warnings, got %v", warns)

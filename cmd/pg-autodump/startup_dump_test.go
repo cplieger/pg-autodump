@@ -22,7 +22,7 @@ import (
 // can assert whether the startup dump ran without parsing logs.
 type tickerPG struct{ dumps atomic.Int32 }
 
-func (p *tickerPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*tickerPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -32,7 +32,7 @@ func (p *tickerPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, strin
 	return 0, "", nil
 }
 
-func (p *tickerPG) VerifyTOC(context.Context, string) error { return nil }
+func (*tickerPG) VerifyTOC(context.Context, string) error { return nil }
 
 // syncBuffer lets the test poll log output while the timer goroutine writes
 // it.

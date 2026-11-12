@@ -30,7 +30,7 @@ type stubPG struct {
 	dumpCalls atomic.Int32
 }
 
-func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -49,7 +49,7 @@ func (p *stubPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, string,
 	return 0, "", nil
 }
 
-func (p *stubPG) VerifyTOC(context.Context, string) error { return nil }
+func (*stubPG) VerifyTOC(context.Context, string) error { return nil }
 
 type okSignal struct{ ok bool }
 
@@ -374,7 +374,7 @@ func (f *failingWriter) Header() http.Header {
 	return f.header
 }
 
-func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (*failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func (f *failingWriter) WriteHeader(code int) { f.code = code }
 

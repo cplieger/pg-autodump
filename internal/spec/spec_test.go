@@ -19,8 +19,8 @@ func TestParseSpecs(t *testing.T) {
 			wantCount:   1,
 			wantInvalid: []bool{false},
 			check: func(t *testing.T, s []DBSpec) {
-				if s[0].Port != DefaultPort {
-					t.Errorf("port = %d, want %d", s[0].Port, DefaultPort)
+				if s[0].Port != defaultPort {
+					t.Errorf("port = %d, want %d", s[0].Port, defaultPort)
 				}
 			},
 		},

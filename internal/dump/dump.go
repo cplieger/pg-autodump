@@ -217,7 +217,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	if kind != FailNone || perr != nil {
 		reason := classify(0, probeErr, kind)
 		detail := string(reason)
-		if reason == ReasonOther && perr != nil {
+		if reason == reasonOther && perr != nil {
 			detail = perr.Error()
 		}
 		return o.finish(&Result{
@@ -235,7 +235,7 @@ func (o *Orchestrator) dumpOne(ctx context.Context, s *spec.DBSpec) Result {
 	dir := filepath.Join(o.dumpDir, spec.ServerDir(s.Host, s.Port))
 	if err := o.ensureServerDir(dir); err != nil {
 		return o.finish(&Result{
-			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: ReasonMkdirFailed,
+			Host: s.Host, Port: s.Port, DBName: s.DBName, Reason: reasonMkdirFailed,
 			Detail:        "cannot create server dir " + dir + ": " + err.Error(),
 			ServerVersion: major, Duration: o.now().Sub(start),
 		}, nil)
@@ -339,8 +339,8 @@ func levelFor(r Reason) slog.Level {
 	switch r {
 	case ReasonOK:
 		return slog.LevelInfo
-	case ReasonInvalid, ReasonDuplicate, ReasonSkipped, ReasonKilled:
-		// ReasonKilled comes only from a graceful shutdown cancelling an
+	case ReasonInvalid, ReasonDuplicate, reasonSkipped, reasonKilled:
+		// reasonKilled comes only from a graceful shutdown cancelling an
 		// in-flight dump: an expected operator action, not a dump failure.
 		return slog.LevelWarn
 	default:

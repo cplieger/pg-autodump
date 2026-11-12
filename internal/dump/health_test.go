@@ -73,7 +73,7 @@ func TestRunPartialFailureMarksUnhealthy(t *testing.T) {
 	marker.Set(true)
 
 	res := orch.Run(deadlineCtx(t))
-	if res[0].Reason != ReasonOK || res[1].Reason != ReasonConnectError {
+	if res[0].Reason != ReasonOK || res[1].Reason != reasonConnectError {
 		t.Fatalf("reasons = %q, %q; want ok + connect_error (a partial failure)", res[0].Reason, res[1].Reason)
 	}
 	if marker.Healthy() {
@@ -124,7 +124,7 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 	}()
 	res := orch.Run(ctx)
 
-	if res[0].Reason != ReasonKilled {
+	if res[0].Reason != reasonKilled {
 		t.Fatalf("reason = %q, want killed; the cycle must be cut short for the rest to assert anything", res[0].Reason)
 	}
 	if !marker.Healthy() {

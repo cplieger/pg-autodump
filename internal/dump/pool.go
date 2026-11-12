@@ -18,11 +18,11 @@ import (
 //
 // On cancellation the dispatcher stops handing out work and waits for
 // in-flight workers to unwind; undispatched indices keep their pre-filled
-// ReasonSkipped result, so every spec yields exactly one Result.
+// reasonSkipped result, so every spec yields exactly one Result.
 func runPool(ctx context.Context, n int, specs []spec.DBSpec, dumpOne func(context.Context, *spec.DBSpec) Result) []Result {
 	results := make([]Result, len(specs))
 	for i := range specs {
-		results[i] = Result{Host: specs[i].Host, Port: specs[i].Port, DBName: specs[i].DBName, Reason: ReasonSkipped}
+		results[i] = Result{Host: specs[i].Host, Port: specs[i].Port, DBName: specs[i].DBName, Reason: reasonSkipped}
 	}
 
 	sem := make(chan struct{}, n)

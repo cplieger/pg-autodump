@@ -13,13 +13,13 @@ func TestClassify(t *testing.T) {
 		exitCode int
 		kind     FailKind
 	}{
-		{name: "deadline wins", exitCode: 1, ctxErr: context.DeadlineExceeded, kind: FailConnect, want: ReasonTimeout},
-		{name: "cancel wins", exitCode: 1, ctxErr: context.Canceled, kind: FailAuth, want: ReasonKilled},
-		{name: "connect", exitCode: 0, ctxErr: nil, kind: FailConnect, want: ReasonConnectError},
-		{name: "auth", exitCode: 0, ctxErr: nil, kind: FailAuth, want: ReasonAuthError},
-		{name: "version", exitCode: 0, ctxErr: nil, kind: FailVersion, want: ReasonVersionMismatch},
+		{name: "deadline wins", exitCode: 1, ctxErr: context.DeadlineExceeded, kind: FailConnect, want: reasonTimeout},
+		{name: "cancel wins", exitCode: 1, ctxErr: context.Canceled, kind: FailAuth, want: reasonKilled},
+		{name: "connect", exitCode: 0, ctxErr: nil, kind: FailConnect, want: reasonConnectError},
+		{name: "auth", exitCode: 0, ctxErr: nil, kind: FailAuth, want: reasonAuthError},
+		{name: "version", exitCode: 0, ctxErr: nil, kind: FailVersion, want: reasonVersionMismatch},
 		{name: "generic exit", exitCode: 2, ctxErr: nil, kind: FailNone, want: ReasonPGError},
-		{name: "clean none", exitCode: 0, ctxErr: nil, kind: FailNone, want: ReasonOther},
+		{name: "clean none", exitCode: 0, ctxErr: nil, kind: FailNone, want: reasonOther},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -32,7 +32,7 @@ func TestClassify(t *testing.T) {
 
 // stderr must never reach the response body; logs only.
 func TestResultBodyDetail(t *testing.T) {
-	for _, r := range []Reason{ReasonPGError, ReasonTruncated, ReasonOther} {
+	for _, r := range []Reason{ReasonPGError, reasonTruncated, reasonOther} {
 		res := Result{Reason: r, Detail: "dump failed: FATAL secret-schema does not exist"}
 		if got := res.BodyDetail(); got != string(r) {
 			t.Errorf("BodyDetail() for %q = %q, want the reason word %q (stderr must not reach the body)", r, got, string(r))
@@ -44,12 +44,12 @@ func TestResultBodyDetail(t *testing.T) {
 		t.Errorf("BodyDetail() ok = %q, want %q", got, "ok (5 bytes)")
 	}
 
-	mkdir := Result{Reason: ReasonMkdirFailed, Detail: "cannot create server dir /dumps/h_5432: permission denied"}
+	mkdir := Result{Reason: reasonMkdirFailed, Detail: "cannot create server dir /dumps/h_5432: permission denied"}
 	if got := mkdir.BodyDetail(); got != mkdir.Detail {
 		t.Errorf("BodyDetail() mkdir_failed = %q, want the operator-facing detail %q", got, mkdir.Detail)
 	}
 
-	empty := Result{Reason: ReasonConnectError}
+	empty := Result{Reason: reasonConnectError}
 	if got := empty.BodyDetail(); got != "connect_error" {
 		t.Errorf("BodyDetail() empty detail = %q, want the reason word", got)
 	}

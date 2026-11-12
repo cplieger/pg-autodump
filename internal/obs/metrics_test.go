@@ -192,7 +192,7 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 }
 
 // A cycle shutdown cut short counts its results but leaves every gauge as the
-// previous cycle set it, as it leaves the health marker and the last-run
+// previous cycle set it, as it leaves the health verdict and the last-run
 // record.
 func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u")

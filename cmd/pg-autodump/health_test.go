@@ -13,15 +13,16 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 )
 
-// The boot marker is healthy only when the preflight passes AND the last-run
+// The boot verdict is healthy only when the preflight passes AND the last-run
 // record allows it: in built-in timer mode the record must show a fully
 // successful cycle within one interval (missing, failed, stale all boot
 // unhealthy until a cycle fully succeeds); in external-trigger mode a
@@ -89,16 +90,9 @@ func TestReadStartupRecordIgnoresUnwritableRecord(t *testing.T) {
 	}
 }
 
-// A one-shot run whose preconditions fail counts as a failed cycle: the marker
-// a healthy server left behind is removed, so an exec'd `run` that cannot even
-// start its dumps moves the container's health the way a failed cycle would.
-func TestRunOnceUnhealthyWhenPreflightFails(t *testing.T) {
-	markerPath := filepath.Join(t.TempDir(), ".healthy")
-	prev := healthMarkerPath
-	healthMarkerPath = markerPath
-	t.Cleanup(func() { healthMarkerPath = prev })
-	health.NewMarker(markerPath).Set(true)
-
+// A one-shot run whose preconditions fail exits 1: a manual or scheduled run
+// reports by its exit code.
+func TestRunOnceExitsOneWhenPreflightFails(t *testing.T) {
 	// DUMP_DIR is a regular file, so the dump-dir write probe fails whether or
 	// not pg client binaries happen to be on PATH.
 	notADir := filepath.Join(t.TempDir(), "dumps")
@@ -111,12 +105,9 @@ func TestRunOnceUnhealthyWhenPreflightFails(t *testing.T) {
 	if got := run([]string{"pg-autodump", "run"}, getenv); got != 1 {
 		t.Fatalf("run with a failing preflight = %d, want 1", got)
 	}
-	if _, err := os.Stat(markerPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("marker after a failed preflight: stat err = %v, want not-exist (a cycle that cannot start is a failed cycle)", err)
-	}
 }
 
-// The lease is two intervals plus one worst-case cycle, and a fresh marker
+// The lease is two intervals plus one worst-case cycle, and a fresh verdict
 // passes it: the sizing pins one cycle's runtime, not the trigger client's
 // two-cycle wait.
 func TestHealthzLeaseDuration(t *testing.T) {
@@ -155,10 +146,9 @@ func fakeClientPATH(t *testing.T) {
 	t.Setenv("PATH", dir)
 }
 
-// The server's boot writes its verdict to the marker the Docker healthcheck
-// stats, before any cycle runs: a fresh success in built-in timer mode boots
-// with the marker present, a recorded failure in external-trigger mode boots
-// with it removed, and the record the ticker shares is the same reading.
+// The server's boot records its verdict before any cycle runs: a fresh success
+// in built-in timer mode boots healthy, a recorded failure in external-trigger
+// mode boots unhealthy, and the record the ticker shares is the same reading.
 func TestBootHealthWritesTheBootVerdict(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -179,9 +169,9 @@ func TestBootHealthWritesTheBootVerdict(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+			st := health.NewStatus(health.WithLogger(discardLogger()))
 
-			rec, healthy := bootHealth(&cfg, health.NewLatch(marker), discardLogger())
+			rec, healthy := bootHealth(&cfg, st, discardLogger())
 
 			if healthy != tc.want {
 				t.Errorf("bootHealth(interval=%s, record=%q) healthy = %v, want %v",
@@ -190,62 +180,64 @@ func TestBootHealthWritesTheBootVerdict(t *testing.T) {
 			if !rec.known {
 				t.Error("bootHealth reported an unknown record over a seeded one; the ticker shares this reading")
 			}
-			if got := marker.Healthy(); got != tc.want {
-				t.Errorf("marker present after bootHealth(interval=%s, record=%q) = %v, want %v",
+			if got := st.Healthy(); got != tc.want {
+				t.Errorf("verdict after bootHealth(interval=%s, record=%q) = %v, want %v",
 					tc.interval, tc.record, got, tc.want)
 			}
 		})
 	}
 }
 
-// The pre-drain hook LATCHES unhealthy: a cycle completing inside the drain
-// cannot restore the marker, which a plain unhealthy write would allow.
+// The pre-drain hook turns the verdict unhealthy for good: a cycle completing
+// inside the drain cannot restore it, which a plain unhealthy write would allow.
 func TestBeginDrainLatchesUnhealthy(t *testing.T) {
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
-	latch := health.NewLatch(marker)
-	latch.Set(true)
+	st := health.NewStatus(health.WithLogger(discardLogger()))
+	st.Set(true)
 
-	beginDrain(t.Context(), latch, discardLogger())(t.Context())
-	latch.Set(true) // a cycle finishing during the drain
+	beginDrain(t.Context(), st, discardLogger())(t.Context())
+	st.Set(true) // a cycle finishing during the drain
 
-	if marker.Healthy() {
-		t.Error("marker restored by a cycle completing during the drain; want it to stay removed")
+	if st.Healthy() {
+		t.Error("verdict restored by a cycle completing during the drain; want it to stay unhealthy")
 	}
 }
 
-// GET /healthz writes the fleet body from the marker and the lease: a fresh
-// marker is 200 ok; a missing one (a failed or unfinished cycle, a drain) is
-// 503 naming that; in timer mode a marker older than two intervals plus one
-// cycle is 503 naming the stopped timer; in external-trigger mode, with no
-// cadence to judge, an old marker stays 200.
+// GET /healthz answers from the verdict and the lease: a fresh healthy verdict
+// is 200 ok; an unhealthy one (a failed or unfinished cycle, a drain) is 503
+// naming that; in timer mode a healthy verdict older than two intervals plus
+// one cycle is 503 naming the stopped timer; in external-trigger mode, with no
+// cadence to judge, an old healthy verdict stays 200.
 func TestHealthzServesTheFleetBody(t *testing.T) {
 	cases := []struct {
 		name     string
 		interval string
-		age      time.Duration // marker age; 0 means no marker
+		age      time.Duration // age of the healthy verdict; 0 means unhealthy
 		wantCode int
 		wantBody healthzBody
 	}{
-		{name: "timer_fresh_marker", interval: "1h", age: time.Minute, wantCode: http.StatusOK, wantBody: healthzBody{Status: "ok"}},
+		{name: "timer_fresh_verdict", interval: "1h", age: time.Minute, wantCode: http.StatusOK, wantBody: healthzBody{Status: "ok"}},
 		{
-			name: "timer_no_marker", interval: "1h", wantCode: http.StatusServiceUnavailable,
+			name: "timer_unhealthy", interval: "1h", wantCode: http.StatusServiceUnavailable,
 			wantBody: healthzBody{Status: "unhealthy", Reasons: []string{reasonNoVerdict}},
 		},
 		{
-			name: "timer_marker_older_than_the_lease", interval: "1h", age: 3 * time.Hour, wantCode: http.StatusServiceUnavailable,
+			name: "timer_verdict_older_than_the_lease", interval: "1h", age: 3 * time.Hour, wantCode: http.StatusServiceUnavailable,
 			wantBody: healthzBody{Status: "unhealthy", Reasons: []string{reasonTimerStopped}},
 		},
-		{name: "external_old_marker", interval: "off", age: 30 * 24 * time.Hour, wantCode: http.StatusOK, wantBody: healthzBody{Status: "ok"}},
+		{name: "external_old_verdict", interval: "off", age: 30 * 24 * time.Hour, wantCode: http.StatusOK, wantBody: healthzBody{Status: "ok"}},
 		{
-			name: "external_no_marker", interval: "off", wantCode: http.StatusServiceUnavailable,
+			name: "external_unhealthy", interval: "off", wantCode: http.StatusServiceUnavailable,
 			wantBody: healthzBody{Status: "unhealthy", Reasons: []string{reasonNoVerdict}},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := newHealthzServer(t, tc.interval, tc.age)
-			rec := httptest.NewRecorder()
-			srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			var rec *httptest.ResponseRecorder
+			synctest.Test(t, func(t *testing.T) {
+				srv := newHealthzServer(t, tc.interval, tc.age)
+				rec = httptest.NewRecorder()
+				srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+			})
 
 			if rec.Code != tc.wantCode {
 				t.Errorf("GET /healthz status = %d, want %d", rec.Code, tc.wantCode)
@@ -268,15 +260,9 @@ func TestHealthzServesTheFleetBody(t *testing.T) {
 }
 
 // `pg-autodump health` asks GET /healthz on the listen port and follows its
-// status code, not the marker: a 503 fails it while the marker is fresh, a 200
-// passes it, and a listener that does not answer fails it.
+// status code: a 503 fails it, a 200 passes it, and a listener that does not
+// answer fails it.
 func TestHealthSubcommandAsksTheEndpoint(t *testing.T) {
-	markerPath := filepath.Join(t.TempDir(), ".healthy")
-	prev := healthMarkerPath
-	healthMarkerPath = markerPath
-	t.Cleanup(func() { healthMarkerPath = prev })
-	health.NewMarker(markerPath).Set(true)
-
 	var answer atomic.Int32
 	answer.Store(http.StatusServiceUnavailable)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -305,18 +291,15 @@ func TestHealthSubcommandAsksTheEndpoint(t *testing.T) {
 
 	var stderr bytes.Buffer
 	if got := probeHealth(&stderr, getenv, time.Second); got != 1 {
-		t.Errorf("health with a fresh marker and /healthz answering 503 = %d, want 1", got)
+		t.Errorf("health with /healthz answering 503 = %d, want 1", got)
 	}
 	if !strings.Contains(stderr.String(), "/healthz") || !strings.Contains(stderr.String(), "503") {
 		t.Errorf("health's diagnostic = %q, want it to name /healthz and the 503", stderr.String())
 	}
 
-	if err := os.Remove(markerPath); err != nil {
-		t.Fatal(err)
-	}
 	answer.Store(http.StatusOK)
 	if got := run([]string{"pg-autodump", "health"}, getenv); got != 0 {
-		t.Errorf("health with no marker and /healthz answering 200 = %d, want 0", got)
+		t.Errorf("health with /healthz answering 200 = %d, want 0", got)
 	}
 
 	_ = endpoint.Close()
@@ -326,27 +309,18 @@ func TestHealthSubcommandAsksTheEndpoint(t *testing.T) {
 	}
 }
 
-// The probe asks loopback for a wildcard or empty host, and the named host
-// otherwise, since a listener bound to one address answers on no other.
-func TestHealthzURL(t *testing.T) {
-	cases := []struct{ addr, want string }{
-		{":9847", "http://127.0.0.1:9847/healthz"},
-		{"0.0.0.0:9847", "http://127.0.0.1:9847/healthz"},
-		{"[::]:9847", "http://127.0.0.1:9847/healthz"},
-		{"127.0.0.1:9000", "http://127.0.0.1:9000/healthz"},
-		{"192.0.2.10:9847", "http://192.0.2.10:9847/healthz"},
-		{"[2001:db8::1]:9847", "http://[2001:db8::1]:9847/healthz"},
+// A LISTEN_ADDR the probe cannot turn into a URL fails the probe with a reason
+// naming it, instead of asking a guessed address.
+func TestHealthSubcommandRejectsAnUnusableListenAddr(t *testing.T) {
+	getenv := func(k string) string {
+		return map[string]string{"LISTEN_ADDR": "9847", "DB_SPECS": "h:5432:db:u"}[k]
 	}
-	for _, tc := range cases {
-		t.Run(tc.addr, func(t *testing.T) {
-			got, err := healthzURL(tc.addr)
-			if err != nil || got != tc.want {
-				t.Errorf("healthzURL(%q) = %q, %v; want %q, nil", tc.addr, got, err, tc.want)
-			}
-		})
+	var stderr bytes.Buffer
+	if got := probeHealth(&stderr, getenv, time.Second); got != 1 {
+		t.Errorf("health with LISTEN_ADDR=9847 = %d, want 1", got)
 	}
-	if _, err := healthzURL("9847"); err == nil {
-		t.Error(`healthzURL("9847") = nil error, want the missing-port error`)
+	if !strings.Contains(stderr.String(), "LISTEN_ADDR") {
+		t.Errorf("health's diagnostic = %q, want it to name LISTEN_ADDR", stderr.String())
 	}
 }
 
@@ -355,8 +329,9 @@ type healthzBody struct {
 	Reasons []string `json:"reasons"`
 }
 
-// newHealthzServer serves /healthz as runServer wires it, over a marker of the
-// given age (0: no marker) and DUMP_INTERVAL.
+// newHealthzServer serves /healthz as runServer wires it, over a verdict set
+// healthy age ago (0: never set) and DUMP_INTERVAL. Run it inside a synctest
+// bubble so the age passes on the fake clock.
 func newHealthzServer(t *testing.T, interval string, age time.Duration) *http.Server {
 	t.Helper()
 	env := map[string]string{"DB_SPECS": "h:5432:db:u", "DUMP_INTERVAL": interval}
@@ -364,17 +339,13 @@ func newHealthzServer(t *testing.T, interval string, age time.Duration) *http.Se
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(t.TempDir(), ".healthy")
-	marker := health.NewMarker(path)
+	st := health.NewStatus(health.WithLogger(discardLogger()))
 	if age > 0 {
-		marker.Set(true)
-		old := time.Now().Add(-age)
-		if err := os.Chtimes(path, old, old); err != nil {
-			t.Fatal(err)
-		}
+		st.Set(true)
+		time.Sleep(age)
 	}
 	return httpapi.NewServer(&httpapi.Deps{
-		Healthz: health.CheckHandler(healthzChecks(marker, &cfg)...),
+		Healthz: health.CheckHandler(healthzChecks(st, &cfg)...),
 		Metrics: http.NotFoundHandler(),
 		Log:     discardLogger(),
 	})

@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
-	"github.com/cplieger/go/health"
+	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
@@ -91,10 +90,10 @@ func TestServe_ServeExitStopsTheTimerAndWaitsForTheInFlightDump(t *testing.T) {
 		<-pgf.started
 
 		ln := &failingListener{fail: make(chan struct{})}
-		latch := health.NewLatch(health.NewMarker(filepath.Join(t.TempDir(), "healthy")))
+		st := health.NewStatus(health.WithLogger(log))
 		served := make(chan error, 1)
 		go func() {
-			served <- serve(ctx, stop, &http.Server{}, ln, guard, tickerDone, latch, testGrace, log)
+			served <- serve(ctx, stop, &http.Server{}, ln, guard, tickerDone, st, testGrace, log)
 		}()
 		close(ln.fail)
 		synctest.Wait()

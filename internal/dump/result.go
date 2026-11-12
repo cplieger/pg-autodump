@@ -99,7 +99,7 @@ func (r *Result) OK() bool { return r.Reason == ReasonOK }
 
 // CycleOK reports whether a cycle fully succeeded: at least one database was
 // configured and every one dumped and verified. It is the one verdict behind
-// the health marker, the last-run record, the POST /dump status and the `run`
+// the health verdict, the last-run record, the POST /dump status and the `run`
 // exit code. A cycle over zero databases dumped nothing and is not a success.
 func CycleOK(results []Result) bool {
 	if len(results) == 0 {

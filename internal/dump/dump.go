@@ -26,8 +26,7 @@ import (
 const ProbeTimeoutCap = 10 * time.Second
 
 // HealthSink receives each cycle's verdict: true when every configured
-// database dumped and verified, false otherwise. Both *health.Marker and
-// *health.Latch satisfy it.
+// database dumped and verified, false otherwise. *health.Status satisfies it.
 type HealthSink interface {
 	Set(ok bool)
 }
@@ -172,7 +171,7 @@ func (o *Orchestrator) Run(ctx context.Context) []Result {
 	// by the drain's CancelInFlight or a one-shot run's signal, and killed dumps
 	// are an operator action (levelFor). Recording one would leave a container
 	// recreated mid-cycle unhealthy until the next trigger, so the previous
-	// verdict stands and the drain latch owns shutdown health. The cycle
+	// verdict stands and the drain owns shutdown health. The cycle
 	// complete record states a verdict, so it is never written here.
 	if ctx.Err() != nil {
 		o.log.Warn("dump cycle cut short", "total", len(results), "ok", okN, "failed", failedN)

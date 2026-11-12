@@ -6,7 +6,7 @@ pg-autodump serves a metrics page and ships metric alert rules, so a Prometheus-
 
 | You run | You get | You set up |
 | --- | --- | --- |
-| Prometheus, Mimir or VictoriaMetrics, with Alertmanager (the monitoring guide's starting stack adds Loki) | `PgAutodumpDumpFailed` per database, `PgAutodumpDumpStale` per database, `PgAutodumpDown`, and the [dashboard](#dashboard) of every database's dumps and the free space | A scrape of `/metrics` as job `pg-autodump`, and [`alerts/promql.yaml`](../alerts/promql.yaml) in your ruler |
+| Prometheus, Mimir or VictoriaMetrics, with Alertmanager (the monitoring guide's starting stack adds Loki) | `PgAutodumpDumpFailed` per database, `PgAutodumpDumpStale` per instance with the built-in timer and per database with `DUMP_INTERVAL=off`, `PgAutodumpDown`, and the [dashboard](#dashboard) of every database's dumps and the free space | A scrape of `/metrics` as job `pg-autodump`, and [`alerts/promql.yaml`](../alerts/promql.yaml) in your ruler |
 | Loki and Alertmanager, no metric store | `PgAutodumpDumpFailed` for the container and `PgAutodumpCycleMissing` | [`alerts/logql.yaml`](../alerts/logql.yaml) in Loki's ruler, and a log collector that keeps INFO lines |
 | Grafana-managed alerting only | The same rules, imported into Grafana | A Prometheus or Loki data source, and the rules of one file |
 | Docker or Unraid only | Docker health, which turns unhealthy while the last run failed or the timer stopped | An uptime prober on `/healthz`, or something that watches Docker health |

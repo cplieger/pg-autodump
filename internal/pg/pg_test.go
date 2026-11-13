@@ -216,14 +216,14 @@ func TestPGToolRejectsDeadlinelessContext(t *testing.T) {
 	tool := New("/secrets/.pgpass", 5*time.Second)
 	conn := dump.Conn{Host: "h", Port: 5432, DBName: "db", User: "u"}
 
-	if _, _, err := tool.Dump(t.Context(), conn, io.Discard); err != ErrNoDeadline {
-		t.Errorf("Dump(no-deadline ctx) err = %v, want ErrNoDeadline", err)
+	if _, _, err := tool.Dump(t.Context(), conn, io.Discard); err != errNoDeadline {
+		t.Errorf("Dump(no-deadline ctx) err = %v, want errNoDeadline", err)
 	}
-	if err := tool.VerifyTOC(t.Context(), "ignored-path"); err != ErrNoDeadline {
-		t.Errorf("VerifyTOC(no-deadline ctx) err = %v, want ErrNoDeadline", err)
+	if err := tool.VerifyTOC(t.Context(), "ignored-path"); err != errNoDeadline {
+		t.Errorf("VerifyTOC(no-deadline ctx) err = %v, want errNoDeadline", err)
 	}
-	if _, _, err := tool.Probe(t.Context(), conn); err != ErrNoDeadline {
-		t.Errorf("Probe(no-deadline ctx) err = %v, want ErrNoDeadline", err)
+	if _, _, err := tool.Probe(t.Context(), conn); err != errNoDeadline {
+		t.Errorf("Probe(no-deadline ctx) err = %v, want errNoDeadline", err)
 	}
 }
 

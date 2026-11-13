@@ -27,10 +27,13 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
+# The release pipeline passes the channel tag as BUILD_VERSION; a local build
+# reports "dev".
+ARG BUILD_VERSION=dev
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 \
-    go build -trimpath -ldflags="-s -w" -o /pg-autodump ./cmd/pg-autodump
+    go build -trimpath -ldflags="-s -w -X main.version=${BUILD_VERSION}" -o /pg-autodump ./cmd/pg-autodump
 
 COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
 COPY scripts/collect-licenses.sh scripts/collect-licenses.sh
@@ -190,7 +193,10 @@ COPY --from=test /tmp/tests-passed /tmp/tests-passed
 
 COPY licenses/ /usr/share/licenses/
 
-# Health via the binary's own probe (file marker): no shell, no curl, no port.
+EXPOSE 9472
+
+# Health via the binary's own probe, which asks GET /healthz on loopback: no
+# shell, no curl.
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 --start-period=6m \
     CMD ["/usr/local/bin/pg-autodump", "health"]
 

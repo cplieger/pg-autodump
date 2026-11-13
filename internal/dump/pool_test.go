@@ -61,7 +61,7 @@ func TestRunPoolCancelSkips(t *testing.T) {
 		return Result{Reason: ReasonOK}
 	})
 	for i, r := range results {
-		if r.Reason != ReasonSkipped {
+		if r.Reason != reasonSkipped {
 			t.Fatalf("result[%d] reason = %q, want skipped", i, r.Reason)
 		}
 	}
@@ -92,7 +92,7 @@ func TestRunPoolCancelMidDispatch(t *testing.T) {
 	if results[0].Reason != ReasonOK {
 		t.Fatalf("result[0] reason = %q, want ok (it ran before cancel)", results[0].Reason)
 	}
-	if results[1].Reason != ReasonSkipped {
+	if results[1].Reason != reasonSkipped {
 		t.Fatalf("result[1] reason = %q, want skipped (cancelled mid-dispatch)", results[1].Reason)
 	}
 	if _, ran := dumped.Load("b"); ran {

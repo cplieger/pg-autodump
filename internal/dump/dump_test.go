@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/slogx/capture"
 )
 
 // fixedNow pins the clock to a 2026 instant so dump filenames produced
@@ -91,12 +91,12 @@ func TestOrchestratorProbeFailureClassified(t *testing.T) {
 		Concurrency: 1,
 	})
 	results := orch.Run(deadlineCtx(t))
-	if results[0].Reason != ReasonConnectError {
+	if results[0].Reason != reasonConnectError {
 		t.Fatalf("reason = %q, want connect_error", results[0].Reason)
 	}
 }
 
-// An untyped probe error classifies as ReasonOther with the probe's own
+// An untyped probe error classifies as reasonOther with the probe's own
 // error text as Detail, not the bare reason string "other".
 func TestOrchestratorProbeOtherUsesErrorDetail(t *testing.T) {
 	t.Parallel()
@@ -112,7 +112,7 @@ func TestOrchestratorProbeOtherUsesErrorDetail(t *testing.T) {
 	})
 
 	res := orch.Run(deadlineCtx(t))
-	if res[0].Reason != ReasonOther {
+	if res[0].Reason != reasonOther {
 		t.Fatalf("reason = %q, want other", res[0].Reason)
 	}
 	if res[0].Detail != "weird probe failure" {
@@ -287,19 +287,19 @@ func TestLevelFor(t *testing.T) {
 		{reason: ReasonOK, want: "INFO"},
 		{reason: ReasonInvalid, want: "WARN"},
 		{reason: ReasonDuplicate, want: "WARN"},
-		{reason: ReasonSkipped, want: "WARN"},
+		{reason: reasonSkipped, want: "WARN"},
 		// A killed dump is a graceful shutdown, not a failure.
-		{reason: ReasonKilled, want: "WARN"},
-		{reason: ReasonConnectError, want: "ERROR"},
-		{reason: ReasonTimeout, want: "ERROR"},
+		{reason: reasonKilled, want: "WARN"},
+		{reason: reasonConnectError, want: "ERROR"},
+		{reason: reasonTimeout, want: "ERROR"},
 		{reason: ReasonPGError, want: "ERROR"},
-		{reason: ReasonOther, want: "ERROR"},
-		{reason: ReasonEmpty, want: "ERROR"},
-		{reason: ReasonTruncated, want: "ERROR"},
-		{reason: ReasonAuthError, want: "ERROR"},
-		{reason: ReasonVersionMismatch, want: "ERROR"},
-		{reason: ReasonMkdirFailed, want: "ERROR"},
-		{reason: ReasonRenameFailed, want: "ERROR"},
+		{reason: reasonOther, want: "ERROR"},
+		{reason: reasonEmpty, want: "ERROR"},
+		{reason: reasonTruncated, want: "ERROR"},
+		{reason: reasonAuthError, want: "ERROR"},
+		{reason: reasonVersionMismatch, want: "ERROR"},
+		{reason: reasonMkdirFailed, want: "ERROR"},
+		{reason: reasonRenameFailed, want: "ERROR"},
 	}
 	for _, tt := range tests {
 		if got := levelFor(tt.reason).String(); got != tt.want {
@@ -337,7 +337,7 @@ func TestFinishServerVersionAttr(t *testing.T) {
 
 	t.Run("omitted when the major is zero", func(t *testing.T) {
 		logger, rec := capture.New()
-		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, ServerVersion: 0, Detail: "connect_error"}, nil)
+		finishOrchestrator(logger).finish(&Result{Host: "h", DBName: "db", Reason: reasonConnectError, ServerVersion: 0, Detail: "connect_error"}, nil)
 		requireCompletionLine(t, rec, "dump connect_error")
 		if _, ok := rec.AttrValue("dump connect_error", "server_version"); ok {
 			t.Fatalf("finish logged server_version for an unknown (zero) major; want it omitted")
@@ -376,7 +376,7 @@ func TestFinishDiagErrAttr(t *testing.T) {
 	t.Run("logged when the diagnostic differs from detail", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(
-			&Result{Host: "h", DBName: "db", Reason: ReasonConnectError, Detail: "connect_error"},
+			&Result{Host: "h", DBName: "db", Reason: reasonConnectError, Detail: "connect_error"},
 			errors.New("dial tcp 10.0.0.1:5432: connect: connection refused"),
 		)
 		if _, ok := rec.AttrValue("dump connect_error", "err"); !ok {
@@ -387,7 +387,7 @@ func TestFinishDiagErrAttr(t *testing.T) {
 	t.Run("omitted when the diagnostic equals detail", func(t *testing.T) {
 		logger, rec := capture.New()
 		finishOrchestrator(logger).finish(
-			&Result{Host: "h", DBName: "db", Reason: ReasonOther, Detail: "boom"},
+			&Result{Host: "h", DBName: "db", Reason: reasonOther, Detail: "boom"},
 			errors.New("boom"),
 		)
 		requireCompletionLine(t, rec, "dump other")

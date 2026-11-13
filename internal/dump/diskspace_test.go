@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/cplieger/slogx/capture"
+	"github.com/cplieger/go/slogx/capture"
 )
 
 // lowSpaceMsg is checkDiskSpace's low-space warning message.

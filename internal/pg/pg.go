@@ -22,13 +22,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
-	"github.com/cplieger/scheduler/v4"
 )
 
-// ErrNoDeadline is returned by every boundary method when handed a context
+// errNoDeadline is returned by every boundary method when handed a context
 // without a deadline.
-var ErrNoDeadline = errors.New("pg: context has no deadline")
+var errNoDeadline = errors.New("pg: context has no deadline")
 
 // stderrCap bounds captured pg_dump/psql stderr so a chatty tool cannot flood
 // logs or the HTTP body.
@@ -118,7 +118,7 @@ var _ dump.PGTool = (*Tool)(nil)
 // dump.
 func BinariesRunnable(ctx context.Context) error {
 	if _, ok := ctx.Deadline(); !ok {
-		return ErrNoDeadline
+		return errNoDeadline
 	}
 	for _, bin := range requiredBins {
 		cmd := newCommand(ctx, bin, "--version")
@@ -146,7 +146,7 @@ func BinariesRunnable(ctx context.Context) error {
 // process exit code and a bounded stderr tail.
 func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int, stderrTail string, err error) {
 	if _, ok := ctx.Deadline(); !ok {
-		return 0, "", ErrNoDeadline
+		return 0, "", errNoDeadline
 	}
 	args := []string{
 		"--format=custom",
@@ -174,7 +174,7 @@ func (t *Tool) Dump(ctx context.Context, c dump.Conn, w io.Writer) (exitCode int
 // stageAndReplace. Returns nil iff the TOC is readable.
 func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 	if _, ok := ctx.Deadline(); !ok {
-		return ErrNoDeadline
+		return errNoDeadline
 	}
 	cmd := newCommand(ctx, t.restoreBin, "--list", path)
 	cmd.Stdout = io.Discard
@@ -202,7 +202,7 @@ func (t *Tool) VerifyTOC(ctx context.Context, path string) error {
 // older than the server.
 func (t *Tool) Probe(ctx context.Context, c dump.Conn) (int, dump.FailKind, error) {
 	if _, ok := ctx.Deadline(); !ok {
-		return 0, dump.FailNone, ErrNoDeadline
+		return 0, dump.FailNone, errNoDeadline
 	}
 
 	dialCtx := ctx

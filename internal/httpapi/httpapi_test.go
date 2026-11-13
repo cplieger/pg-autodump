@@ -13,11 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
+	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/webhttp/v3"
 )
 
 // stubPG implements dump.PGTool for handler tests. Dump optionally blocks on
@@ -29,7 +30,7 @@ type stubPG struct {
 	dumpCalls atomic.Int32
 }
 
-func (p *stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*stubPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -48,7 +49,7 @@ func (p *stubPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, string,
 	return 0, "", nil
 }
 
-func (p *stubPG) VerifyTOC(context.Context, string) error { return nil }
+func (*stubPG) VerifyTOC(context.Context, string) error { return nil }
 
 type okSignal struct{ ok bool }
 
@@ -56,9 +57,19 @@ func (s okSignal) Healthy() bool { return s.ok }
 
 func discard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
+func metricsPage() http.Handler {
+	reg, _ := obs.NewRegistry("", nil, &obs.Boot{})
+	return reg.Handler()
+}
+
 // newTestServerInDir puts the cross-process cycle lock in cycleDir, so tests
 // can contend on it like an exec'd `pg-autodump run` process would.
 func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *http.Server {
+	t.Helper()
+	return newTestServerWithCycle(t, pg, token, scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard())))
+}
+
+func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *scheduler.Exclusive) *http.Server {
 	t.Helper()
 	orch := dump.New(&dump.Params{
 		PG:          pg,
@@ -68,12 +79,12 @@ func newTestServerInDir(t *testing.T, pg dump.PGTool, token, cycleDir string) *h
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	cycle := scheduler.NewExclusive(cycleDir, discard())
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		AuthToken: token,
 		Trigger:   trigger,
-		Health:    okSignal{ok: true},
+		Healthz:   health.CheckHandler(health.Check{Signal: okSignal{ok: true}}),
+		Metrics:   metricsPage(),
 		Log:       discard(),
 	})
 }
@@ -157,11 +168,11 @@ func TestAuthRequired(t *testing.T) {
 	})
 }
 
-// webhttp.NewStaticTokenVerifier must never authorize when the configured
+// httpserver.NewStaticTokenVerifier must never authorize when the configured
 // secret is empty, even for an empty presented credential. pg-autodump's open
 // mode (empty AUTH_TOKEN) is a bypass above this gate, not a weakening of it.
 func TestVerifierFailsClosedOnEmptyConfigured(t *testing.T) {
-	verify := webhttp.NewStaticTokenVerifier("")
+	verify := httpserver.NewStaticTokenVerifier("")
 	for _, presented := range []string{"", "sekret", "Bearer "} {
 		if verify.Verify(presented) {
 			t.Errorf("NewStaticTokenVerifier(\"\").Verify(%q) = true, want false (empty configured must never authorize)", presented)
@@ -211,23 +222,41 @@ func TestHealthz(t *testing.T) {
 	}
 }
 
+// GET /metrics answers a scraper that carries no bearer, as /healthz does,
+// even when AUTH_TOKEN guards POST /dump.
+func TestMetricsNeedsNoBearer(t *testing.T) {
+	srv := newTestServer(t, &stubPG{}, "s3cret")
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /metrics with AUTH_TOKEN set and no bearer: status = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "pg_autodump_last_cycle_ok") {
+		t.Errorf("GET /metrics body lacks pg_autodump_last_cycle_ok:\n%s", body)
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/metrics", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /metrics: status = %d, want 405", rec.Code)
+	}
+}
+
 // newHealthTestServer wires the orchestrator's health sink and /healthz onto
-// one real marker. Production wires a health.Latch over that marker in
-// runServer, which this fixture does not cover.
-func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Marker) {
+// one health Status, as runServer does.
+func newHealthTestServer(t *testing.T, pg dump.PGTool) (*http.Server, *health.Status) {
 	t.Helper()
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	st := health.NewStatus(health.WithLogger(slog.New(slog.DiscardHandler)))
 	orch := dump.New(&dump.Params{
 		PG:          pg,
 		Logger:      discard(),
-		Health:      marker,
+		Health:      st,
 		DumpDir:     t.TempDir(),
 		Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
-	return NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()}), marker
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
+	return NewServer(&Deps{Trigger: trigger, Healthz: health.CheckHandler(health.Check{Signal: st}), Metrics: metricsPage(), Log: discard()}), st
 }
 
 func healthz(t *testing.T, srv *http.Server) int {
@@ -238,21 +267,21 @@ func healthz(t *testing.T, srv *http.Server) int {
 }
 
 // A POST /dump over zero configured databases dumped nothing: 500, a body that
-// says so, and the marker removed, so an empty DB_SPECS cannot read as a
+// says so, and the verdict unhealthy, so an empty DB_SPECS cannot read as a
 // successful cycle.
 func TestDumpNoDatabasesReturns500(t *testing.T) {
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	st := health.NewStatus(health.WithLogger(slog.New(slog.DiscardHandler)))
 	orch := dump.New(&dump.Params{
 		PG:          &stubPG{},
 		Logger:      discard(),
-		Health:      marker,
+		Health:      st,
 		DumpDir:     t.TempDir(),
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch, discard())
-	srv := NewServer(&Deps{Trigger: trigger, Health: marker, Log: discard()})
-	marker.Set(true)
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard())
+	srv := NewServer(&Deps{Trigger: trigger, Healthz: health.CheckHandler(health.Check{Signal: st}), Metrics: metricsPage(), Log: discard()})
+	st.Set(true)
 
 	rec := post(t, srv, "")
 	if rec.Code != http.StatusInternalServerError {
@@ -261,23 +290,23 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 	if body := rec.Body.String(); !strings.Contains(body, "no databases configured") {
 		t.Errorf("POST /dump with no databases: body = %q, want it to say no databases are configured", body)
 	}
-	if marker.CheckHealthy() {
-		t.Error("marker present after a cycle over zero databases; want it removed")
+	if st.Healthy() {
+		t.Error("verdict healthy after a cycle over zero databases; want it unhealthy")
 	}
 }
 
 // A POST /dump whose cycle has a failed database answers 500 AND marks the
-// container unhealthy: the marker the boot left behind is removed and
+// container unhealthy: the healthy verdict the boot left is replaced and
 // /healthz turns 503.
 func TestDumpFailureMarksUnhealthy(t *testing.T) {
-	srv, marker := newHealthTestServer(t, &stubPG{exit: 1})
-	marker.Set(true)
+	srv, st := newHealthTestServer(t, &stubPG{exit: 1})
+	st.Set(true)
 
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.CheckHealthy() {
-		t.Error("marker present after a failed cycle; want it removed")
+	if st.Healthy() {
+		t.Error("verdict healthy after a failed cycle; want it unhealthy")
 	}
 	if got := healthz(t, srv); got != http.StatusServiceUnavailable {
 		t.Errorf("/healthz after a failed cycle = %d, want 503", got)
@@ -285,23 +314,23 @@ func TestDumpFailureMarksUnhealthy(t *testing.T) {
 }
 
 // Health follows the most recent cycle: a fully successful POST /dump after a
-// failed one restores the marker without a restart.
+// failed one restores the healthy verdict without a restart.
 func TestDumpSuccessAfterFailureRestoresHealth(t *testing.T) {
 	pg := &stubPG{exit: 1}
-	srv, marker := newHealthTestServer(t, pg)
+	srv, st := newHealthTestServer(t, pg)
 	if rec := post(t, srv, ""); rec.Code != http.StatusInternalServerError {
 		t.Fatalf("failing POST /dump status = %d, want 500", rec.Code)
 	}
-	if marker.CheckHealthy() {
-		t.Fatal("marker present after the failed cycle; the recovery test needs an unhealthy start")
+	if st.Healthy() {
+		t.Fatal("verdict healthy after the failed cycle; the recovery test needs an unhealthy start")
 	}
 
 	pg.exit = 0
 	if rec := post(t, srv, ""); rec.Code != http.StatusOK {
 		t.Fatalf("recovering POST /dump status = %d, want 200 (body %q)", rec.Code, rec.Body.String())
 	}
-	if !marker.CheckHealthy() {
-		t.Error("marker absent after a fully successful cycle; want it restored")
+	if !st.Healthy() {
+		t.Error("verdict unhealthy after a fully successful cycle; want it healthy")
 	}
 	if got := healthz(t, srv); got != http.StatusOK {
 		t.Errorf("/healthz after the recovering cycle = %d, want 200", got)
@@ -321,11 +350,12 @@ func newTestServerWithLog(t *testing.T, pg dump.PGTool, buf *bytes.Buffer) *http
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	cycle := scheduler.NewExclusive(t.TempDir(), discard())
+	cycle := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()))
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
 		Trigger: trigger,
-		Health:  okSignal{ok: true},
+		Healthz: health.CheckHandler(health.Check{Signal: okSignal{ok: true}}),
+		Metrics: metricsPage(),
 		Log:     logger,
 	})
 }
@@ -343,7 +373,7 @@ func (f *failingWriter) Header() http.Header {
 	return f.header
 }
 
-func (f *failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (*failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func (f *failingWriter) WriteHeader(code int) { f.code = code }
 
@@ -392,7 +422,7 @@ func TestServerUsesSuppliedLoggerOnWriteFailure(t *testing.T) {
 // unchanged.
 func TestNewTriggerLoggerDefaulting(t *testing.T) {
 	guard := &dump.Guard{}
-	cycle := scheduler.NewExclusive(t.TempDir(), nil)
+	cycle := scheduler.NewExclusive(t.TempDir())
 
 	trNil := NewTrigger(guard, cycle, nil, nil)
 	if trNil.log == nil {
@@ -418,13 +448,13 @@ func TestTriggerRunCleanCycleLogsNoCoordinationWarning(t *testing.T) {
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 	})
-	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), discard()), orch,
+	trigger := NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch,
 		slog.New(slog.NewTextHandler(&buf, nil)))
 
-	results, ok, err := trigger.Run()
+	results, outcome, err := trigger.Run()
 
-	if !ok || err != nil {
-		t.Fatalf("Trigger.Run() = (ok=%v, err=%v), want (true, nil)", ok, err)
+	if outcome != scheduler.OutcomeRan || err != nil {
+		t.Fatalf("Trigger.Run() = (%v, %v), want (ran, nil)", outcome, err)
 	}
 	if len(results) != 1 || results[0].Reason != dump.ReasonOK {
 		t.Fatalf("Trigger.Run() results = %+v, want one ok result", results)
@@ -451,6 +481,86 @@ func TestCycleLockHeldByOtherProcessReturns429(t *testing.T) {
 	}
 }
 
+// A POST /dump arriving after shutdown was signalled, before the listener
+// closed, ran nothing because the server is stopping: 503, not the 429 that
+// says another run holds the cycle.
+func TestDumpDuringShutdownReturns503(t *testing.T) {
+	pg := &stubPG{}
+	gated := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()), scheduler.WithGate(func() bool { return false }))
+	srv := newTestServerWithCycle(t, pg, "", gated)
+
+	rec := post(t, srv, "")
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("POST /dump after shutdown began: status = %d, want 503", rec.Code)
+	}
+	if got := rec.Body.String(); got != "shutting down\n" {
+		t.Errorf("POST /dump after shutdown began: body = %q, want %q", got, "shutting down\n")
+	}
+	if got := pg.dumpCalls.Load(); got != 0 {
+		t.Errorf("Dump calls = %d, want 0 (the gate refuses the run)", got)
+	}
+}
+
+// Trigger.Run reports why nothing ran: a closed shutdown gate is OutcomeGated,
+// a run already in flight in this process or another is OutcomeSkipped.
+func TestTriggerRunReportsWhyNothingRan(t *testing.T) {
+	newTrigger := func(t *testing.T, pg dump.PGTool, cycle *scheduler.Exclusive) *Trigger {
+		t.Helper()
+		orch := dump.New(&dump.Params{
+			PG:          pg,
+			Logger:      discard(),
+			DumpDir:     t.TempDir(),
+			Specs:       []spec.DBSpec{{Host: "h", Port: 5432, DBName: "db", User: "u"}},
+			DumpTimeout: 30 * time.Second,
+			Concurrency: 1,
+		})
+		return NewTrigger(&dump.Guard{}, cycle, orch, discard())
+	}
+	check := func(t *testing.T, results []dump.Result, outcome scheduler.Outcome, err error, want scheduler.Outcome) {
+		t.Helper()
+		if outcome != want || err != nil {
+			t.Errorf("Trigger.Run() = (%v, %v), want (%v, nil)", outcome, err, want)
+		}
+		if results != nil {
+			t.Errorf("Trigger.Run() results = %+v, want nil (nothing ran)", results)
+		}
+	}
+
+	t.Run("shutdown gate closed", func(t *testing.T) {
+		gated := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard()), scheduler.WithGate(func() bool { return false }))
+		results, outcome, err := newTrigger(t, &stubPG{}, gated).Run()
+		check(t, results, outcome, err, scheduler.OutcomeGated)
+	})
+	t.Run("cycle lock held by another process", func(t *testing.T) {
+		cycleDir := t.TempDir()
+		lock, ok, err := scheduler.TryLock(filepath.Join(cycleDir, scheduler.ExclusiveLockName))
+		if err != nil || !ok {
+			t.Fatalf("TryLock(cycle.lock) = ok=%v err=%v, want held", ok, err)
+		}
+		defer lock.Unlock()
+		results, outcome, err := newTrigger(t, &stubPG{}, scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard()))).Run()
+		check(t, results, outcome, err, scheduler.OutcomeSkipped)
+	})
+	t.Run("guard held in this process", func(t *testing.T) {
+		pg := &stubPG{entered: make(chan struct{}), release: make(chan struct{})}
+		tr := newTrigger(t, pg, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())))
+		first := make(chan scheduler.Outcome, 1)
+		go func() {
+			_, outcome, _ := tr.Run()
+			first <- outcome
+		}()
+		<-pg.entered
+
+		results, outcome, err := tr.Run()
+		close(pg.release)
+		check(t, results, outcome, err, scheduler.OutcomeSkipped)
+		if got := <-first; got != scheduler.OutcomeRan {
+			t.Errorf("first Trigger.Run() outcome = %v, want ran", got)
+		}
+	})
+}
+
 // Rerun demand queued while the server's cycle is in flight is executed by
 // the server before the HTTP response is written; the requester never blocks
 // and the handler body reports only the caller's own first run.
@@ -464,7 +574,7 @@ func TestQueuedRunDemandConsumedByServerCycle(t *testing.T) {
 
 	<-pg.entered // server cycle now in flight, cycle lock held
 
-	requester := scheduler.NewExclusive(cycleDir, discard())
+	requester := scheduler.NewExclusive(cycleDir, scheduler.WithLogger(discard()))
 	outcome, err := requester.Run(func() error {
 		t.Error("requester executed the job; want it queued behind the in-flight cycle")
 		return nil
@@ -507,7 +617,7 @@ func TestServerTimeoutsConfigured(t *testing.T) {
 	}
 }
 
-// webhttp's baseline hardening headers are present, but no CSP or HSTS: this
+// httpserver's baseline hardening headers are present, but no CSP or HSTS: this
 // is a plain-HTTP, non-browser control endpoint, and HSTS would make a
 // browser refuse plain HTTP to the host.
 func TestSecurityHeadersPresent(t *testing.T) {
@@ -534,7 +644,7 @@ func TestSecurityHeadersPresent(t *testing.T) {
 	}
 }
 
-// throttleProbeAttempts must exceed webhttp.FailedAuthRateLimit's burst.
+// throttleProbeAttempts must exceed httpserver.FailedAuthRateLimit's burst.
 const throttleProbeAttempts = 64
 
 // Bad attempts inside the preset's burst pass to their 401s, the flood is

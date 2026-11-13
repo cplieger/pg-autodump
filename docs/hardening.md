@@ -11,6 +11,7 @@ pg-autodump connects to your databases over the network as an ordinary PostgreSQ
 - Anyone who reaches `POST /dump` can at most write another dump made by the read-only role into the volume. Keep the port on loopback or a private network, or set `AUTH_TOKEN`.
 - When `AUTH_TOKEN` is empty and `LISTEN_ADDR` is not loopback, pg-autodump logs a warning at start.
 - The `POST /dump` answer never carries `pg_dump` or `pg_restore` error text, so an open endpoint shows no schema or table names.
+- `GET /healthz` and `GET /metrics` need no token. `/metrics` shows database names and the host and port of each server, so publish the port only to your network.
 
 ## Hardened compose settings
 
@@ -24,7 +25,7 @@ The image runs as a non-root user. Add these lines to the service in `compose.ya
       - "/tmp:size=16m,mode=1777"
 ```
 
-The `/tmp` tmpfs is required with `read_only`, because the health file and the run lock live there. Mode 1777 lets the non-root user write to it.
+pg-autodump writes to two places. `/dumps` holds the dumps, the temporary file of each dump until it is checked, and the last-run record. `/tmp/pg-autodump` holds the run lock, which keeps two runs in one container from overlapping. With `read_only: true`, the 16 MB `/tmp` tmpfs is required for that lock only: without a writable `/tmp`, the server refuses to start and `run` exits `1`. Mode 1777 lets the non-root user write to it. Health needs no folder, because the server keeps its verdict in memory and `/healthz` serves it from there.
 
 ## The backup role
 
@@ -52,11 +53,12 @@ The client tools need a C library, which is why the image is Alpine rather than 
 | alpine | [Alpine](https://hub.docker.com/_/alpine) |
 | postgresql18-client | [PostgreSQL](https://www.postgresql.org/) |
 | tini | [GitHub](https://github.com/krallin/tini) |
-| github.com/cplieger/atomicfile | [GitHub](https://github.com/cplieger/atomicfile) |
-| github.com/cplieger/envx | [GitHub](https://github.com/cplieger/envx) |
-| github.com/cplieger/health | [GitHub](https://github.com/cplieger/health) |
-| github.com/cplieger/keyenc | [GitHub](https://github.com/cplieger/keyenc) |
-| github.com/cplieger/pathinside | [GitHub](https://github.com/cplieger/pathinside) |
-| github.com/cplieger/scheduler | [GitHub](https://github.com/cplieger/scheduler) |
-| github.com/cplieger/slogx | [GitHub](https://github.com/cplieger/slogx) |
-| github.com/cplieger/webhttp | [GitHub](https://github.com/cplieger/webhttp) |
+| github.com/cplieger/go/filesafe | [GitHub](https://github.com/cplieger/go/tree/main/filesafe) |
+| github.com/cplieger/go/envx | [GitHub](https://github.com/cplieger/go/tree/main/envx) |
+| github.com/cplieger/go/health/v2 | [GitHub](https://github.com/cplieger/go/tree/main/health) |
+| github.com/cplieger/go/keyenc | [GitHub](https://github.com/cplieger/go/tree/main/keyenc) |
+| github.com/cplieger/go/pathinside | [GitHub](https://github.com/cplieger/go/tree/main/pathinside) |
+| github.com/cplieger/go/scheduler | [GitHub](https://github.com/cplieger/go/tree/main/scheduler) |
+| github.com/cplieger/go/slogx | [GitHub](https://github.com/cplieger/go/tree/main/slogx) |
+| github.com/cplieger/go/httpserver | [GitHub](https://github.com/cplieger/go/tree/main/httpserver) |
+| github.com/cplieger/go/measure | [GitHub](https://github.com/cplieger/go/tree/main/measure) |

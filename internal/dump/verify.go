@@ -4,13 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/cplieger/atomicfile/v4"
+	"github.com/cplieger/go/filesafe"
+	"github.com/cplieger/pg-autodump/internal/spec"
 )
 
 // dumpTimeFormat is the UTC timestamp embedded in retained dump filenames. It
@@ -73,6 +75,36 @@ func timestampedDumpNames(entries []os.DirEntry, dbname string) []string {
 	return names
 }
 
+// NewestDump returns the modification time of the newest verified dump of s
+// under dumpDir, the stable "<dbname>.dump" or a retained timestamped one;
+// found is false when there is none.
+func NewestDump(dumpDir string, s *spec.DBSpec) (newest time.Time, found bool, err error) {
+	entries, err := os.ReadDir(filepath.Join(dumpDir, spec.ServerDir(s.Host, s.Port)))
+	if errors.Is(err, fs.ErrNotExist) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	names := timestampedDumpNames(entries, s.DBName)
+	for _, e := range entries {
+		if e.Name() != s.DBName+".dump" && !slices.Contains(names, e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, fs.ErrNotExist) { // pruned since ReadDir
+			continue
+		}
+		if err != nil {
+			return time.Time{}, false, err
+		}
+		if info.Mode().IsRegular() && (!found || info.ModTime().After(newest)) {
+			newest, found = info.ModTime(), true
+		}
+	}
+	return newest, found, nil
+}
+
 // removeDumps deletes each named file under dir, returning the number
 // removed and the first remove error. Best-effort: does not stop the loop or
 // undo prior removals.
@@ -92,7 +124,7 @@ func removeDumps(dir string, names []string) (int, error) {
 }
 
 // stageAndReplace is the load-bearing verify-before-replace invariant. It
-// streams a network pg_dump into a temp file in dir (via atomicfile, so the
+// streams a network pg_dump into a temp file in dir (via filesafe, so the
 // temp shares dir's filesystem and the replace is an atomic rename), verifies
 // the result locally, and only then commits to fileName. On any failure it
 // discards the temp and leaves any existing file untouched: a ctx
@@ -101,22 +133,22 @@ func removeDumps(dir string, names []string) (int, error) {
 func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn) Result {
 	target := filepath.Join(dir, fileName)
 
-	pending, err := atomicfile.NewPendingFile(ctx, target, atomicfile.WithMode(0o600))
+	pending, err := filesafe.NewPendingFile(ctx, target, filesafe.WithMode(0o600))
 	if err != nil {
 		// A target occupied by a directory, FIFO, device, or socket is
 		// refused here rather than at Commit; the prior dump is intact and
 		// this classifies as rename_failed, not a generic temp-create fault
-		// (ReasonOther would misname the destination problem as a temp one).
-		if errors.Is(err, atomicfile.ErrNotRegular) {
+		// (reasonOther would misname the destination problem as a temp one).
+		if errors.Is(err, filesafe.ErrNotRegular) {
 			return Result{
-				Reason: ReasonRenameFailed,
+				Reason: reasonRenameFailed,
 				Detail: "target is not a regular file: " + err.Error(),
 			}
 		}
 		// A ctx cancel/deadline at temp-create time is killed/timeout, not a
 		// generic fault; abortOr mirrors the VerifyTOC/Commit gates so every
 		// gate classifies a cancellation uniformly.
-		return abortOr(ctx, &Result{Reason: ReasonOther, Detail: "cannot create temp file: " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonOther, Detail: "cannot create temp file: " + err.Error()})
 	}
 	committed := false
 	defer func() {
@@ -131,7 +163,7 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 		return ctxAbortResult(ctxErr)
 	}
 	if dumpErr != nil && exitCode == 0 {
-		return Result{Reason: ReasonOther, Detail: dumpErr.Error()}
+		return Result{Reason: reasonOther, Detail: dumpErr.Error()}
 	}
 	if exitCode != 0 {
 		return Result{Reason: ReasonPGError, Detail: stderrDetail(stderrTail)}
@@ -139,19 +171,19 @@ func stageAndReplace(ctx context.Context, p PGTool, dir, fileName string, c Conn
 
 	info, statErr := os.Stat(pending.Name())
 	if statErr != nil {
-		return Result{Reason: ReasonOther, Detail: "stat temp file: " + statErr.Error()}
+		return Result{Reason: reasonOther, Detail: "stat temp file: " + statErr.Error()}
 	}
 	size := info.Size()
 	if size == 0 {
-		return Result{Reason: ReasonEmpty, Detail: "dump produced an empty file"}
+		return Result{Reason: reasonEmpty, Detail: "dump produced an empty file"}
 	}
 
 	if err := p.VerifyTOC(ctx, pending.Name()); err != nil {
-		return abortOr(ctx, &Result{Reason: ReasonTruncated, Detail: "pg_restore --list failed (TOC unreadable): " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonTruncated, Detail: "pg_restore --list failed (TOC unreadable): " + err.Error()})
 	}
 
 	if _, err := pending.Commit(ctx); err != nil {
-		return abortOr(ctx, &Result{Reason: ReasonRenameFailed, Detail: "atomic replace failed: " + err.Error()})
+		return abortOr(ctx, &Result{Reason: reasonRenameFailed, Detail: "atomic replace failed: " + err.Error()})
 	}
 	committed = true
 

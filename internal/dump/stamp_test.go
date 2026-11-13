@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/slogx/capture"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
-	"github.com/cplieger/slogx/capture"
 )
 
 // A cycle in which every configured database dumped and verified records a
@@ -65,7 +65,7 @@ func TestRunRecordsPartialFailureAsFailed(t *testing.T) {
 		Keep:        1,
 	})
 	res := orch.Run(deadlineCtx(t))
-	if res[0].Reason != ReasonOK || res[1].Reason != ReasonConnectError {
+	if res[0].Reason != ReasonOK || res[1].Reason != reasonConnectError {
 		t.Fatalf("reasons = %q, %q; want ok + connect_error (a partial failure)", res[0].Reason, res[1].Reason)
 	}
 

@@ -12,17 +12,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/httpapi"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // tickerPG is an always-successful dump.PGTool counting dump calls, so a test
 // can assert whether the startup dump ran without parsing logs.
 type tickerPG struct{ dumps atomic.Int32 }
 
-func (p *tickerPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+func (*tickerPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
 	return 18, dump.FailNone, nil
 }
 
@@ -32,10 +32,10 @@ func (p *tickerPG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, strin
 	return 0, "", nil
 }
 
-func (p *tickerPG) VerifyTOC(context.Context, string) error { return nil }
+func (*tickerPG) VerifyTOC(context.Context, string) error { return nil }
 
-// syncBuffer lets the test poll log output while runTicker writes it from
-// its own goroutine.
+// syncBuffer lets the test poll log output while the timer goroutine writes
+// it.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -68,23 +68,19 @@ func tickerFixture(t *testing.T, dir string, buf *syncBuffer) (*httpapi.Trigger,
 		Concurrency: 1,
 		Keep:        1,
 	})
-	cycle := scheduler.NewExclusive(t.TempDir(), log)
+	cycle := scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(log))
 	return httpapi.NewTrigger(&dump.Guard{}, cycle, orch, log), pgf, log
 }
 
-// startTicker reads the record in dir as the server does at boot, then runs
-// runTicker in a goroutine with a 24h interval (so no tick fires during the
-// test) and returns a stop func that cancels and joins it.
-func startTicker(t *testing.T, dir string, trig *httpapi.Trigger, log *slog.Logger) (stop func()) {
+// startTestTicker reads the record in dir as the server does at boot, then
+// starts the timer with a 24h interval (so no tick fires during the test) and
+// returns a stop func that cancels and joins it.
+func startTestTicker(t *testing.T, dir string, trig *httpapi.Trigger, log *slog.Logger) (stop func()) {
 	t.Helper()
 	const interval = 24 * time.Hour
 	rec := readStartupRecord(dump.StampPath(dir), interval, time.Now(), log)
 	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		runTicker(ctx, rec, interval, trig, log)
-	}()
+	done := startTicker(ctx, rec, interval, trig, log)
 	return func() {
 		cancel()
 		<-done
@@ -121,7 +117,7 @@ func TestRunTickerFiresStartupDumpWithNoRecord(t *testing.T) {
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 	stamp := scheduler.NewStamp(dump.StampPath(dir))
 
-	stop := startTicker(t, dir, trig, log)
+	stop := startTestTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.OK
@@ -146,7 +142,7 @@ func TestRunTickerFiresStartupDumpWithStaleRecord(t *testing.T) {
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 	stamp := scheduler.NewStamp(dump.StampPath(dir))
 
-	stop := startTicker(t, dir, trig, log)
+	stop := startTestTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.Time.After(seeded.Add(time.Hour))
@@ -174,7 +170,7 @@ func TestRunTickerSkipsStartupDumpAfterFreshSuccess(t *testing.T) {
 	var buf syncBuffer
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 
-	stop := startTicker(t, dir, trig, log)
+	stop := startTestTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		return strings.Contains(buf.String(), "startup dump skipped; the last cycle fully succeeded within one interval")
 	}, "the startup-skip log line")
@@ -207,7 +203,7 @@ func TestRunTickerFiresStartupDumpAfterFailedCycleRecord(t *testing.T) {
 	var buf syncBuffer
 	trig, pgf, log := tickerFixture(t, dir, &buf)
 
-	stop := startTicker(t, dir, trig, log)
+	stop := startTestTicker(t, dir, trig, log)
 	waitFor(t, func() bool {
 		rec, known := stamp.Last()
 		return known && rec.OK

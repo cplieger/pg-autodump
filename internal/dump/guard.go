@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync/atomic"
 
-	"github.com/cplieger/webhttp/v3"
+	"github.com/cplieger/go/httpserver"
 )
 
 // Guard enforces one dump run at a time in-process: the resident HTTP server
@@ -44,7 +44,7 @@ func (g *Guard) TryAcquire(cancel context.CancelFunc) (release func(), ok bool) 
 // The shutdown path uses it to drain a ticker-triggered run that holds no HTTP
 // connection for srv.Shutdown to see.
 //
-// Uses webhttp.AwaitDone, which rechecks completion after ctx fires: a bare
+// Uses httpserver.AwaitDone, which rechecks completion after ctx fires: a bare
 // select on both channels can pick the ctx case even when the run finished in
 // the same instant, since select between two ready cases is pseudo-random.
 func (g *Guard) WaitIdle(ctx context.Context) bool {
@@ -52,7 +52,7 @@ func (g *Guard) WaitIdle(ctx context.Context) bool {
 	if p == nil {
 		return true
 	}
-	return webhttp.AwaitDone(ctx, *p)
+	return httpserver.AwaitDone(ctx, *p)
 }
 
 // CancelInFlight cancels the in-flight run's context if one is active, else is

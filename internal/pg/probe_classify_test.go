@@ -364,8 +364,8 @@ func TestBinariesRunnable(t *testing.T) {
 	})
 
 	t.Run("a context without a deadline is refused", func(t *testing.T) {
-		if err := BinariesRunnable(t.Context()); err != ErrNoDeadline {
-			t.Errorf("BinariesRunnable(no-deadline ctx) = %v, want ErrNoDeadline", err)
+		if err := BinariesRunnable(t.Context()); err != errNoDeadline {
+			t.Errorf("BinariesRunnable(no-deadline ctx) = %v, want errNoDeadline", err)
 		}
 	})
 }

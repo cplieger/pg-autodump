@@ -1,46 +1,47 @@
 package dump
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/cplieger/health"
+	"github.com/cplieger/go/health/v2"
+	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/spec"
-	"github.com/cplieger/scheduler/v4"
 )
 
 // healthOrchestrator wires an orchestrator over pgf whose cycle verdicts land
-// on a real marker in a private directory, and returns both.
-func healthOrchestrator(t *testing.T, pgf *fakePG, specs []spec.DBSpec) (*Orchestrator, *health.Marker) {
+// on a health Status, and returns both.
+func healthOrchestrator(t *testing.T, pgf *fakePG, specs []spec.DBSpec) (*Orchestrator, *health.Status) {
 	t.Helper()
-	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	st := health.NewStatus(health.WithLogger(slog.New(slog.DiscardHandler)))
 	orch := New(&Params{
 		PG:          pgf,
 		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Health:      marker,
+		Health:      st,
 		DumpDir:     t.TempDir(),
 		Specs:       specs,
 		DumpTimeout: 30 * time.Second,
 		Concurrency: 1,
 		Keep:        1,
 	})
-	return orch, marker
+	return orch, st
 }
 
 // A cycle in which every configured database dumped and verified marks the
 // container healthy, from any prior state.
 func TestRunFullSuccessSetsHealthy(t *testing.T) {
-	orch, marker := healthOrchestrator(t, &fakePG{}, []spec.DBSpec{
+	orch, st := healthOrchestrator(t, &fakePG{}, []spec.DBSpec{
 		{Host: "h1", Port: 5432, DBName: "app", User: "u"},
 		{Host: "h2", Port: 5432, DBName: "app", User: "u"},
 	})
-	if marker.CheckHealthy() {
-		t.Fatal("marker present before any cycle ran; the fixture must start unhealthy")
+	if st.Healthy() {
+		t.Fatal("verdict healthy before any cycle ran; the fixture must start unhealthy")
 	}
 
 	res := orch.Run(deadlineCtx(t))
@@ -49,8 +50,8 @@ func TestRunFullSuccessSetsHealthy(t *testing.T) {
 			t.Fatalf("spec[%d] reason = %q, want ok (detail %q)", i, r.Reason, r.Detail)
 		}
 	}
-	if !marker.CheckHealthy() {
-		t.Fatal("cycle completed with 0 failures; want the health marker set, got absent")
+	if !st.Healthy() {
+		t.Fatal("cycle completed with 0 failures; want the verdict healthy, got unhealthy")
 	}
 }
 
@@ -64,34 +65,34 @@ func TestRunPartialFailureMarksUnhealthy(t *testing.T) {
 		}
 		return 18, FailNone, nil
 	}}
-	orch, marker := healthOrchestrator(t, pgf, []spec.DBSpec{
+	orch, st := healthOrchestrator(t, pgf, []spec.DBSpec{
 		{Host: "good", Port: 5432, DBName: "app", User: "u"},
 		{Host: "bad", Port: 5432, DBName: "app", User: "u"},
 	})
-	marker.Set(true)
+	st.Set(true)
 
 	res := orch.Run(deadlineCtx(t))
-	if res[0].Reason != ReasonOK || res[1].Reason != ReasonConnectError {
+	if res[0].Reason != ReasonOK || res[1].Reason != reasonConnectError {
 		t.Fatalf("reasons = %q, %q; want ok + connect_error (a partial failure)", res[0].Reason, res[1].Reason)
 	}
-	if marker.CheckHealthy() {
-		t.Fatal("one database failed; want the health marker removed, got present")
+	if st.Healthy() {
+		t.Fatal("one database failed; want the verdict unhealthy, got healthy")
 	}
 }
 
 // A cycle over zero configured databases dumped nothing, so it is not a
-// success: the marker the boot left behind is removed and the last-run record
+// success: the healthy verdict the boot left is replaced and the last-run record
 // reads failed, keeping the next boot's startup dump due. The empty DB_SPECS
 // the boot preflight refused must not turn healthy on the first cycle.
 func TestRunNoDatabasesIsNotSuccess(t *testing.T) {
-	orch, marker := healthOrchestrator(t, &fakePG{}, nil)
-	marker.Set(true)
+	orch, st := healthOrchestrator(t, &fakePG{}, nil)
+	st.Set(true)
 
 	if res := orch.Run(deadlineCtx(t)); len(res) != 0 {
 		t.Fatalf("results = %d, want 0 for an empty spec set", len(res))
 	}
-	if marker.CheckHealthy() {
-		t.Error("no database configured; want the health marker removed, got present")
+	if st.Healthy() {
+		t.Error("no database configured; want the verdict unhealthy, got healthy")
 	}
 	rec, known := scheduler.NewStamp(StampPath(orch.dumpDir)).Last()
 	if !known || rec.OK {
@@ -101,7 +102,7 @@ func TestRunNoDatabasesIsNotSuccess(t *testing.T) {
 
 // A cycle cut short by shutdown writes no verdict at all: its killed dumps are
 // an operator action, not a dump failure, so the previous cycle's record and
-// marker both stand and a container recreated mid-cycle does not boot
+// verdict both stand and a container recreated mid-cycle does not boot
 // unhealthy with no failed dump to explain it.
 func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 	started := make(chan struct{})
@@ -110,8 +111,10 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 		<-ctx.Done()
 		return 1, "", ctx.Err()
 	}}
-	orch, marker := healthOrchestrator(t, pgf, []spec.DBSpec{{Host: "h", Port: 5432, DBName: "app", User: "u"}})
-	marker.Set(true)
+	orch, st := healthOrchestrator(t, pgf, []spec.DBSpec{{Host: "h", Port: 5432, DBName: "app", User: "u"}})
+	var logs bytes.Buffer
+	orch.log = slog.New(slog.NewTextHandler(&logs, nil))
+	st.Set(true)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	go func() {
@@ -120,13 +123,20 @@ func TestRunCancelledCycleRecordsNothing(t *testing.T) {
 	}()
 	res := orch.Run(ctx)
 
-	if res[0].Reason != ReasonKilled {
+	if res[0].Reason != reasonKilled {
 		t.Fatalf("reason = %q, want killed; the cycle must be cut short for the rest to assert anything", res[0].Reason)
 	}
-	if !marker.CheckHealthy() {
-		t.Error("marker removed by a shutdown-cancelled cycle; want the previous cycle's verdict to stand")
+	if !st.Healthy() {
+		t.Error("verdict turned unhealthy by a shutdown-cancelled cycle; want the previous cycle's verdict to stand")
 	}
 	if _, known := scheduler.NewStamp(StampPath(orch.dumpDir)).Last(); known {
 		t.Error("last-run record written by a shutdown-cancelled cycle; want none")
+	}
+	out := logs.String()
+	if strings.Contains(out, "dump cycle complete") {
+		t.Errorf("a shutdown-cancelled cycle wrote the dump cycle complete record the log alerts read; want none, log %q", out)
+	}
+	if !strings.Contains(out, `level=WARN msg="dump cycle cut short" total=1 ok=0 failed=1`) {
+		t.Errorf("a shutdown-cancelled cycle did not log one WARN dump cycle cut short line with its counts, log %q", out)
 	}
 }

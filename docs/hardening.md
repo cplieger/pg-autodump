@@ -4,12 +4,12 @@ This page covers how pg-autodump limits what it can reach, the hardened compose 
 
 ## What it can reach
 
-pg-autodump connects to your databases over the network as an ordinary PostgreSQL client. It needs no Docker socket and no root. It needs only network access to the databases, a read-only `.pgpass` or `PGPASSWORD`, and a writable `/dumps`. If the container is compromised, an attacker can read the databases through the backup role and change the files under `/dumps`. The container has no Docker socket and no root, so give it only the network access and mounts it needs.
+pg-autodump connects to your databases over the network as an ordinary PostgreSQL client. It needs no Docker socket and no root. It needs only network access to the databases, a read-only `.pgpass` or `PGPASSWORD`, and a writable `/dumps`. If the container is compromised, an attacker can read the databases through the backup role and change the files under `/dumps`, so give it only the network access and mounts it needs.
 
 - Passwords live in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. `pg_dump` runs with `--no-password`, so it never waits for a prompt.
 - `DB_SPECS` is checked once at start. Each value is passed as a long option such as `--dbname=` or `--username=`, so a value can never be read as a flag, and no shell is ever started.
 - Anyone who reaches `POST /dump` can at most write another dump made by the read-only role into the volume. Keep the port on loopback or a private network, or set `AUTH_TOKEN`.
-- When `AUTH_TOKEN` is empty and `LISTEN_ADDR` is not loopback, pg-autodump logs a warning at start.
+- When `AUTH_TOKEN` is empty and `LISTEN_ADDR` is not loopback, as with the default `:9472`, pg-autodump logs a warning at start. It cannot see how Docker publishes the port, so the warning also appears with a `127.0.0.1` mapping.
 - The `POST /dump` answer never carries `pg_dump` or `pg_restore` error text, so an open endpoint shows no schema or table names.
 - `GET /healthz` and `GET /metrics` need no token. `/metrics` shows database names and the host and port of each server, so publish the port only to your network.
 
@@ -25,7 +25,7 @@ The image runs as a non-root user. Add these lines to the service in `compose.ya
       - "/tmp:size=16m,mode=1777"
 ```
 
-pg-autodump writes to two places. `/dumps` holds the dumps, the temporary file of each dump until it is checked, and the last-run record. `/tmp/pg-autodump` holds the run lock, which keeps two runs in one container from overlapping. With `read_only: true`, the 16 MB `/tmp` tmpfs is required for that lock only: without a writable `/tmp`, the server refuses to start and `run` exits `1`. Mode 1777 lets the non-root user write to it. Health needs no folder, because the server keeps its verdict in memory and `/healthz` serves it from there.
+pg-autodump writes to two places. `/dumps` holds the dumps, the temporary file of each dump until it is checked, and the last-run record. `/tmp/pg-autodump` holds the run lock, which keeps two runs in one container from overlapping. With `read_only: true`, the 16 MB `/tmp` tmpfs is required for that lock only. Without a writable `/tmp`, the server refuses to start and `run` exits `1`. Mode 1777 lets the non-root user write to it. Health needs no folder, because the server keeps its verdict in memory and `/healthz` serves it from there.
 
 ## The backup role
 

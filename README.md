@@ -27,7 +27,7 @@ pg-autodump is free software under the Apache-2.0 license.
 
 ## Quick start
 
-The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository.
+The image is on GitHub Container Registry and on Docker Hub as `cplieger/pg-autodump`, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository.
 
 ```yaml
 services:

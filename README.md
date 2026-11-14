@@ -3,24 +3,24 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/size.json)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/pg-autodump/pkgs/container/pg-autodump) [![base: Alpine](https://img.shields.io/badge/base-Alpine-0D597F?logo=alpinelinux)](https://github.com/cplieger/pg-autodump/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/pg-autodump/badges/mutation.json)](https://github.com/cplieger/pg-autodump/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/pg-autodump/releases)
 
 <!-- hub-overview BEGIN -->
-pg-autodump writes a checked backup file of each of your PostgreSQL databases into a folder that your backup tool already collects. It leaves encryption and off-site copies to that tool, such as Kopia, Restic, Borg or rsync.
+pg-autodump writes a checked backup file of each PostgreSQL database you list into a folder your backup tool already collects. It leaves encryption and off-site copies to that tool, such as Kopia, Restic, Borg or rsync.
 
 ## What it does
 
-pg-autodump keeps a fresh, readable dump of every database you list, ready for your backup tool to pick up.
+pg-autodump keeps a fresh, readable dump of every database you list for your backup tool.
 
-- Dumps each database with PostgreSQL's own `pg_dump` every 24 hours, or whenever you ask.
-- Replaces a dump only after `pg_restore` can read the new one, so a failed run keeps the last good file.
-- Keeps the 7 newest dumps of each database and deletes older ones.
-- Shows a failed backup as an unhealthy container until every database dumps cleanly again.
+- Dumps each database with PostgreSQL's `pg_dump`, compressed, every 24 hours or whenever you ask.
+- Replaces a dump only after `pg_restore` can read the new file's table of contents, so a failed run keeps the last good file.
+- Keeps the 7 newest dumps of each database, and deletes old ones only once a new one is in place.
+- Tells you when a backup fails, through Docker health, Prometheus metrics and alert rules for Prometheus or Loki.
 
 ## Who it is for
 
-pg-autodump is built for self-hosters who run PostgreSQL behind apps such as Authentik, Paperless or Immich and already back up a folder. It connects over the network as a read-only role and needs no root and no Docker socket. It dumps the databases you list, one file each, without roles or other server-wide settings.
+pg-autodump is built for self-hosters who run PostgreSQL behind apps such as Authentik, Paperless or Immich and already back up a folder. It connects over the network as a read-only role. It dumps only the databases you list, without the server's roles or other server-wide settings. It sends no notifications itself, so alerts come from Prometheus, Loki or a tool watching Docker health.
 
-You need a PostgreSQL server from version 9.2 to 18 that the container can reach, and a role allowed to read every table.
+You need a PostgreSQL server, version 9.2 to 18, that the container can reach, and a role that can read every table.
 
-One other tool suits a different need. Consider [pgBackRest](https://pgbackrest.org/) if you want full, differential and incremental backups of a whole server, which it can store in S3, Azure or GCS.
+Consider [pgBackRest](https://pgbackrest.org/) if you want full, differential and incremental backups of a whole server in S3, Azure, GCS or SFTP storage.
 
 pg-autodump is free software under the Apache-2.0 license.
 <!-- hub-overview END -->
@@ -38,7 +38,7 @@ services:
     # Run "mkdir secrets dumps". Once secrets/.pgpass exists, run "sudo chown 1000:1000 secrets/.pgpass dumps",
     # or every dump fails. If .env sets PUID and PGID, use those numbers.
     user: "${PUID:-1000}:${PGID:-1000}"
-    stop_grace_period: 320s  # SHUTDOWN_TIMEOUT (default 315s) plus the 5s cancel budget, so a dump finishes or unwinds on stop
+    stop_grace_period: 320s  # SHUTDOWN_TIMEOUT (default 315s) plus 5s, so a running dump finishes or cleans up on stop
 
     environment:
       # First create a login role with pg_read_all_data and CONNECT on each database.
@@ -46,11 +46,13 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9472:9472"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
+      # Anyone who reaches this port can start a dump. Keep it on 127.0.0.1,
+      # or set AUTH_TOKEN before you publish it to a network, for example for a scraper.
+      - "127.0.0.1:9472:9472"
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
-      # then run "chmod 600 secrets/.pgpass", or libpq ignores it.
+      # then run "chmod 600 secrets/.pgpass", or the PostgreSQL tools ignore it.
       - "./secrets/.pgpass:/secrets/.pgpass:ro"
       - "./dumps:/dumps"  # point your backup tool at this folder
 ```
@@ -87,17 +89,17 @@ To let cron, a systemd timer or another scheduler decide when dumps run, set `DU
 
 ## Restoring a dump
 
-Each dump sits under `dumps/<host>_<port>/`, named `<database>.<UTC time>.dump`, for example `dumps/mydb-host_5432/myapp.20261002T020000Z.dump`. The files are in `pg_dump`'s custom format, so restore one into an empty database with `pg_restore --dbname=myapp <file>`. Create the roles the database uses first, because the dumps do not carry them.
+Each dump sits under `dumps/<host>_<port>/`, named `<database>.<UTC time>.dump`, for example `dumps/mydb-host_5432/myapp.20261002T020000Z.dump`. The file is a compressed archive in `pg_dump`'s custom format, which `pg_restore` reads. Create the roles the database uses first, because the dumps do not carry them. Then restore the file into an empty database with `pg_restore --dbname=myapp <file>`. [Configuration](docs/configuration.md#retention-and-file-layout) shows the folder layout.
 
 ## Configuration reference
 
-Settings are environment variables, read once at start, so recreate the container after a change. A malformed value falls back to its default with a warning in the log. The one exception is a `DUMP_DIR` with a `..` part, which stops the container from starting.
+Settings are environment variables, read once at start, so recreate the container after a change. A malformed number or duration falls back to its default, with a warning in the log that names the variable. A `DUMP_DIR` with a `..` part stops the container from starting instead.
 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `DB_SPECS` | Databases to dump, as space-separated `host[:port]:database:role` entries. The port defaults to 5432 | required |
 | `DUMP_INTERVAL` | Time between built-in dumps, such as `12h`. `off` hands scheduling to your own trigger | `24h` |
-| `DUMP_KEEP` | Dumps kept per database. `1` keeps one `<database>.dump` that each run overwrites | `7` |
+| `DUMP_KEEP` | Dumps kept per database. With `1`, each database has a single `<database>.dump` file that each run replaces | `7` |
 | `DUMP_TIMEOUT` | Seconds one database may take to dump, at least 10 | `300` |
 | `DUMP_CONCURRENCY` | Databases dumped at the same time | `2` |
 | `AUTH_TOKEN` | When set, `POST /dump` needs the header `Authorization: Bearer <token>` | _(unset)_ |
@@ -107,7 +109,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | `DUMP_DIR` | Folder the dumps go to inside the container. A path with a `..` part stops the container from starting | `/dumps` |
 | `DUMP_FREE_KB_WARN` | Log a warning when free space for dumps is below this many KB at the start of a run. `0` turns it off | `1048576` |
 
-Instead of a `.pgpass` file, you can set `PGPASSWORD`, which libpq uses for every database. [Configuration](docs/configuration.md) explains the `DB_SPECS` rules, IPv6 hosts, file names and timeouts.
+Instead of a `.pgpass` file, you can set `PGPASSWORD`, which the PostgreSQL tools use for every database. Other PostgreSQL client variables, such as `PGSSLMODE` to require TLS, apply to every connection too. [Configuration](docs/configuration.md) explains the `DB_SPECS` rules, IPv6 hosts, file names and timeouts.
 
 | Mount | Description |
 | --- | --- |
@@ -122,26 +124,25 @@ Instead of a `.pgpass` file, you can set `PGPASSWORD`, which libpq uses for ever
 
 The container runs as an ordinary user with no Docker socket. It needs only network access to your databases, the password file and a writable `/dumps` folder. Use a role that can only read, as in the quick start.
 
-Port 9472 starts a dump for anyone who reaches it. Keep it published on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. pg-autodump logs a warning at start when the endpoint is open and listens beyond loopback. Its answers never include `pg_dump` error text, so schema and table names stay in the log. `/healthz` and `/metrics` need no token, and `/metrics` shows database and host names, so publish the port only to your network.
+Port 9472 starts a dump for anyone who reaches it. Keep it on `127.0.0.1` as in the example, or set `AUTH_TOKEN`. Without a token, pg-autodump logs a warning at every start, even with the example's `127.0.0.1` mapping, because it cannot see how Docker publishes the port. Its answers never include `pg_dump` error text, so schema and table names stay in the log. `/healthz` and `/metrics` need no token, and `/metrics` shows database and host names, so publish the port only to your network.
 
 Passwords stay in `.pgpass` or `PGPASSWORD`, never on a command line or in the log. [Security](docs/hardening.md) covers the hardened compose settings, the backup role's limits and what the image contains.
 
 ## Troubleshooting
 
-The healthcheck runs `pg-autodump health`, which asks `/healthz` over the container's loopback. Healthy means the last run dumped and checked every database. Unhealthy means a database failed or a run could not start. It stays unhealthy until a run fully succeeds, and a restart does not clear it. An unhealthy container notifies nobody; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what does.
-
-With the built-in timer, a new container is unhealthy while its first dump runs, unless the last run fully succeeded less than one interval ago. It also turns unhealthy when no run has finished in two intervals, 48 hours by default, plus the time one run may take.
+The healthcheck runs `pg-autodump health`, which asks `/healthz` inside the container. Healthy means the last run dumped and checked every database. Unhealthy means a database failed or a run could not start. It lasts until a run fully succeeds, and a restart does not clear it. With the built-in timer, a new container is unhealthy while its first dump runs, unless a run fully succeeded less than one interval ago. It also turns unhealthy when no run has finished in two intervals, 48 hours by default, plus one run's longest time.
 
 - `dump auth_error` means the role, its password or the database name is wrong, or `.pgpass` is not mode 0600 and owned by the container user.
-- `dump connect_error` means the container cannot reach that host and port. Put it on a network that reaches your server.
+- `dump connect_error` means the container cannot reach that host and port. Give it a network that reaches your server.
 - `dump version_mismatch` means the server is newer than the PostgreSQL 18 tools in the image.
+- `dump timeout` means the database took longer than `DUMP_TIMEOUT`, so raise it.
 - `health preconditions not met` naming the dump dir means the container user cannot write to `./dumps`. Repeat quick start step 5.
 
-The image waits 6 minutes before it counts a starting container as unhealthy. With many databases, raise `healthcheck.start_period` in your compose file. [How it works](docs/how-it-works.md#health) has the details.
+The image's healthcheck gives a starting container 6 minutes before a failed check counts. With many databases, raise `start_period` under `healthcheck:` in compose. [How it works](docs/how-it-works.md#health) has the details.
 
 ## Monitoring
 
-pg-autodump serves Prometheus metrics at `/metrics` on port 9472 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/); load one. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) says which rules to load. The image has a Docker healthcheck; [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
+pg-autodump serves Prometheus metrics at `/metrics` on port 9472 and logs one `dump cycle complete` line per finished run. Alert rules for Prometheus and for Loki ship in [`alerts/`](alerts/). Load one of the two files. A Grafana dashboard of every database's dumps and the free space ships as [`grafana-dashboard.json`](grafana-dashboard.json) and needs Grafana 13.2 or newer. [Monitoring and alerts](docs/monitoring.md) lists the rules. The image has a Docker healthcheck, and [Knowing the app is alive](docs/monitoring.md#knowing-the-app-is-alive) says what it proves and who is told.
 
 ## Documentation
 

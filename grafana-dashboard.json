@@ -1436,7 +1436,7 @@
       "hideTimepicker": false,
       "fiscalYearStartMonth": 0
     },
-    "title": "pg-autodump",
+    "title": "PG Autodump",
     "variables": [
       {
         "kind": "DatasourceVariable",

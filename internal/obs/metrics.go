@@ -5,7 +5,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/measure/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
@@ -61,24 +61,36 @@ type Boot struct {
 // plus boot.Gap. The files under dumpDir are read at each scrape.
 func NewRegistry(dumpDir string, specs []spec.DBSpec, boot *Boot) (*measure.Registry, *Metrics) {
 	last, known := boot.Last, boot.Known
+	dbs := make([]database, len(specs))
+	seeds := make([][]string, 0, len(specs)*len(dump.Reasons()))
+	for i := range specs {
+		s := &specs[i]
+		dbs[i] = database{server: spec.ServerDir(s.Host, s.Port), db: dump.ResultDB(s)}
+		for _, r := range dump.Reasons() {
+			seeds = append(seeds, []string{dbs[i].server, dbs[i].db, string(r)})
+		}
+	}
 	m := &Metrics{
 		dumps: measure.NewLabeledCounter("dumps_total",
-			"Dumps by database and result.", append(slices.Clone(perDB), "result")),
+			"Dumps by database and result.", measure.UnitCount, append(slices.Clone(perDB), "result"),
+			measure.WithSeed(seeds...)),
 		dumpOK: measure.NewLabeledGauge("dump_ok",
-			"1 unless the database's latest dump failed; 0 for every database after a restart that read a failed last-run record.", perDB),
+			"1 unless the database's latest dump failed; 0 for every database after a restart that read a failed last-run record.",
+			measure.UnitNone, perDB),
 		duration: measure.NewLabeledGauge("dump_duration_seconds",
-			"How long the database's latest dump attempt took; absent until the first attempt since the process started.", perDB),
+			"How long the database's latest dump attempt took; absent until the first attempt since the process started.",
+			measure.UnitSeconds, perDB),
 		cycleTime: measure.NewGauge("last_cycle_timestamp_seconds",
-			"Unix time the latest dump cycle ended; read from the last-run record at start."),
+			"Unix time the latest dump cycle ended; read from the last-run record at start.", measure.UnitSeconds),
 		cycleOK: measure.NewGauge("last_cycle_ok",
-			"1 when every database dumped and verified in the latest cycle, else 0."),
+			"1 when every database dumped and verified in the latest cycle, else 0.", measure.UnitNone),
 		deadline: measure.NewGauge("cycle_deadline_timestamp_seconds",
-			"Unix time by which the next fully successful dump cycle is due; 0 while DUMP_INTERVAL is off."),
+			"Unix time by which the next fully successful dump cycle is due; 0 while DUMP_INTERVAL is off.", measure.UnitSeconds),
 		gap: boot.Gap,
 	}
-	buildInfo := measure.NewLabeledGauge("build_info",
+	buildInfo := measure.NewInfo("build_info",
 		"Always 1; version is the running build's release tag.", []string{"version"})
-	buildInfo.Set(1, boot.Version)
+	buildInfo.Set(boot.Version)
 	reg := measure.NewRegistry(metricsPrefix)
 	reg.MustRegister(m.dumps, m.dumpOK, m.duration, m.cycleTime, m.cycleOK, m.deadline,
 		buildInfo, newDumpDirCollector(dumpDir, specs))
@@ -87,12 +99,7 @@ func NewRegistry(dumpDir string, specs []spec.DBSpec, boot *Boot) (*measure.Regi
 	if known && !last.OK {
 		okSeed = 0
 	}
-	for i := range specs {
-		s := &specs[i]
-		d := database{server: spec.ServerDir(s.Host, s.Port), db: dump.ResultDB(s)}
-		for _, r := range dump.Reasons() {
-			m.dumps.Add(0, d.server, d.db, string(r))
-		}
+	for _, d := range dbs {
 		m.dumpOK.Set(okSeed, d.server, d.db)
 	}
 	if known {
@@ -114,12 +121,12 @@ func NewRegistry(dumpDir string, specs []spec.DBSpec, boot *Boot) (*measure.Regi
 func newDumpDirCollector(dumpDir string, specs []spec.DBSpec) *measure.Collector {
 	newest := measure.NewGaugeDesc("newest_dump_timestamp_seconds",
 		"Modification time of the database's newest verified dump under DUMP_DIR; absent until its first dump.",
-		perDB)
+		measure.UnitSeconds, perDB)
 	size := measure.NewGaugeDesc("dump_bytes",
 		"Size in bytes of the database's newest verified dump under DUMP_DIR; absent until its first dump.",
-		perDB)
+		measure.UnitBytes, perDB)
 	free := measure.NewGaugeDesc("dump_dir_free_bytes",
-		"Bytes free to the container user on the filesystem holding DUMP_DIR.", nil)
+		"Bytes free to the container user on the filesystem holding DUMP_DIR.", measure.UnitBytes, nil)
 	return measure.NewCollector(func(_ context.Context, e *measure.Emitter) {
 		for i := range specs {
 			s := &specs[i]

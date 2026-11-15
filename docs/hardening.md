@@ -61,4 +61,4 @@ The client tools need a C library, which is why the image is Alpine rather than 
 | github.com/cplieger/go/scheduler | [GitHub](https://github.com/cplieger/go/tree/main/scheduler) |
 | github.com/cplieger/go/slogx | [GitHub](https://github.com/cplieger/go/tree/main/slogx) |
 | github.com/cplieger/go/httpserver | [GitHub](https://github.com/cplieger/go/tree/main/httpserver) |
-| github.com/cplieger/go/measure | [GitHub](https://github.com/cplieger/go/tree/main/measure) |
+| github.com/cplieger/go/measure/v2 | [GitHub](https://github.com/cplieger/go/tree/main/measure) |

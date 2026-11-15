@@ -49,7 +49,7 @@ The metrics come from the resident server. A one-shot container whose command is
 
 ## Dashboard
 
-[`grafana-dashboard.json`](../grafana-dashboard.json) imports as the pg-autodump dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. When you run more than one container, the pg-autodump variable picks the instance to show. It has one page of three rows:
+[`grafana-dashboard.json`](../grafana-dashboard.json) imports as the PG Autodump dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. When you run more than one container, the pg-autodump variable picks the instance to show. It has one page of three rows:
 
 - Needs attention appears only while `PgAutodumpDumpFailed`, `PgAutodumpDumpStale` or `PgAutodumpDown` fires, with one tile per rule. Each tile reads its rule's `ALERTS` series, which Prometheus and the Mimir ruler store beside your metrics, so the row stays hidden while those rules are not loaded.
 - Databases shows whether the latest run succeeded, when it ended, how many databases are listed and the free space. Its table has one row per database, with these columns:

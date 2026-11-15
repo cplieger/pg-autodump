@@ -1,0 +1,96 @@
+# HELP pg_autodump_dumps_total Dumps by database and result.
+# TYPE pg_autodump_dumps_total counter
+pg_autodump_dumps_total{db="not-a-spec",result="auth_error",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="connect_error",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="duplicate",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="empty",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="invalid",server="_5432"} 1
+pg_autodump_dumps_total{db="not-a-spec",result="killed",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="mkdir_failed",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="ok",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="other",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="pg_error",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="rename_failed",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="skipped",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="timeout",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="truncated",server="_5432"} 0
+pg_autodump_dumps_total{db="not-a-spec",result="version_mismatch",server="_5432"} 0
+pg_autodump_dumps_total{db="app",result="auth_error",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="connect_error",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="duplicate",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="empty",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="invalid",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="killed",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="mkdir_failed",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="ok",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="other",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="pg_error",server="down_5432"} 1
+pg_autodump_dumps_total{db="app",result="rename_failed",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="skipped",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="timeout",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="truncated",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="version_mismatch",server="down_5432"} 0
+pg_autodump_dumps_total{db="app",result="auth_error",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="connect_error",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="duplicate",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="empty",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="invalid",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="killed",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="mkdir_failed",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="ok",server="h1_5432"} 2
+pg_autodump_dumps_total{db="app",result="other",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="pg_error",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="rename_failed",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="skipped",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="timeout",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="truncated",server="h1_5432"} 0
+pg_autodump_dumps_total{db="app",result="version_mismatch",server="h1_5432"} 0
+pg_autodump_dumps_total{db="billing",result="auth_error",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="connect_error",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="duplicate",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="empty",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="invalid",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="killed",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="mkdir_failed",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="ok",server="h2_5433"} 1
+pg_autodump_dumps_total{db="billing",result="other",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="pg_error",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="rename_failed",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="skipped",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="timeout",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="truncated",server="h2_5433"} 0
+pg_autodump_dumps_total{db="billing",result="version_mismatch",server="h2_5433"} 0
+# HELP pg_autodump_dump_ok 1 unless the database's latest dump failed; 0 for every database after a restart that read a failed last-run record.
+# TYPE pg_autodump_dump_ok gauge
+pg_autodump_dump_ok{db="not-a-spec",server="_5432"} 0
+pg_autodump_dump_ok{db="app",server="down_5432"} 0
+pg_autodump_dump_ok{db="app",server="h1_5432"} 1
+pg_autodump_dump_ok{db="billing",server="h2_5433"} 1
+# HELP pg_autodump_dump_duration_seconds How long the database's latest dump attempt took; absent until the first attempt since the process started.
+# TYPE pg_autodump_dump_duration_seconds gauge
+pg_autodump_dump_duration_seconds{db="app",server="down_5432"} 0.25
+pg_autodump_dump_duration_seconds{db="app",server="h1_5432"} 2
+pg_autodump_dump_duration_seconds{db="billing",server="h2_5433"} 3.125
+# HELP pg_autodump_build_info Always 1; version is the running build's release tag.
+# TYPE pg_autodump_build_info gauge
+pg_autodump_build_info{version="v1.2.3"} 1
+# HELP pg_autodump_last_cycle_timestamp_seconds Unix time the latest dump cycle ended; read from the last-run record at start.
+# TYPE pg_autodump_last_cycle_timestamp_seconds gauge
+pg_autodump_last_cycle_timestamp_seconds 1.7938890005e+09
+# HELP pg_autodump_last_cycle_ok 1 when every database dumped and verified in the latest cycle, else 0.
+# TYPE pg_autodump_last_cycle_ok gauge
+pg_autodump_last_cycle_ok 0
+# HELP pg_autodump_cycle_deadline_timestamp_seconds Unix time by which the next fully successful dump cycle is due; 0 while DUMP_INTERVAL is off.
+# TYPE pg_autodump_cycle_deadline_timestamp_seconds gauge
+pg_autodump_cycle_deadline_timestamp_seconds 1794060000
+# HELP pg_autodump_newest_dump_timestamp_seconds Modification time of the database's newest verified dump under DUMP_DIR; absent until its first dump.
+# TYPE pg_autodump_newest_dump_timestamp_seconds gauge
+pg_autodump_newest_dump_timestamp_seconds{db="app",server="h1_5432"} 1.79375760025e+09
+pg_autodump_newest_dump_timestamp_seconds{db="billing",server="h2_5433"} 1.79375769025e+09
+# HELP pg_autodump_dump_bytes Size in bytes of the database's newest verified dump under DUMP_DIR; absent until its first dump.
+# TYPE pg_autodump_dump_bytes gauge
+pg_autodump_dump_bytes{db="app",server="h1_5432"} 9
+pg_autodump_dump_bytes{db="billing",server="h2_5433"} 18
+# HELP pg_autodump_dump_dir_free_bytes Bytes free to the container user on the filesystem holding DUMP_DIR.
+# TYPE pg_autodump_dump_dir_free_bytes gauge
+pg_autodump_dump_dir_free_bytes @FREE_BYTES@

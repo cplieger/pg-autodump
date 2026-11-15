@@ -56,7 +56,7 @@ The metrics come from the resident server. A one-shot container whose command is
   - Latest dump, whether the latest dump succeeded. After a start it reads `-` until the database has a dump or a failed run.
   - Newest dump age, which turns yellow at 48 hours, twice the default `DUMP_INTERVAL`.
   - Size, the size of the newest dump, which reads `-` until the database's first dump.
-  - Duration, how long the latest attempt in the selected range took, which reads `-` when no attempt ran in that range.
+  - Duration, how long the latest attempt took. It looks back over the selected range or 30 days, whichever is longer, so a short range or a restart since the attempt still shows it, and reads `-` when no attempt ran in that time.
   - Failed in the selected range, how many dumps failed in that range, leaving out `killed` and `skipped`, the results of a stop.
 - Space and trend charts the free space for dumps, with its latest value in the legend, and each database's dump size over the selected range.
 

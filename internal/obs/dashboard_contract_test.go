@@ -387,8 +387,9 @@ func TestDashboardAttentionTilesMirrorEveryShippedRule(t *testing.T) {
 
 // TestDashboardDatabasesTableShowsEachDatabase fails when the Databases table
 // stops reading a database's latest result, dump age, size, duration or
-// failures, when a restart blanks its duration, or when its dump age turns
-// yellow at other than twice the default DUMP_INTERVAL.
+// failures, when a filter hides the held size, when a short range or a
+// restart blanks its duration, or when its dump age turns yellow at other than
+// twice the default DUMP_INTERVAL.
 func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 	d := loadDashboard(t)
 	var databases *dashPanel
@@ -410,10 +411,13 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 			t.Errorf("Databases reads no %s", series)
 		}
 	}
-	// NewRegistry seeds dump_ok 1 at each start, which no dump has measured,
-	// and a restart clears dump_duration_seconds until the next attempt.
+	// dump_bytes holds the newest dump's size, so a filter on it only hides
+	// a real value. NewRegistry seeds dump_ok 1 at each start, which no dump
+	// has measured, and a restart clears dump_duration_seconds until the next
+	// attempt, which can be older than a short selected range.
 	seeds := map[string]*regexp.Regexp{
-		"Duration":    regexp.MustCompile(`last_over_time\(pg_autodump_dump_duration_seconds\{[^}]*\}\[\$__range\]\)`),
+		"Size":        regexp.MustCompile(`(?m)^max by \(server, db\) \(pg_autodump_dump_bytes\{[^}]*\}\)$`),
+		"Duration":    regexp.MustCompile(`last_over_time\(pg_autodump_dump_duration_seconds\{[^}]*\}\[\$__range\]\)\s+or\s+last_over_time\(pg_autodump_dump_duration_seconds\{[^}]*\}\[30d\]\)`),
 		"Latest dump": regexp.MustCompile(`pg_autodump_dump_ok\{[^}]*\}\s*==\s*0\s+or\s+\(\s*pg_autodump_dump_ok\{[^}]*\}\s+and\s+on\s*\(\s*server,\s*db\s*\)\s*pg_autodump_newest_dump_timestamp_seconds\{`),
 	}
 	for column, want := range seeds {
@@ -449,6 +453,29 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 	}
 	if want := 2 * config.DefaultDumpInterval.Seconds(); !slices.Equal(yellow, []float64{want}) {
 		t.Errorf("Newest dump age turns yellow at %v s, want %v s, twice the default DUMP_INTERVAL", yellow, want)
+	}
+}
+
+// TestDashboardSizeChartReadsTheHeldGauge fails when the Dump size per
+// database chart stops reading dump_bytes directly, as a > 0 filter on it
+// would, since the gauge holds the newest dump's size between dumps.
+func TestDashboardSizeChartReadsTheHeldGauge(t *testing.T) {
+	d := loadDashboard(t)
+	want := regexp.MustCompile(`^pg_autodump_dump_bytes\{[^}]*\}$`)
+	charts := 0
+	for name, p := range d.Spec.Elements {
+		if p.Spec.Title != "Dump size per database" {
+			continue
+		}
+		charts++
+		for _, e := range panelExprs(&p) {
+			if !want.MatchString(e) {
+				t.Errorf("%s reads %q, want the dump_bytes series with no filter, matching %v", name, e, want)
+			}
+		}
+	}
+	if charts != 1 {
+		t.Fatalf("found %d Dump size per database charts, want 1", charts)
 	}
 }
 

@@ -385,16 +385,16 @@ func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 	}
 }
 
-// writeDump creates a dump file under dumpDir/server with modification time
-// at.
-func writeDump(t *testing.T, dumpDir, server, name string, at time.Time) {
+// writeDump creates a dump file under dumpDir/server holding content, with
+// modification time at.
+func writeDump(t *testing.T, dumpDir, server, name, content string, at time.Time) {
 	t.Helper()
 	dir := filepath.Join(dumpDir, server)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(fakeDump), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
@@ -402,20 +402,29 @@ func writeDump(t *testing.T, dumpDir, server, name string, at time.Time) {
 	}
 }
 
-// The newest verified dump's time is read from the files when Prometheus
-// scrapes: the stable name or the newest retained one, never another
-// database's file or a staging temp, and a database with no dump yet has no
-// sample. Gather reports no dropped sample.
+// The newest verified dump's time and size are read from the files when
+// Prometheus scrapes: the stable name or the newest retained one, never an
+// older retained or stable file, another database's file or a staging temp,
+// and a database with no dump yet has no sample. Each file has its own
+// length, so the size can only match the newest file's. Gather reports no
+// dropped sample.
 func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	dumpDir := t.TempDir()
 	stable := time.Date(2026, 11, 3, 2, 0, 0, 0, time.UTC)
 	older := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
 	newer := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
-	writeDump(t, dumpDir, "h1_5432", "app.dump", stable)
-	writeDump(t, dumpDir, "h1_5432", "keep.20261104T020000Z.dump", older)
-	writeDump(t, dumpDir, "h1_5432", "keep.20261105T020000Z.dump", newer)
-	writeDump(t, dumpDir, "h1_5432", "keep2.dump", newer.Add(time.Hour))
-	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", newer.Add(2*time.Hour))
+	const (
+		appDump    = "app-stable"
+		keepOlder  = "keep-older-retained"
+		keepNewest = "keep-newest-retained-dump"
+		keepStable = "keep-stable-from-before-retention"
+	)
+	writeDump(t, dumpDir, "h1_5432", "app.dump", appDump, stable)
+	writeDump(t, dumpDir, "h1_5432", "keep.dump", keepStable, stable)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261104T020000Z.dump", keepOlder, older)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261105T020000Z.dump", keepNewest, newer)
+	writeDump(t, dumpDir, "h1_5432", "keep2.dump", "another-database-dump-file", newer.Add(time.Hour))
+	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", "a-staging-temp-not-yet-verified", newer.Add(2*time.Hour))
 	specs := spec.Parse("h1:5432:app:u h1:5432:keep:u h1:5432:never:u")
 
 	reg, _ := NewRegistry(dumpDir, specs, &Boot{})
@@ -424,9 +433,13 @@ func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	checkSeries(t, got, map[string]float64{
 		key("newest_dump_timestamp_seconds", "h1_5432", "app"):  float64(stable.Unix()),
 		key("newest_dump_timestamp_seconds", "h1_5432", "keep"): float64(newer.Unix()),
+		key("dump_bytes", "h1_5432", "app"):                     float64(len(appDump)),
+		key("dump_bytes", "h1_5432", "keep"):                    float64(len(keepNewest)),
 	})
-	if v, ok := got[key("newest_dump_timestamp_seconds", "h1_5432", "never")]; ok {
-		t.Errorf("newest_dump_timestamp_seconds for a database with no dump = %v, want no sample", v)
+	for _, name := range []string{"newest_dump_timestamp_seconds", "dump_bytes"} {
+		if v, ok := got[key(name, "h1_5432", "never")]; ok {
+			t.Errorf("%s for a database with no dump = %v, want no sample", name, v)
+		}
 	}
 	if free := got[key("dump_dir_free_bytes", "")]; free <= 0 {
 		t.Errorf("dump_dir_free_bytes = %v, want the free space of the temp dir's filesystem", free)

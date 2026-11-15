@@ -19,8 +19,8 @@ The resident server always serves `GET /metrics` on `LISTEN_ADDR`, `:9472` by de
 | --- | --- | --- | --- |
 | `pg_autodump_dumps_total` | counter | `server`, `db`, `result` | Dumps by database and [result](how-it-works.md#results), such as `ok` or `auth_error`. Dumps of a run that a stop cut short count too |
 | `pg_autodump_dump_ok` | gauge | `server`, `db` | `1` unless the database's latest dump failed. After a restart, a failed run on record sets every database to `0` until the next run |
-| `pg_autodump_dump_bytes` | gauge | `server`, `db` | Size of the latest verified dump in bytes |
-| `pg_autodump_dump_duration_seconds` | gauge | `server`, `db` | How long the latest dump attempt took |
+| `pg_autodump_dump_bytes` | gauge | `server`, `db` | Size in bytes of the newest verified dump file, read at each scrape. No sample until the database's first dump |
+| `pg_autodump_dump_duration_seconds` | gauge | `server`, `db` | How long the latest dump attempt took. No sample after a start until the database's next attempt |
 | `pg_autodump_newest_dump_timestamp_seconds` | gauge | `server`, `db` | Modification time of the newest verified dump file, read at each scrape. No sample until the database's first dump |
 | `pg_autodump_dump_dir_free_bytes` | gauge | none | Bytes free to the container user on the filesystem that holds `DUMP_DIR`, read at each scrape |
 | `pg_autodump_last_cycle_timestamp_seconds` | gauge | none | Unix time the latest run ended. After a restart it reads the last-run record |
@@ -30,7 +30,7 @@ The resident server always serves `GET /metrics` on `LISTEN_ADDR`, `:9472` by de
 
 The cycle deadline is the end of the latest fully successful run, or the start when the last-run record shows none, plus two `DUMP_INTERVAL` runs and the longest time one run may take. Only a fully successful run moves it, so a failed run leaves it where it was.
 
-Every database in `DB_SPECS` has its labelled series from the start. The counters, size and duration start at `0`, and `pg_autodump_dump_ok` starts from the last-run record. A database you remove from `DB_SPECS` has no series after the restart that applies the change.
+Every database in `DB_SPECS` has its labelled series from the start. The counters start at `0`, and `pg_autodump_dump_ok` starts from the last-run record. The size and the newest dump time come from the files, so they keep their values across a restart. A database you remove from `DB_SPECS` has no series after the restart that applies the change.
 
 The page also carries the Go runtime and process families (`go_*`, `process_*`) under the names Go's official Prometheus client uses, so stock Go dashboards work. The bundled [dashboard](#dashboard) shows the `pg_autodump_*` series in Grafana.
 
@@ -52,13 +52,13 @@ The metrics come from the resident server. A one-shot container whose command is
 [`grafana-dashboard.json`](../grafana-dashboard.json) imports as the PG Autodump dashboard. It reads the metrics above from a Prometheus data source and needs Grafana 13.2 or newer. When you run more than one container, the pg-autodump variable picks the instance to show. It has one page of three rows:
 
 - Needs attention appears only while `PgAutodumpDumpFailed`, `PgAutodumpDumpStale` or `PgAutodumpDown` fires, with one tile per rule. Each tile reads its rule's `ALERTS` series, which Prometheus and the Mimir ruler store beside your metrics, so the row stays hidden while those rules are not loaded.
-- Databases shows whether the latest run succeeded, when it ended, how many databases are listed and the free space. Its table has one row per database, with these columns:
+- Latest run shows whether the latest run succeeded and when it ended. Its Databases table has one row per database, with these columns:
   - Latest dump, whether the latest dump succeeded. After a start it reads `-` until the database has a dump or a failed run.
   - Newest dump age, which turns yellow at 48 hours, twice the default `DUMP_INTERVAL`.
-  - Size, which reads `-` after a start until the first successful dump.
-  - Duration, how long the latest attempt took, which reads `-` after a start until the first run.
+  - Size, the size of the newest dump, which reads `-` until the database's first dump.
+  - Duration, how long the latest attempt took. It looks back over the selected range or 30 days, whichever is longer, so a short range or a restart since the attempt still shows it, and reads `-` when no attempt ran in that time.
   - Failed in the selected range, how many dumps failed in that range, leaving out `killed` and `skipped`, the results of a stop.
-- Space and trend charts the free space for dumps and each database's dump size over the selected range.
+- Space and trend charts the free space for dumps, with its latest value in the legend, and each database's dump size over the selected range.
 
 The dashboard is versioned with the image, and the `grafana-dashboard.json` of release `<tag>` matches the metrics that image serves. Each release attaches it with its checksum at `https://github.com/cplieger/pg-autodump/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/pg-autodump/dashboard:<tag>`. The file sets `metadata.name` to `pg-autodump`, which Grafana uses as the dashboard UID, so importing a newer copy over the old one updates it in place.
 

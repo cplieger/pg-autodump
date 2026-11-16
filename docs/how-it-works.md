@@ -1,6 +1,6 @@
 # How it works
 
-This page describes what pg-autodump does during a dump run and what its health means, for readers who want to judge how it fails before they rely on it.
+This page describes what pg-autodump does during a dump run and what its health means. Read it to judge how pg-autodump fails before you rely on it.
 
 ## One dump, step by step
 
@@ -13,7 +13,7 @@ For each database, pg-autodump does four things in order:
 
 The check in step 3 proves the archive is readable. It does not restore the data, so a restore test of your own is still worth doing now and then.
 
-Dump files are created owner-only, mode 0600, and each server folder is owner-only too. pg-autodump refuses a server folder that is a symbolic link or that another user owns. When a filesystem setting widened its own folder, it narrows the folder again. A dump folder that cannot keep the owner-only mode fails the start check with a message saying so.
+Dump files are created owner-only, with mode 0600, and each server folder is owner-only too. pg-autodump refuses a server folder that is a symbolic link or that another user owns. When a filesystem setting widened its own folder, it narrows the folder again. A dump folder that cannot keep the owner-only mode fails the start check with a message saying so.
 
 ## Results
 
@@ -36,7 +36,7 @@ A run fully succeeds only when every result is `ok`.
 
 ## Running databases in parallel
 
-`DUMP_CONCURRENCY` databases dump at the same time, 2 by default. pg-autodump does not serialize dumps per server, because the common setup is one server with many databases. The setting is the only control over the load a run puts on your servers.
+`DUMP_CONCURRENCY` databases dump at the same time, 2 by default. pg-autodump also dumps databases of the same server at the same time, because the common setup is one server with many databases. The setting is the only control over the load a run puts on your servers.
 
 ## One run at a time
 
@@ -53,7 +53,7 @@ On a stop signal, the container turns unhealthy, stops accepting HTTP requests a
 
 ## Health
 
-The healthcheck runs `pg-autodump health`, a request to `/healthz` over loopback, which needs no shell or `curl`. The server keeps the verdict in memory and sets it at the end of every run it does, whether the timer, `POST /dump` or `trigger` started it. A `pg-autodump run` started inside the container reports by its exit code and leaves the server's verdict alone; it does write the last-run record, which the server reads at its next start.
+The healthcheck runs `pg-autodump health`, a request to `/healthz` over loopback, which needs no shell or `curl`. The server keeps the verdict in memory and sets it at the end of every run it does, whether the timer, `POST /dump` or `trigger` started it. A `pg-autodump run` started inside the container reports by its exit code and leaves the server's verdict alone. It does write the last-run record, which the server reads at its next start.
 
 - Healthy means the most recent run fully succeeded.
 - Unhealthy means a database failed or a run could not start. A run cannot start when a PostgreSQL tool cannot run, `/dumps` is not writable or `DB_SPECS` is empty. It stays unhealthy until a run fully succeeds.
@@ -68,4 +68,4 @@ At start, health follows the [last-run record](configuration.md#the-startup-dump
 
 The image sets a 6-minute start period, one default `DUMP_TIMEOUT` round plus some margin. A healthy check inside that window ends it early, and a container still dumping is reported unhealthy only after it. Size `healthcheck.start_period` in your compose file for the time your first dump takes.
 
-With the built-in timer, health also fails when no run has refreshed a healthy verdict in two intervals plus one run's longest time, which catches a timer that stopped firing. `GET /healthz` applies that age limit, and the Docker healthcheck asks `/healthz`, so the two always agree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.
+With the built-in timer, health also fails when no run has refreshed a healthy verdict in two intervals plus one run's longest time. That catches a timer that stopped firing. `GET /healthz` applies that age limit, and the Docker healthcheck asks `/healthz`, so the two always agree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) lists what it answers.

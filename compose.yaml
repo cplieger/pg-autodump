@@ -7,7 +7,7 @@ services:
     # Run "mkdir secrets dumps". Once secrets/.pgpass exists, run "sudo chown 1000:1000 secrets/.pgpass dumps",
     # or every dump fails. If .env sets PUID and PGID, use those numbers.
     user: "${PUID:-1000}:${PGID:-1000}"
-    stop_grace_period: 320s  # SHUTDOWN_TIMEOUT (default 315s) plus the 5s cancel budget, so a dump finishes or unwinds on stop
+    stop_grace_period: 320s  # SHUTDOWN_TIMEOUT (default 315s) plus 5s, so a running dump finishes or cleans up on stop
 
     environment:
       # First create a login role with pg_read_all_data and CONNECT on each database.
@@ -15,10 +15,12 @@ services:
       DB_SPECS: "mydb-host:5432:myapp:dbdumper_ro"  # host:port:database:role, space-separated, never localhost
 
     ports:
-      - "127.0.0.1:9472:9472"  # POST /dump starts a backup, so keep it on loopback or set AUTH_TOKEN; to scrape from another host, publish the port to that network and set AUTH_TOKEN, since the port also starts dumps
+      # Anyone who reaches this port can start a dump. Keep it on 127.0.0.1,
+      # or set AUTH_TOKEN before you publish it to a network, for example for a scraper.
+      - "127.0.0.1:9472:9472"
 
     volumes:
       # Put one "host:port:database:role:password" line per database in secrets/.pgpass,
-      # then run "chmod 600 secrets/.pgpass", or libpq ignores it.
+      # then run "chmod 600 secrets/.pgpass", or the PostgreSQL tools ignore it.
       - "./secrets/.pgpass:/secrets/.pgpass:ro"
       - "./dumps:/dumps"  # point your backup tool at this folder

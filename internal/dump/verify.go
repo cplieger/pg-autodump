@@ -75,16 +75,16 @@ func timestampedDumpNames(entries []os.DirEntry, dbname string) []string {
 	return names
 }
 
-// NewestDump returns the modification time of the newest verified dump of s
-// under dumpDir, the stable "<dbname>.dump" or a retained timestamped one;
-// found is false when there is none.
-func NewestDump(dumpDir string, s *spec.DBSpec) (newest time.Time, found bool, err error) {
+// NewestDump returns the file info of the newest verified dump of s under
+// dumpDir, by modification time, the stable "<dbname>.dump" or a retained
+// timestamped one; found is false when there is none.
+func NewestDump(dumpDir string, s *spec.DBSpec) (newest fs.FileInfo, found bool, err error) {
 	entries, err := os.ReadDir(filepath.Join(dumpDir, spec.ServerDir(s.Host, s.Port)))
 	if errors.Is(err, fs.ErrNotExist) {
-		return time.Time{}, false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, err
+		return nil, false, err
 	}
 	names := timestampedDumpNames(entries, s.DBName)
 	for _, e := range entries {
@@ -96,10 +96,10 @@ func NewestDump(dumpDir string, s *spec.DBSpec) (newest time.Time, found bool, e
 			continue
 		}
 		if err != nil {
-			return time.Time{}, false, err
+			return nil, false, err
 		}
-		if info.Mode().IsRegular() && (!found || info.ModTime().After(newest)) {
-			newest, found = info.ModTime(), true
+		if info.Mode().IsRegular() && (!found || info.ModTime().After(newest.ModTime())) {
+			newest, found = info, true
 		}
 	}
 	return newest, found, nil

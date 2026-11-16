@@ -65,7 +65,7 @@ docker run --rm \
 
 - The exit code is `0` when every listed database dumped. It is not `0` when any database failed, or when the PostgreSQL tools cannot run, `/dumps` is not writable or `DB_SPECS` is empty.
 - A stop signal during a run stops the `pg_dump` in progress cleanly. That database is reported as `killed`, and the exit code is not `0`.
-- `run` opens no HTTP port and ignores `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL` and `SHUTDOWN_TIMEOUT`, so it has no `/metrics`; alert on your scheduler's job result. The image's healthcheck asks the resident server's `/healthz` and says nothing useful about a container that runs once and exits.
+- `run` opens no HTTP port and ignores `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL` and `SHUTDOWN_TIMEOUT`, so it has no `/metrics`. Alert on your scheduler's job result instead. The image's healthcheck asks the resident server's `/healthz` and says nothing useful about a container that runs once and exits.
 - Runs inside one container never overlap. Separate one-shot containers do not share this lock, so their scheduler must keep them from overlapping. When `run` is started inside a container where a run is already going, it exits `0` at once, and the running process does one more run as soon as the current one ends. The per-database results of that run are in the running process's log. This makes a stray manual `run` safe, and it is not meant for running both modes on a schedule.
 
 `trigger` and `run` behave differently on a busy container. `trigger` gets `429` and exits with an error, while `run` queues its request and exits `0`.
@@ -83,7 +83,7 @@ Each database's dump goes into a folder for its server, named `<host>_<port>`, s
   .pg-autodump-last-run
 ```
 
-With `DUMP_KEEP` above 1, the default 7, each run writes `<database>.<UTC time>.dump` and then deletes all but the newest `DUMP_KEEP` of that database in that server's folder. Retention never counts one server's dumps against another's. A failed prune is logged and does not fail the dump.
+With `DUMP_KEEP` above 1, the default 7, each run writes `<database>.<UTC time>.dump`. Once that dump has passed the check and is in place, the run deletes all but the newest `DUMP_KEEP` of that database in that server's folder, so a failed dump deletes nothing. Retention never counts one server's dumps against another's. A failed prune is logged and does not fail the dump.
 
 With `DUMP_KEEP=1`, each run overwrites one `<database>.dump`. Choose this when your backup tool keeps the versions.
 
@@ -113,4 +113,4 @@ The server listens on `LISTEN_ADDR`, `:9472` by default.
 - `GET /metrics` serves Prometheus metrics and needs no token. [Monitoring and alerts](monitoring.md#metrics) lists the series.
 - `GET /healthz` needs no token and answers `200` with `{"status":"ok"}`, or `503` with `{"status":"unhealthy","reasons":[...]}`. The Docker healthcheck asks this endpoint, so the two never disagree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) says what healthy means.
 
-Without `AUTH_TOKEN` the endpoint is open, which is fine on loopback or a private network. pg-autodump logs a warning at start when it is open and listens beyond loopback.
+Without `AUTH_TOKEN` the endpoint is open, which is fine on loopback or a private network. pg-autodump logs a warning at start when it is open and listens beyond loopback, which the default `:9472` does.

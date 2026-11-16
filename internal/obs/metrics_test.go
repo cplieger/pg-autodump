@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/go/measure"
+	"github.com/cplieger/go/measure/v2"
 	"github.com/cplieger/go/scheduler"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
@@ -38,12 +38,24 @@ func (fakePG) Dump(_ context.Context, _ dump.Conn, w io.Writer) (int, string, er
 
 func (fakePG) VerifyTOC(context.Context, string) error { return nil }
 
+// downPG refuses every probe, as a database server that went away does.
+type downPG struct{ fakePG }
+
+func (downPG) Probe(context.Context, dump.Conn) (int, dump.FailKind, error) {
+	return 0, dump.FailConnect, nil
+}
+
 // runCycle runs one cycle over specs through the real orchestrator, recording
 // into m.
 func runCycle(ctx context.Context, t *testing.T, dumpDir string, specs []spec.DBSpec, m *Metrics) {
 	t.Helper()
+	runCycleWith(ctx, t, fakePG{}, dumpDir, specs, m)
+}
+
+func runCycleWith(ctx context.Context, t *testing.T, pg dump.PGTool, dumpDir string, specs []spec.DBSpec, m *Metrics) {
+	t.Helper()
 	orch := dump.New(&dump.Params{
-		PG:          fakePG{},
+		PG:          pg,
 		Logger:      slog.New(slog.DiscardHandler),
 		Metrics:     m,
 		DumpDir:     dumpDir,
@@ -97,10 +109,11 @@ func checkSeries(t *testing.T, got, want map[string]float64) {
 // and records the cycle's time and its failed verdict.
 func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u down:5432:app:u h2:5433:billing:u")
-	reg, m := NewRegistry(t.TempDir(), specs, &Boot{})
+	dumpDir := t.TempDir()
+	reg, m := NewRegistry(dumpDir, specs, &Boot{})
 	before := time.Now()
 
-	runCycle(t.Context(), t, t.TempDir(), specs, m)
+	runCycle(t.Context(), t, dumpDir, specs, m)
 
 	got := series(t, reg)
 	checkSeries(t, got, map[string]float64{
@@ -112,9 +125,11 @@ func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 		key("dumps_total", "down_5432", "app", "ok"):            0,
 		key("dumps_total", "h2_5433", "billing", "ok"):          1,
 		key("dump_bytes", "h1_5432", "app"):                     float64(len(fakeDump)),
-		key("dump_bytes", "down_5432", "app"):                   0,
 		key("last_cycle_ok", ""):                                0,
 	})
+	if v, ok := got[key("dump_bytes", "down_5432", "app")]; ok {
+		t.Errorf("dump_bytes for a database that never dumped = %v, want no sample", v)
+	}
 	if at := got[key("last_cycle_timestamp_seconds", "")]; at < float64(before.Unix()) {
 		t.Errorf("last_cycle_timestamp_seconds = %v, want the cycle's end, at or after %d", at, before.Unix())
 	}
@@ -133,9 +148,10 @@ func TestOneFailingDatabaseLeavesTheOthersOK(t *testing.T) {
 // the two results arrive in.
 func TestADuplicateEntryKeepsItsDatabaseFailed(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u h1:5432:app:u")
-	reg, m := NewRegistry(t.TempDir(), specs, &Boot{})
+	dumpDir := t.TempDir()
+	reg, m := NewRegistry(dumpDir, specs, &Boot{})
 
-	runCycle(t.Context(), t, t.TempDir(), specs, m)
+	runCycle(t.Context(), t, dumpDir, specs, m)
 
 	checkSeries(t, series(t, reg), map[string]float64{
 		key("dump_ok", "h1_5432", "app"):                  0,
@@ -148,7 +164,8 @@ func TestADuplicateEntryKeepsItsDatabaseFailed(t *testing.T) {
 // Every configured entry has its series before any cycle: each result counted
 // at 0, and its last result read from the last-run record, so a restart
 // neither fires a failure for every database nor resolves a failure the
-// record still holds.
+// record still holds. No dump has been measured, so there is no size or
+// duration to serve.
 func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 	specs := spec.Parse("h1:5432:app:u not-a-spec")
 	last := time.Date(2026, 11, 1, 2, 0, 0, 0, time.UTC)
@@ -170,11 +187,12 @@ func TestEverySeriesIsSeededBeforeTheFirstCycle(t *testing.T) {
 				for _, r := range dump.Reasons() {
 					checkSeries(t, got, map[string]float64{key("dumps_total", db.server, db.name, string(r)): 0})
 				}
-				checkSeries(t, got, map[string]float64{
-					key("dump_ok", db.server, db.name):               tc.wantOK,
-					key("dump_bytes", db.server, db.name):            0,
-					key("dump_duration_seconds", db.server, db.name): 0,
-				})
+				checkSeries(t, got, map[string]float64{key("dump_ok", db.server, db.name): tc.wantOK})
+				for _, name := range []string{"dump_bytes", "dump_duration_seconds"} {
+					if v, ok := got[key(name, db.server, db.name)]; ok {
+						t.Errorf("%s for %s before any dump = %v, want no sample", name, db.name, v)
+					}
+				}
 			}
 			wantTime, wantCycleOK := 0.0, 0.0
 			if tc.known {
@@ -207,6 +225,50 @@ func TestACycleCutShortCountsButSetsNoVerdict(t *testing.T) {
 		key("dump_ok", "h1_5432", "app"):                1,
 		key("last_cycle_timestamp_seconds", ""):         0,
 	})
+}
+
+// The size of the latest verified dump holds between cycles, through a failed
+// cycle that keeps the previous dump and through a restart, and the result
+// counters only grow while the process runs.
+func TestDumpSizeHoldsAndCountsOnlyGrow(t *testing.T) {
+	specs := spec.Parse("h1:5432:app:u")
+	dumpDir := t.TempDir()
+	reg, m := NewRegistry(dumpDir, specs, &Boot{})
+	size := float64(len(fakeDump))
+
+	runCycle(t.Context(), t, dumpDir, specs, m)
+	got := series(t, reg)
+	checkSeries(t, got, map[string]float64{
+		key("dump_bytes", "h1_5432", "app"):        size,
+		key("dumps_total", "h1_5432", "app", "ok"): 1,
+	})
+	if _, ok := got[key("dump_duration_seconds", "h1_5432", "app")]; !ok {
+		t.Error("dump_duration_seconds has no series after the first dump")
+	}
+	if got := series(t, reg)[key("dump_bytes", "h1_5432", "app")]; got != size {
+		t.Errorf("dump_bytes at a later scrape = %v, want the held %v", got, size)
+	}
+
+	runCycleWith(t.Context(), t, downPG{}, dumpDir, specs, m)
+	checkSeries(t, series(t, reg), map[string]float64{
+		key("dump_ok", "h1_5432", "app"):                      0,
+		key("dump_bytes", "h1_5432", "app"):                   size,
+		key("dumps_total", "h1_5432", "app", "ok"):            1,
+		key("dumps_total", "h1_5432", "app", "connect_error"): 1,
+	})
+
+	runCycle(t.Context(), t, dumpDir, specs, m)
+	checkSeries(t, series(t, reg), map[string]float64{
+		key("dumps_total", "h1_5432", "app", "ok"):            2,
+		key("dumps_total", "h1_5432", "app", "connect_error"): 1,
+	})
+
+	restarted, _ := NewRegistry(dumpDir, specs, &Boot{Last: scheduler.RunRecord{Time: time.Now(), OK: true}, Known: true})
+	got = series(t, restarted)
+	checkSeries(t, got, map[string]float64{key("dump_bytes", "h1_5432", "app"): size})
+	if v, ok := got[key("dump_duration_seconds", "h1_5432", "app")]; ok {
+		t.Errorf("dump_duration_seconds after a restart = %v, want no sample until the next attempt", v)
+	}
 }
 
 // The cycle deadline at start counts the gap from the last success on record,
@@ -323,16 +385,16 @@ func TestADatabaseRemovedFromDBSpecsHasNoSeries(t *testing.T) {
 	}
 }
 
-// writeDump creates a dump file under dumpDir/server with modification time
-// at.
-func writeDump(t *testing.T, dumpDir, server, name string, at time.Time) {
+// writeDump creates a dump file under dumpDir/server holding content, with
+// modification time at.
+func writeDump(t *testing.T, dumpDir, server, name, content string, at time.Time) {
 	t.Helper()
 	dir := filepath.Join(dumpDir, server)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(fakeDump), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
@@ -340,20 +402,29 @@ func writeDump(t *testing.T, dumpDir, server, name string, at time.Time) {
 	}
 }
 
-// The newest verified dump's time is read from the files when Prometheus
-// scrapes: the stable name or the newest retained one, never another
-// database's file or a staging temp, and a database with no dump yet has no
-// sample. Gather reports no dropped sample.
+// The newest verified dump's time and size are read from the files when
+// Prometheus scrapes: the stable name or the newest retained one, never an
+// older retained or stable file, another database's file or a staging temp,
+// and a database with no dump yet has no sample. Each file has its own
+// length, so the size can only match the newest file's. Gather reports no
+// dropped sample.
 func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	dumpDir := t.TempDir()
 	stable := time.Date(2026, 11, 3, 2, 0, 0, 0, time.UTC)
 	older := time.Date(2026, 11, 4, 2, 0, 0, 0, time.UTC)
 	newer := time.Date(2026, 11, 5, 2, 0, 0, 0, time.UTC)
-	writeDump(t, dumpDir, "h1_5432", "app.dump", stable)
-	writeDump(t, dumpDir, "h1_5432", "keep.20261104T020000Z.dump", older)
-	writeDump(t, dumpDir, "h1_5432", "keep.20261105T020000Z.dump", newer)
-	writeDump(t, dumpDir, "h1_5432", "keep2.dump", newer.Add(time.Hour))
-	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", newer.Add(2*time.Hour))
+	const (
+		appDump    = "app-stable"
+		keepOlder  = "keep-older-retained"
+		keepNewest = "keep-newest-retained-dump"
+		keepStable = "keep-stable-from-before-retention"
+	)
+	writeDump(t, dumpDir, "h1_5432", "app.dump", appDump, stable)
+	writeDump(t, dumpDir, "h1_5432", "keep.dump", keepStable, stable)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261104T020000Z.dump", keepOlder, older)
+	writeDump(t, dumpDir, "h1_5432", "keep.20261105T020000Z.dump", keepNewest, newer)
+	writeDump(t, dumpDir, "h1_5432", "keep2.dump", "another-database-dump-file", newer.Add(time.Hour))
+	writeDump(t, dumpDir, "h1_5432", ".atomicfile-1.tmp", "a-staging-temp-not-yet-verified", newer.Add(2*time.Hour))
 	specs := spec.Parse("h1:5432:app:u h1:5432:keep:u h1:5432:never:u")
 
 	reg, _ := NewRegistry(dumpDir, specs, &Boot{})
@@ -362,9 +433,13 @@ func TestScrapeReadsTheNewestDumpFromTheFiles(t *testing.T) {
 	checkSeries(t, got, map[string]float64{
 		key("newest_dump_timestamp_seconds", "h1_5432", "app"):  float64(stable.Unix()),
 		key("newest_dump_timestamp_seconds", "h1_5432", "keep"): float64(newer.Unix()),
+		key("dump_bytes", "h1_5432", "app"):                     float64(len(appDump)),
+		key("dump_bytes", "h1_5432", "keep"):                    float64(len(keepNewest)),
 	})
-	if v, ok := got[key("newest_dump_timestamp_seconds", "h1_5432", "never")]; ok {
-		t.Errorf("newest_dump_timestamp_seconds for a database with no dump = %v, want no sample", v)
+	for _, name := range []string{"newest_dump_timestamp_seconds", "dump_bytes"} {
+		if v, ok := got[key(name, "h1_5432", "never")]; ok {
+			t.Errorf("%s for a database with no dump = %v, want no sample", name, v)
+		}
 	}
 	if free := got[key("dump_dir_free_bytes", "")]; free <= 0 {
 		t.Errorf("dump_dir_free_bytes = %v, want the free space of the temp dir's filesystem", free)

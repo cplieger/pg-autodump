@@ -230,7 +230,7 @@
         "spec": {
           "id": 3,
           "title": "pg-autodump scrape",
-          "description": "Shows while the PgAutodumpDown alert fires: no scrape of pg-autodump has succeeded for 5 minutes. The tile counts every pg-autodump, because a missing target carries no instance. Needs the rules from alerts/promql.yaml in a ruler that stores its `ALERTS` series beside the metrics, as Prometheus and Mimir do.",
+          "description": "Shows while the PgAutodumpDown alert fires: no scrape of pg-autodump has succeeded for 5 minutes. It shows this instance failing its scrape, or no pg-autodump target left to scrape. Needs the rules from alerts/promql.yaml in a ruler that stores its `ALERTS` series beside the metrics, as Prometheus and Mimir do.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -247,7 +247,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "0 * max(ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\"})",
+                        "expr": "0 * max((ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"\"}))",
                         "legendFormat": "",
                         "instant": true,
                         "range": false
@@ -1292,12 +1292,12 @@
               "name": "${datasource}"
             },
             "spec": {
-              "query": "label_values(pg_autodump_last_cycle_ok, instance)"
+              "query": "label_values(pg_autodump_build_info, instance)"
             }
           },
           "regex": "",
           "sort": "alphabeticalAsc",
-          "definition": "label_values(pg_autodump_last_cycle_ok, instance)",
+          "definition": "label_values(pg_autodump_build_info, instance)",
           "options": [],
           "multi": false,
           "includeAll": false,
@@ -1415,10 +1415,10 @@
               "name": "${datasource}"
             },
             "spec": {
-              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpStale\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\"})), \"tile\", \"3\", \"\", \"\")) or vector(0))"
+              "query": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpStale\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"3\", \"\", \"\")) or vector(0))"
             }
           },
-          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpStale\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\"})), \"tile\", \"3\", \"\", \"\")) or vector(0))",
+          "definition": "query_result(count(label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpFailed\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"1\", \"\", \"\") or label_replace(count(0 * max(ALERTS{alertname=\"PgAutodumpDumpStale\", alertstate=\"firing\", instance=\"$instance\"})), \"tile\", \"2\", \"\", \"\") or label_replace(count(0 * max((ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"$instance\"} or ALERTS{alertname=\"PgAutodumpDown\", alertstate=\"firing\", instance=\"\"}))), \"tile\", \"3\", \"\", \"\")) or vector(0))",
           "regex": "/^\\{\\} ([0-9]+) /",
           "sort": "disabled",
           "options": [],

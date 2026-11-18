@@ -939,7 +939,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "pg_autodump_dump_bytes{instance=\"$instance\"} and on (instance) (pg_autodump_last_cycle_timestamp_seconds{instance=\"$instance\"} != pg_autodump_last_cycle_timestamp_seconds{instance=\"$instance\"} offset $__interval)",
+                        "expr": "pg_autodump_dump_bytes{instance=\"$instance\"} and on (instance) (pg_autodump_last_cycle_timestamp_seconds{instance=\"$instance\"} > time() - ${__interval_ms} / 1000)",
                         "legendFormat": "{{db}} on {{server}}"
                       }
                     },

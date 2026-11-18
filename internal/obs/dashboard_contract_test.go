@@ -689,12 +689,13 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 // TestDashboardSizeChartStacksOneBarPerCycle fails when the Dump size per
 // database chart stops being one stacked bar per dump cycle: dump_bytes read
 // with no filter, since the gauge holds the newest dump's size between dumps,
-// at each step where the last cycle's end time changed, joined on time so each
-// cycle's databases stack in one bar.
+// at the step whose slot holds the last cycle's end, so a restart, which reads
+// the same end back, draws no bar, joined on time so each cycle's databases
+// stack in one bar.
 func TestDashboardSizeChartStacksOneBarPerCycle(t *testing.T) {
 	d := loadDashboard(t)
 	const want = `pg_autodump_dump_bytes{instance="$instance"} and on (instance) ` +
-		`(pg_autodump_last_cycle_timestamp_seconds{instance="$instance"} != pg_autodump_last_cycle_timestamp_seconds{instance="$instance"} offset $__interval)`
+		`(pg_autodump_last_cycle_timestamp_seconds{instance="$instance"} > time() - ${__interval_ms} / 1000)`
 	charts := 0
 	for name, p := range d.Spec.Elements {
 		if p.Spec.Title != "Dump size per database" {

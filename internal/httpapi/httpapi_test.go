@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/httpserver"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/obs"
 	"github.com/cplieger/pg-autodump/internal/spec"
@@ -722,6 +722,47 @@ func TestAuthFailureThrottle_openModeDisabled(t *testing.T) {
 		srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dump", nil))
 		if rec.Code == http.StatusTooManyRequests {
 			t.Fatalf("open-mode POST %d was throttled; the limiter must be disabled without a token", i+1)
+		}
+	}
+}
+
+// ALLOWED_HOSTS covers every route of the one listener: a Host outside the
+// list never reaches the dump trigger, /healthz or /metrics, while a request
+// from the container itself passes.
+func TestHostAllowlistCoversEveryRoute(t *testing.T) {
+	policy, invalid := httpserver.ParseHostList([]string{"pg-autodump"},
+		httpserver.WithLoopbackExempt(true), httpserver.WithHostAllowlistLogger(discard()))
+	if len(invalid) > 0 {
+		t.Fatalf("fixture entries invalid: %v", invalid)
+	}
+	st := &health.Status{}
+	st.Set(true)
+	orch := dump.New(&dump.Params{PG: &stubPG{}, Logger: discard(), DumpDir: t.TempDir(), Concurrency: 1})
+	srv := NewServer(&Deps{
+		Trigger: NewTrigger(&dump.Guard{}, scheduler.NewExclusive(t.TempDir(), scheduler.WithLogger(discard())), orch, discard()),
+		Healthz: health.CheckHandler(health.Check{Signal: st}),
+		Metrics: metricsPage(),
+		Log:     discard(),
+		Hosts:   policy,
+	})
+	cases := []struct {
+		method, path, host, remote string
+		want                       int
+	}{
+		{http.MethodGet, "/healthz", "pg-autodump:9472", "192.0.2.7:4000", http.StatusOK},
+		{http.MethodGet, "/metrics", "pg-autodump", "192.0.2.7:4000", http.StatusOK},
+		{http.MethodGet, "/healthz", "attacker.example", "192.0.2.7:4000", http.StatusForbidden},
+		{http.MethodGet, "/metrics", "attacker.example", "192.0.2.7:4000", http.StatusForbidden},
+		{http.MethodPost, "/dump", "attacker.example", "192.0.2.7:4000", http.StatusForbidden},
+		{http.MethodGet, "/healthz", "127.0.0.1:9472", "127.0.0.1:4000", http.StatusOK},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		req.Host, req.RemoteAddr = tc.host, tc.remote
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("%s %s as Host %q from %s = %d, want %d", tc.method, tc.path, tc.host, tc.remote, rec.Code, tc.want)
 		}
 	}
 }

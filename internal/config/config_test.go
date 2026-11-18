@@ -478,3 +478,13 @@ func TestLoadTypedValuesTrimAndTreatBlankAsUnset(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadAllowedHosts(t *testing.T) {
+	cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "ALLOWED_HOSTS": "pg-autodump,192.0.2.7", "LISTEN_ADDR": " :9500 "})
+	if len(cfg.AllowedHosts) != 2 || cfg.AllowedHosts[0] != "pg-autodump" || cfg.AllowedHosts[1] != "192.0.2.7" {
+		t.Errorf("AllowedHosts = %q, want the two entries", cfg.AllowedHosts)
+	}
+	if cfg.ListenAddr != ":9500" {
+		t.Errorf("ListenAddr = %q, want the edge spaces cut", cfg.ListenAddr)
+	}
+}

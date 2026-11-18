@@ -104,6 +104,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | `DUMP_CONCURRENCY` | Databases dumped at the same time | `2` |
 | `AUTH_TOKEN` | When set, `POST /dump` needs the header `Authorization: Bearer <token>` | _(unset)_ |
 | `LISTEN_ADDR` | Address the HTTP server listens on | `:9472` |
+| `ALLOWED_HOSTS` | Comma-separated `Host` names or IPs to serve on every route, such as `pg-autodump,192.0.2.10`. Unset serves every `Host`. A request from the container itself is always served | _(unset)_ |
 | `SHUTDOWN_TIMEOUT` | How long a stop waits for a running dump, such as `315s`. Keep `stop_grace_period` about 5s longer than this | `DUMP_TIMEOUT` plus 15s |
 | `PGPASSFILE` | Path of the password file inside the container | `/secrets/.pgpass` |
 | `DUMP_DIR` | Folder the dumps go to inside the container. A path with a `..` part stops the container from starting | `/dumps` |

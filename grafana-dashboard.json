@@ -922,7 +922,7 @@
         "spec": {
           "id": 31,
           "title": "Dump size per database",
-          "description": "The size of each database's newest dump, over the selected range. A sudden drop can mean a table was emptied, and steady growth tells you how fast the free space goes. A gap means pg-autodump was not scraped.",
+          "description": "One bar per dump cycle, stacked by database: each database's newest dump size when the cycle ended, so the bar's height is the space one cycle's dumps take. A sudden drop can mean a table was emptied, and a growing bar tells you how fast the free space goes. A cycle that ended while pg-autodump was not scraped has no bar.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -939,7 +939,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "pg_autodump_dump_bytes{instance=\"$instance\"}",
+                        "expr": "pg_autodump_dump_bytes{instance=\"$instance\"} and on (instance) (pg_autodump_last_cycle_timestamp_seconds{instance=\"$instance\"} != pg_autodump_last_cycle_timestamp_seconds{instance=\"$instance\"} offset $__interval)",
                         "legendFormat": "{{db}} on {{server}}"
                       }
                     },
@@ -948,13 +948,24 @@
                   }
                 }
               ],
-              "transformations": [],
+              "transformations": [
+                {
+                  "kind": "Transformation",
+                  "group": "joinByField",
+                  "spec": {
+                    "options": {
+                      "byField": "Time",
+                      "mode": "outer"
+                    }
+                  }
+                }
+              ],
               "queryOptions": {}
             }
           },
           "vizConfig": {
             "kind": "VizConfig",
-            "group": "timeseries",
+            "group": "barchart",
             "version": "",
             "spec": {
               "options": {
@@ -964,7 +975,16 @@
                 },
                 "tooltip": {
                   "mode": "multi"
-                }
+                },
+                "orientation": "vertical",
+                "xField": "Time",
+                "stacking": "normal",
+                "showValue": "never",
+                "barWidth": 0.8,
+                "groupWidth": 0.7,
+                "xTickLabelRotation": 0,
+                "xTickLabelSpacing": 100,
+                "fullHighlight": false
               },
               "fieldConfig": {
                 "defaults": {
@@ -982,8 +1002,10 @@
                     "mode": "palette-classic"
                   },
                   "custom": {
-                    "fillOpacity": 20,
-                    "lineWidth": 2
+                    "fillOpacity": 80,
+                    "lineWidth": 1,
+                    "gradientMode": "none",
+                    "axisPlacement": "auto"
                   },
                   "noValue": "No dump yet",
                   "min": 0

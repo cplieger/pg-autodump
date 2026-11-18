@@ -47,6 +47,10 @@ type dashPanel struct {
 		VizConfig struct {
 			Group string `json:"group"`
 			Spec  struct {
+				Options struct {
+					Stacking string `json:"stacking"`
+					XField   string `json:"xField"`
+				} `json:"options"`
 				FieldConfig struct {
 					Defaults struct {
 						NoValue string `json:"noValue"`
@@ -682,22 +686,32 @@ func TestDashboardDatabasesTableShowsEachDatabase(t *testing.T) {
 	}
 }
 
-// TestDashboardSizeChartReadsTheHeldGauge fails when the Dump size per
-// database chart stops reading dump_bytes directly, as a > 0 filter on it
-// would, since the gauge holds the newest dump's size between dumps.
-func TestDashboardSizeChartReadsTheHeldGauge(t *testing.T) {
+// TestDashboardSizeChartStacksOneBarPerCycle fails when the Dump size per
+// database chart stops being one stacked bar per dump cycle: dump_bytes read
+// with no filter, since the gauge holds the newest dump's size between dumps,
+// at each step where the last cycle's end time changed, joined on time so each
+// cycle's databases stack in one bar.
+func TestDashboardSizeChartStacksOneBarPerCycle(t *testing.T) {
 	d := loadDashboard(t)
-	want := regexp.MustCompile(`^pg_autodump_dump_bytes\{[^}]*\}$`)
+	const want = `pg_autodump_dump_bytes{instance="$instance"} and on (instance) ` +
+		`(pg_autodump_last_cycle_timestamp_seconds{instance="$instance"} != pg_autodump_last_cycle_timestamp_seconds{instance="$instance"} offset $__interval)`
 	charts := 0
 	for name, p := range d.Spec.Elements {
 		if p.Spec.Title != "Dump size per database" {
 			continue
 		}
 		charts++
-		for _, e := range panelExprs(&p) {
-			if !want.MatchString(e) {
-				t.Errorf("%s reads %q, want the dump_bytes series with no filter, matching %v", name, e, want)
-			}
+		if exprs := panelExprs(&p); !slices.Equal(exprs, []string{want}) {
+			t.Errorf("%s reads %q, want only\n%s", name, exprs, want)
+		}
+		if g := p.Spec.VizConfig.Group; g != "barchart" {
+			t.Errorf("%s is a %s, want a barchart", name, g)
+		}
+		if o := p.Spec.VizConfig.Spec.Options; o.Stacking != "normal" || o.XField != "Time" {
+			t.Errorf("%s stacks %q along %q, want normal stacking along Time", name, o.Stacking, o.XField)
+		}
+		if tr := p.Spec.Data.Spec.Transformations; len(tr) != 1 || tr[0].Group != "joinByField" {
+			t.Errorf("%s transforms with %v, want one joinByField, so each cycle is one row", name, tr)
 		}
 	}
 	if charts != 1 {

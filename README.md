@@ -5,6 +5,8 @@
 <!-- hub-overview BEGIN -->
 pg-autodump writes a checked backup file of each PostgreSQL database you list into a folder your backup tool already collects. It leaves encryption and off-site copies to that tool, such as Kopia, Restic, Borg or rsync.
 
+![The bundled Grafana dashboard showing the last run succeeded 22 hours ago, a table of four databases with their latest dump, age, size and duration, the free space for dumps, and a stacked bar of dump sizes for each run](docs/images/header.png)
+
 ## What it does
 
 pg-autodump keeps a fresh, readable dump of every database you list for your backup tool.

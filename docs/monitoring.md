@@ -58,7 +58,7 @@ The metrics come from the resident server. A one-shot container whose command is
   - Size, the size of the newest dump, which reads `-` until the database's first dump.
   - Duration, how long the latest attempt took. It looks back over the selected range or 30 days, whichever is longer, so a short range or a restart since the attempt still shows it, and reads `-` when no attempt ran in that time.
   - Failed in the selected range, how many dumps failed in that range, leaving out `killed` and `skipped`, the results of a stop.
-- Space and trend charts the free space for dumps, with its latest value in the legend, and each database's dump size over the selected range.
+- Space and trend charts the free space for dumps, with its latest value in the legend. Beside it, Dump size per database draws one bar per dump cycle, stacked by database, so each bar's height is the space that cycle's dumps take.
 
 The dashboard is versioned with the image, and the `grafana-dashboard.json` of release `<tag>` matches the metrics that image serves. Each release attaches it with its checksum at `https://github.com/cplieger/pg-autodump/releases/download/<tag>/grafana-dashboard.json`, and each image publish pushes it as the OCI artifact `ghcr.io/cplieger/pg-autodump/dashboard:<tag>`. The file sets `metadata.name` to `pg-autodump`, which Grafana uses as the dashboard UID, so importing a newer copy over the old one updates it in place.
 

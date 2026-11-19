@@ -68,7 +68,7 @@ docker run --rm \
 - `run` opens no HTTP port and ignores `LISTEN_ADDR`, `AUTH_TOKEN`, `DUMP_INTERVAL` and `SHUTDOWN_TIMEOUT`, so it has no `/metrics`. Alert on your scheduler's job result instead. The image's healthcheck asks the resident server's `/healthz` and says nothing useful about a container that runs once and exits.
 - Runs inside one container never overlap. Separate one-shot containers do not share this lock, so their scheduler must keep them from overlapping. When `run` is started inside a container where a run is already going, it exits `0` at once, and the running process does one more run as soon as the current one ends. The per-database results of that run are in the running process's log. This makes a stray manual `run` safe, and it is not meant for running both modes on a schedule.
 
-`trigger` and `run` behave differently on a busy container. `trigger` gets `429` and exits with an error, while `run` queues its request and exits `0`.
+`trigger` and `run` behave differently on a busy container. `trigger` gets `429` with the code `dump_in_progress` and exits with an error, while `run` queues its request and exits `0`.
 
 ## Retention and file layout
 
@@ -108,7 +108,18 @@ pg-autodump never reads, moves or deletes other files at the root of `/dumps`.
 The server listens on `LISTEN_ADDR`, `:9472` by default. With `ALLOWED_HOSTS` set, a request whose `Host` is not listed gets `403` with the code `host_not_allowed` on every route, so a trigger, a scrape or a prober must use a listed name. A request from the container itself passes, so the Docker health check needs no entry. An entry no `Host` can match is dropped with a warning, and a list left with none refuses every other `Host`.
 
 - `POST /dump` runs every dump and answers with one `host/database: result` line per database, such as `mydb-host/myapp: ok (4823104 bytes)`. For a `pg_error`, `truncated` or `other` failure the line holds only that word, and the full `pg_dump` or `pg_restore` error text goes to the log.
-- `200` means every database dumped. `500` means at least one failed or no database is configured, and the body then reads `no databases configured`. `429` means a run is already in progress. `503` means the container is stopping, so no run started. `401` means `AUTH_TOKEN` is set and the request had no valid `Authorization: Bearer <token>` header; it carries `WWW-Authenticate: Bearer` and a JSON body with the code `unauthorized`, whose `remediation` says to send the `AUTH_TOKEN` value as the bearer.
+- `200` means every database dumped, and `500` with those lines means at least one failed.
+- A request that dumps nothing gets a JSON body instead, `{"code":…,"message":…,"remediation":…,"request_id":…}`, whose `remediation` says what to do:
+
+  | Status | `code` | Meaning |
+  | --- | --- | --- |
+  | `429` | `dump_in_progress` | A run is already in progress. |
+  | `503` | `shutting_down` | The container is stopping, so no run started. |
+  | `500` | `no_databases_configured` | `DB_SPECS` names no database. The run still counts as failed, so the container turns unhealthy. |
+  | `500` | `cycle_coordination_failed` | The run lock could not be taken; the log line `cycle coordination failed` says why. |
+  | `401` | `unauthorized` | `AUTH_TOKEN` is set and the request had no valid `Authorization: Bearer <token>` header. It also carries `WWW-Authenticate: Bearer`. |
+
+- `trigger` prints a run's lines to standard output. For a JSON refusal it prints one line to standard error with the message, the code, the status and the remediation, such as `trigger: dump already in progress (dump_in_progress, status 429). Wait for the running dump to finish, then send the request again.` It exits `0` only on `200`.
 - After repeated bad tokens, `POST /dump` answers `429` with a `Retry-After` header for a while. A valid token is never held back.
 - `GET /metrics` serves Prometheus metrics and needs no token. [Monitoring and alerts](monitoring.md#metrics) lists the series.
 - `GET /healthz` needs no token and answers `200` with `{"status":"ok"}`, or `503` with `{"status":"unhealthy","reasons":[...]}`. The Docker healthcheck asks this endpoint, so the two never disagree. [Knowing the app is alive](monitoring.md#knowing-the-app-is-alive) says what healthy means.

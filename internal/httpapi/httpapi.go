@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/masked"
 	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/pg-autodump/internal/dump"
 )
@@ -90,7 +91,7 @@ type Deps struct {
 	Healthz http.Handler
 	// Metrics serves GET /metrics.
 	Metrics   http.Handler
-	AuthToken string
+	AuthToken masked.Secret
 }
 
 // NewServer wires the routes and returns a configured *http.Server.
@@ -171,11 +172,11 @@ func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
 // or handler, bounding the log-flood vector. Open mode (no token) disables it:
 // the verifier fails closed on an empty secret, so every request to a
 // deliberately open endpoint would otherwise read as a failed attempt.
-func authFailureLimiter(token string) httpserver.Middleware {
-	if token == "" {
+func authFailureLimiter(token masked.Secret) httpserver.Middleware {
+	if token.IsZero() {
 		return func(next http.Handler) http.Handler { return next }
 	}
-	verify := httpserver.NewStaticTokenVerifier(token)
+	verify := httpserver.NewStaticTokenVerifier(token.Reveal())
 	return httpserver.FailedAuthRateLimit(func(r *http.Request) bool {
 		if r.Method != http.MethodPost || r.URL.Path != "/dump" {
 			return false
@@ -200,14 +201,16 @@ func presentsValidBearer(verify httpserver.StaticTokenVerifier, r *http.Request)
 // value and compares fixed-length digests in constant time, so neither the
 // compare nor the per-call hashing leaks the configured token's length or
 // content. It also fails closed on an empty configured secret.
-func authMiddleware(token string, next http.Handler) http.Handler {
-	if token == "" {
+func authMiddleware(token masked.Secret, next http.Handler) http.Handler {
+	if token.IsZero() {
 		return next
 	}
-	verify := httpserver.NewStaticTokenVerifier(token)
+	verify := httpserver.NewStaticTokenVerifier(token.Reveal())
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !presentsValidBearer(verify, r) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			// RFC 9110 section 11.6.1: a 401 names at least one challenge.
+			httpserver.SetChallenge(w.Header(), httpserver.Challenge{Scheme: "Bearer"})
+			httpserver.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
 		}
 		next.ServeHTTP(w, r)

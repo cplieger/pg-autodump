@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/cplieger/go/health/v2"
 	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/masked"
 	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/obs"
@@ -81,7 +83,7 @@ func newTestServerWithCycle(t *testing.T, pg dump.PGTool, token string, cycle *s
 	})
 	trigger := NewTrigger(&dump.Guard{}, cycle, orch, discard())
 	return NewServer(&Deps{
-		AuthToken: token,
+		AuthToken: masked.NewSecret(token),
 		Trigger:   trigger,
 		Healthz:   health.CheckHandler(health.Check{Signal: okSignal{ok: true}}),
 		Metrics:   metricsPage(),
@@ -152,13 +154,20 @@ func TestAuthRequired(t *testing.T) {
 			}
 		})
 	}
-	t.Run("rejection body is http.Error's plain unauthorized", func(t *testing.T) {
+	t.Run("rejection is the unauthorized envelope with a Bearer challenge", func(t *testing.T) {
 		rec := post(t, srv, "Bearer wrong")
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("status = %d, want 401", rec.Code)
 		}
-		if got := rec.Body.String(); got != "unauthorized\n" {
-			t.Errorf("401 body = %q, want %q", got, "unauthorized\n")
+		if got := rec.Header().Get("WWW-Authenticate"); got != "Bearer" {
+			t.Errorf("WWW-Authenticate = %q, want %q (RFC 9110 section 11.6.1)", got, "Bearer")
+		}
+		var body httpserver.ErrorResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Code != "unauthorized" || body.RequestID == "" {
+			t.Errorf("401 body = %q, want the unauthorized envelope with a request id", rec.Body.String())
+		}
+		if strings.Contains(rec.Body.String(), "sekret") {
+			t.Errorf("401 body %q echoes the configured token", rec.Body.String())
 		}
 	})
 	t.Run("correct token accepted", func(t *testing.T) {

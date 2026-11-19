@@ -105,6 +105,7 @@ Settings are environment variables, read once at start, so recreate the containe
 | `DUMP_TIMEOUT` | Seconds one database may take to dump, at least 10 | `300` |
 | `DUMP_CONCURRENCY` | Databases dumped at the same time | `2` |
 | `AUTH_TOKEN` | When set, `POST /dump` needs the header `Authorization: Bearer <token>` | _(unset)_ |
+| `AUTH_TOKEN_FILE` | Path to a file holding the token, such as a Docker secret. It takes precedence over `AUTH_TOKEN` and keeps the token out of `docker inspect` | _(unset)_ |
 | `LISTEN_ADDR` | Address the HTTP server listens on | `:9472` |
 | `ALLOWED_HOSTS` | Comma-separated `Host` names or IPs to serve on every route, such as `pg-autodump,192.0.2.10`. Unset serves every `Host`. A request from the container itself is always served | _(unset)_ |
 | `SHUTDOWN_TIMEOUT` | How long a stop waits for a running dump, such as `315s`. Keep `stop_grace_period` about 5s longer than this | `DUMP_TIMEOUT` plus 15s |

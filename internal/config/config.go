@@ -15,8 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/envx/v2"
 	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/masked"
 	"github.com/cplieger/go/pathinside"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
@@ -42,7 +43,7 @@ type Config struct {
 	AllowedHosts    []string // ALLOWED_HOSTS entries; empty serves every Host
 	DumpDir         string
 	PGPassFile      string
-	AuthToken       string // AUTH_TOKEN bearer for POST /dump; the one secret field -- never logged or formatted
+	AuthToken       masked.Secret // AUTH_TOKEN bearer for POST /dump; zero is open mode
 	Specs           []spec.DBSpec
 	DumpTimeout     time.Duration
 	StmtTimeout     time.Duration // server-side statement_timeout, derived above DumpTimeout
@@ -59,9 +60,11 @@ type Warning string
 
 // Load reads configuration from getenv (injected for testability), returning
 // the typed Config, non-fatal warnings, and an error. Almost every missing or
-// malformed value falls back to a safe default with a warning; the sole
-// fatal case is a DUMP_DIR containing ".." — refusing to start beats
-// silently relocating backups to the default. An empty DB_SPECS yields no
+// malformed value falls back to a safe default with a warning. Two cases are
+// fatal: a DUMP_DIR containing "..", since refusing to start beats silently
+// relocating backups to the default, and an AUTH_TOKEN that cannot be read or
+// sent (loadAuthToken, which reads the process environment, so its
+// AUTH_TOKEN_FILE channel works). An empty DB_SPECS yields no
 // specs (surfaced via the health probe); malformed DB_SPECS tokens are
 // validated per-token in internal/spec and reported per-DB by the
 // orchestrator, never here.
@@ -74,7 +77,6 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 		AllowedHosts: strings.Split(getenv("ALLOWED_HOSTS"), ","),
 		DumpDir:      dumpDir,
 		PGPassFile:   firstNonEmpty(getenv("PGPASSFILE"), defaultPGPassFile),
-		AuthToken:    getenv("AUTH_TOKEN"),
 	}
 
 	// Each token is validated independently in internal/spec; a malformed one
@@ -92,7 +94,10 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	cfg.FreeKBWarn = loadFreeKB(src, &w)
 	cfg.ShutdownTimeout = loadShutdownTimeout(src, cfg.DumpTimeout, &w)
 
-	return cfg, w, dumpDirErr
+	token, tokenErr := loadAuthToken()
+	cfg.AuthToken = token
+
+	return cfg, w, errors.Join(dumpDirErr, tokenErr)
 }
 
 // rawValue extracts the offending raw string from a strict-getter error for
@@ -239,11 +244,29 @@ func firstNonEmpty(v, def string) string {
 	return v
 }
 
+// loadAuthToken reads AUTH_TOKEN through envx.Secret, AUTH_TOKEN_FILE
+// included; unset is open mode. It refuses a token no Authorization header can
+// carry verbatim, which would otherwise start the server and refuse every
+// trigger; the error names the setting and the byte, never the value.
+func loadAuthToken() (masked.Secret, error) {
+	token, err := envx.Secret("AUTH_TOKEN")
+	if _, missing := errors.AsType[*envx.MissingError](err); missing {
+		return masked.Secret{}, nil
+	}
+	if err != nil {
+		return masked.Secret{}, err
+	}
+	if err := httpserver.CheckFieldValue(token.Reveal()); err != nil {
+		return masked.Secret{}, fmt.Errorf("AUTH_TOKEN cannot be sent in an Authorization header (%w); remove the control, edge space or invisible character", err)
+	}
+	return token, nil
+}
+
 // ListenerOpenAndPublic reports whether POST /dump would accept
 // unauthenticated requests on a non-loopback bind. main emits a one-line
 // startup WARN when true; open mode stays supported, this only flags it.
-func ListenerOpenAndPublic(authToken, listenAddr string) bool {
-	if authToken != "" {
+func ListenerOpenAndPublic(authToken masked.Secret, listenAddr string) bool {
+	if !authToken.IsZero() {
 		return false
 	}
 	return listenIsPublic(listenAddr)

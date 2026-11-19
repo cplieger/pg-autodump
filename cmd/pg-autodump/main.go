@@ -566,8 +566,8 @@ func runTrigger(getenv func(string) string) int {
 		fmt.Fprintln(os.Stderr, "trigger:", err)
 		return 1
 	}
-	if cfg.AuthToken != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.AuthToken)
+	if !cfg.AuthToken.IsZero() {
+		req.Header.Set("Authorization", "Bearer "+cfg.AuthToken.Reveal())
 	}
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

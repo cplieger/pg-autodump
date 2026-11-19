@@ -1,9 +1,14 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cplieger/go/masked"
 )
 
 func envFunc(m map[string]string) func(string) string {
@@ -45,7 +50,7 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ShutdownTimeout <= cfg.DumpTimeout {
 		t.Fatalf("ShutdownTimeout %s must exceed DumpTimeout %s", cfg.ShutdownTimeout, cfg.DumpTimeout)
 	}
-	if cfg.AuthToken != "" {
+	if !cfg.AuthToken.IsZero() {
 		t.Fatalf("AuthToken should default empty")
 	}
 }
@@ -69,7 +74,7 @@ func TestLoadEmptyEnvAllDefaults(t *testing.T) {
 func TestLoadNoSecretFields(t *testing.T) {
 	// PGPASSWORD must never be read into Config (it is libpq-owned).
 	cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u", "PGPASSWORD": "s3cr3t"})
-	for _, v := range []string{cfg.ListenAddr, cfg.DumpDir, cfg.PGPassFile, cfg.AuthToken} {
+	for _, v := range []string{cfg.ListenAddr, cfg.DumpDir, cfg.PGPassFile, cfg.AuthToken.Reveal()} {
 		if v == "s3cr3t" {
 			t.Fatal("PGPASSWORD leaked into a Config field")
 		}
@@ -440,7 +445,7 @@ func TestListenerOpenAndPublic(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ListenerOpenAndPublic(tt.authToken, tt.listen); got != tt.want {
+			if got := ListenerOpenAndPublic(masked.NewSecret(tt.authToken), tt.listen); got != tt.want {
 				t.Errorf("ListenerOpenAndPublic(%q, %q) = %v, want %v", tt.authToken, tt.listen, got, tt.want)
 			}
 		})
@@ -486,5 +491,43 @@ func TestLoadAllowedHosts(t *testing.T) {
 	}
 	if cfg.ListenAddr != ":9500" {
 		t.Errorf("ListenAddr = %q, want the edge spaces cut", cfg.ListenAddr)
+	}
+}
+
+// AUTH_TOKEN arrives through envx.Secret: AUTH_TOKEN_FILE wins over the
+// variable, the token never prints, and a token no Authorization header can
+// carry verbatim stops the start naming the setting but not the value.
+func TestLoadAuthToken(t *testing.T) {
+	t.Run("file wins and never prints", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "token")
+		if err := os.WriteFile(file, []byte("from-file\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("AUTH_TOKEN", "from-env")
+		t.Setenv("AUTH_TOKEN_FILE", file)
+		cfg, _ := mustLoad(t, map[string]string{"DB_SPECS": "h:db:u"})
+		if got := cfg.AuthToken.Reveal(); got != "from-file" {
+			t.Errorf("AuthToken = %q, want the file's content without its line ending", got)
+		}
+		if s := fmt.Sprintf("%v %+v", cfg.AuthToken, cfg); strings.Contains(s, "from-file") {
+			t.Errorf("the token prints: %q", s)
+		}
+	})
+	for name, token := range map[string]string{
+		"trailing space":   "secret ",
+		"control byte":     "sec\x01ret",
+		"zero-width space": "sec\u200bret",
+		"invalid utf-8":    "sec\xffret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("AUTH_TOKEN", token)
+			_, _, err := Load(func(k string) string { return map[string]string{"DB_SPECS": "h:db:u"}[k] })
+			if err == nil || !strings.Contains(err.Error(), "AUTH_TOKEN") {
+				t.Fatalf("Load() = %v, want an error naming AUTH_TOKEN", err)
+			}
+			if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "sec") {
+				t.Errorf("error %q quotes the token", err)
+			}
+		})
 	}
 }

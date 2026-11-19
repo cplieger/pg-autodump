@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/envx"
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/pathinside"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )
@@ -39,6 +39,7 @@ const (
 // Config is the fully-typed, validated runtime configuration.
 type Config struct {
 	ListenAddr      string
+	AllowedHosts    []string // ALLOWED_HOSTS entries; empty serves every Host
 	DumpDir         string
 	PGPassFile      string
 	AuthToken       string // AUTH_TOKEN bearer for POST /dump; the one secret field -- never logged or formatted
@@ -69,10 +70,11 @@ func Load(getenv func(string) string) (Config, []Warning, error) {
 	src := envx.Source{Get: getenv}
 	dumpDir, dumpDirErr := loadDumpDir(getenv("DUMP_DIR"))
 	cfg := Config{
-		ListenAddr: firstNonEmpty(getenv("LISTEN_ADDR"), defaultListenAddr),
-		DumpDir:    dumpDir,
-		PGPassFile: firstNonEmpty(getenv("PGPASSFILE"), defaultPGPassFile),
-		AuthToken:  getenv("AUTH_TOKEN"),
+		ListenAddr:   httpserver.ListenAddr(getenv("LISTEN_ADDR"), defaultListenAddr),
+		AllowedHosts: strings.Split(getenv("ALLOWED_HOSTS"), ","),
+		DumpDir:      dumpDir,
+		PGPassFile:   firstNonEmpty(getenv("PGPASSFILE"), defaultPGPassFile),
+		AuthToken:    getenv("AUTH_TOKEN"),
 	}
 
 	// Each token is validated independently in internal/spec; a malformed one

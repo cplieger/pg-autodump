@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/cplieger/go/measure/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/pg-autodump/internal/dump"
 	"github.com/cplieger/pg-autodump/internal/spec"
 )

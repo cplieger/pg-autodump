@@ -25,9 +25,9 @@ import (
 
 	"github.com/cplieger/go/filesafe"
 	"github.com/cplieger/go/health/v2"
-	"github.com/cplieger/go/httpserver"
+	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/measure/v2"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/go/slogx"
 	"github.com/cplieger/pg-autodump/internal/config"
 	"github.com/cplieger/pg-autodump/internal/dump"
@@ -285,6 +285,7 @@ func runServer(getenv func(string) string) int {
 	trigger := httpapi.NewTrigger(guard, cycle, orch, log)
 	srv := httpapi.NewServer(&httpapi.Deps{
 		AuthToken: cfg.AuthToken,
+		Hosts:     allowedHosts(cfg.AllowedHosts, log),
 		Trigger:   trigger,
 		Healthz:   health.CheckHandler(healthzChecks(st, &cfg)...),
 		Metrics:   reg.Handler(),
@@ -293,8 +294,7 @@ func runServer(getenv func(string) string) int {
 
 	// Bind up front so a port-in-use error surfaces synchronously here rather
 	// than asynchronously after serving has started.
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", cfg.ListenAddr)
+	ln, err := httpserver.Listen(ctx, httpserver.ListenSetting{Name: "LISTEN_ADDR", Addr: cfg.ListenAddr})
 	if err != nil {
 		log.Error("bind failed", "addr", cfg.ListenAddr, "err", err)
 		return 1
@@ -312,6 +312,23 @@ func runServer(getenv func(string) string) int {
 		return 1
 	}
 	return 0
+}
+
+// allowedHosts is the ALLOWED_HOSTS policy: the Host names the listener
+// serves, with the container's own health check always admitted. A list with
+// no entry serves every Host. An entry no Host can match is dropped with a
+// warning, so a list left with none refuses every non-local Host.
+func allowedHosts(entries []string, log *slog.Logger) *httpserver.HostPolicy {
+	policy, invalid := httpserver.ParseHostList(entries,
+		httpserver.WithLoopbackExempt(true), httpserver.WithHostAllowlistLogger(log))
+	if len(invalid) > 0 {
+		log.Warn("dropping ALLOWED_HOSTS entries no Host can match; use bare host names or IPs, with no scheme, path or port-only value",
+			"dropped", len(invalid))
+	}
+	if policy.Active() && policy.Size() == 0 {
+		log.Warn("ALLOWED_HOSTS has no usable entry, so every Host but the container's own is refused")
+	}
+	return policy
 }
 
 // serve runs srv on ln until ctx ends or Serve fails on its own, then waits

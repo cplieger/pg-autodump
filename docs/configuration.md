@@ -105,7 +105,7 @@ pg-autodump never reads, moves or deletes other files at the root of `/dumps`.
 
 ## HTTP endpoints
 
-The server listens on `LISTEN_ADDR`, `:9472` by default.
+The server listens on `LISTEN_ADDR`, `:9472` by default. With `ALLOWED_HOSTS` set, a request whose `Host` is not listed gets `403` with the code `host_not_allowed` on every route, so a trigger, a scrape or a prober must use a listed name. A request from the container itself passes, so the Docker health check needs no entry. An entry no `Host` can match is dropped with a warning, and a list left with none refuses every other `Host`.
 
 - `POST /dump` runs every dump and answers with one `host/database: result` line per database, such as `mydb-host/myapp: ok (4823104 bytes)`. For a `pg_error`, `truncated` or `other` failure the line holds only that word, and the full `pg_dump` or `pg_restore` error text goes to the log.
 - `200` means every database dumped. `500` means at least one failed or no database is configured, and the body then reads `no databases configured`. `429` means a run is already in progress. `503` means the container is stopping, so no run started. `401` means `AUTH_TOKEN` is set and the request had no valid `Authorization: Bearer <token>` header.

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/go/httpserver"
-	"github.com/cplieger/go/scheduler"
+	"github.com/cplieger/go/httpserver/v2"
+	"github.com/cplieger/go/scheduler/v2"
 	"github.com/cplieger/pg-autodump/internal/dump"
 )
 
@@ -83,11 +83,13 @@ func (t *Trigger) Run() ([]dump.Result, scheduler.Outcome, error) {
 // Deps are the wiring NewServer needs.
 type Deps struct {
 	Trigger *Trigger
+	Log     *slog.Logger
+	// Hosts is the ALLOWED_HOSTS policy; an inactive policy serves every Host.
+	Hosts *httpserver.HostPolicy
 	// Healthz serves GET /healthz.
 	Healthz http.Handler
 	// Metrics serves GET /metrics.
 	Metrics   http.Handler
-	Log       *slog.Logger
 	AuthToken string
 }
 
@@ -111,6 +113,7 @@ func NewServer(d *Deps) *http.Server {
 		httpserver.Logging(httpserver.WithLogger(log), httpserver.WithProbeLogLevel("/healthz", "/metrics"), httpserver.WithClientIP()),
 		httpserver.Recoverer(httpserver.WithRecoverLogger(log)),
 		httpserver.SecurityHeaders(),
+		d.Hosts.Middleware(),
 	)
 
 	srv := httpserver.New(handler)

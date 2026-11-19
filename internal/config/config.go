@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/go/envx"
+	"github.com/cplieger/go/envx/v2"
 	"github.com/cplieger/go/httpserver/v2"
 	"github.com/cplieger/go/pathinside"
 	"github.com/cplieger/pg-autodump/internal/spec"

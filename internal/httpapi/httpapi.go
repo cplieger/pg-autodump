@@ -112,7 +112,7 @@ func NewServer(d *Deps) *http.Server {
 	handler := httpserver.Chain(mux,
 		authFailureLimiter(d.AuthToken),
 		httpserver.Logging(httpserver.WithLogger(log), httpserver.WithProbeLogLevel("/healthz", "/metrics"), httpserver.WithClientIP()),
-		httpserver.Recoverer(httpserver.WithRecoverLogger(log)),
+		httpserver.Recoverer(httpserver.WithRecoverLogger(log), httpserver.WithRecoverResponder(Errors)),
 		httpserver.SecurityHeaders(),
 		d.Hosts.Middleware(),
 	)
@@ -210,7 +210,7 @@ func authMiddleware(token masked.Secret, next http.Handler) http.Handler {
 		if !presentsValidBearer(verify, r) {
 			// RFC 9110 section 11.6.1: a 401 names at least one challenge.
 			httpserver.SetChallenge(w.Header(), httpserver.Challenge{Scheme: "Bearer"})
-			httpserver.WriteError(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
+			Errors(w, r, http.StatusUnauthorized, "unauthorized", "missing or invalid bearer token")
 			return
 		}
 		next.ServeHTTP(w, r)

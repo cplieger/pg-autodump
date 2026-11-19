@@ -320,7 +320,8 @@ func runServer(getenv func(string) string) int {
 // warning, so a list left with none refuses every non-local Host.
 func allowedHosts(entries []string, log *slog.Logger) *httpserver.HostPolicy {
 	policy, invalid := httpserver.ParseHostList(entries,
-		httpserver.WithLoopbackExempt(true), httpserver.WithHostAllowlistLogger(log))
+		httpserver.WithLoopbackExempt(true), httpserver.WithHostAllowlistLogger(log),
+		httpserver.WithHostResponder(httpapi.Errors))
 	if len(invalid) > 0 {
 		log.Warn("dropping ALLOWED_HOSTS entries no Host can match; use bare host names or IPs, with no scheme, path or port-only value",
 			"dropped", len(invalid))

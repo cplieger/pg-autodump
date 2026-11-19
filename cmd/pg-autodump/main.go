@@ -11,10 +11,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"math"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -576,11 +578,28 @@ func runTrigger(getenv func(string) string) int {
 		return 1
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(os.Stdout, resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	return reportTrigger(os.Stdout, os.Stderr, resp)
+}
+
+// reportTrigger mirrors a run's text lines to stdout, or a refusal's JSON
+// error envelope to stderr as one line naming its code and what to do, and
+// returns the exit code: 0 only for a 200.
+func reportTrigger(stdout, stderr io.Writer, resp *http.Response) int {
+	if resp.StatusCode == http.StatusOK {
+		_, _ = io.Copy(stdout, resp.Body)
+		return 0
+	}
+	if mt, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mt != "application/json" {
+		_, _ = io.Copy(stdout, resp.Body)
 		return 1
 	}
-	return 0
+	var e httpserver.ErrorResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e); err != nil || e.Code == "" {
+		fmt.Fprintf(stderr, "trigger: refused with status %d and an unreadable error body\n", resp.StatusCode)
+		return 1
+	}
+	fmt.Fprintf(stderr, "trigger: %s (%s, status %d). %s\n", e.Message, e.Code, resp.StatusCode, e.Remediation)
+	return 1
 }
 
 // cycleSlack covers connection setup, handler bookkeeping, and the post-dump

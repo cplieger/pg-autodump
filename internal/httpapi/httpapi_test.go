@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -211,9 +212,11 @@ func TestSingleFlightReturns429(t *testing.T) {
 
 	<-pg.entered // first request now holds the guard inside Dump
 
-	if rec := post(t, srv, ""); rec.Code != http.StatusTooManyRequests {
+	rec := post(t, srv, "")
+	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("concurrent dump: status = %d, want 429", rec.Code)
 	}
+	requireRefusal(t, rec, codeInProgress)
 
 	close(pg.release)
 	if code := <-done; code != http.StatusOK {
@@ -296,9 +299,7 @@ func TestDumpNoDatabasesReturns500(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("POST /dump with no databases: status = %d, want 500", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "no databases configured") {
-		t.Errorf("POST /dump with no databases: body = %q, want it to say no databases are configured", body)
-	}
+	requireRefusal(t, rec, codeNoDatabases)
 	if st.Healthy() {
 		t.Error("verdict healthy after a cycle over zero databases; want it unhealthy")
 	}
@@ -503,9 +504,7 @@ func TestDumpDuringShutdownReturns503(t *testing.T) {
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("POST /dump after shutdown began: status = %d, want 503", rec.Code)
 	}
-	if got := rec.Body.String(); got != "shutting down\n" {
-		t.Errorf("POST /dump after shutdown began: body = %q, want %q", got, "shutting down\n")
-	}
+	requireRefusal(t, rec, codeShuttingDown)
 	if got := pg.dumpCalls.Load(); got != 0 {
 		t.Errorf("Dump calls = %d, want 0 (the gate refuses the run)", got)
 	}
@@ -773,5 +772,47 @@ func TestHostAllowlistCoversEveryRoute(t *testing.T) {
 		if rec.Code != tc.want {
 			t.Errorf("%s %s as Host %q from %s = %d, want %d", tc.method, tc.path, tc.host, tc.remote, rec.Code, tc.want)
 		}
+	}
+}
+
+// requireRefusal requires rec to be the JSON error envelope for code, with a
+// remediation and a request id, so a caller can tell the refusal from a run's
+// text lines.
+func requireRefusal(t *testing.T, rec *httptest.ResponseRecorder, code httpserver.ErrorCode) {
+	t.Helper()
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("refusal Content-Type = %q, want application/json", ct)
+	}
+	var body httpserver.ErrorResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("refusal body %q is not the JSON error envelope: %v", rec.Body.String(), err)
+	}
+	if body.Code != code || body.Remediation == "" || body.RequestID == "" {
+		t.Errorf("refusal = %+v, want code %q with a remediation and a request id", body, code)
+	}
+}
+
+// A cycle lock that cannot be taken (its directory is a file) ran nothing:
+// a 500 in the JSON error envelope whose message names no path, never the
+// 429 that says another run holds the cycle.
+func TestDumpCycleFailureIsAJSONRefusal(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pg := &stubPG{}
+	srv := newTestServerInDir(t, pg, "", file)
+
+	rec := post(t, srv, "")
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST /dump with an unusable cycle lock: status = %d, want 500", rec.Code)
+	}
+	requireRefusal(t, rec, codeCycleFailed)
+	if strings.Contains(rec.Body.String(), file) {
+		t.Errorf("refusal body %q quotes the lock path, want the detail only in the log", rec.Body.String())
+	}
+	if got := pg.dumpCalls.Load(); got != 0 {
+		t.Errorf("Dump calls = %d, want 0", got)
 	}
 }

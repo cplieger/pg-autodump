@@ -125,33 +125,35 @@ func NewServer(d *Deps) *http.Server {
 }
 
 // dumpHandler runs one dump and writes one text line per database. Status is
-// 200 when the cycle fully succeeded (dump.CycleOK), else 500; a run already
-// in progress (in this process or an exec'd `pg-autodump run`) is 429, a
-// request that arrives once shutdown has begun is 503, and a cycle-lock
-// infrastructure failure is a 500 with a generic body (the detail is logged).
-// The method-aware mux pattern returns 405 for non-POST.
+// 200 when the cycle fully succeeded (dump.CycleOK), else 500. A request that
+// dumps nothing is refused in the JSON error envelope: a run already in
+// progress (in this process or an exec'd `pg-autodump run`) is 429, one that
+// arrives once shutdown has begun is 503, a cycle-lock infrastructure failure
+// is a 500 with a generic message (the detail is logged), and a run with no
+// databases configured is a 500. The method-aware mux pattern returns 405 for
+// non-POST.
 func dumpHandler(tr *Trigger, log *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		results, outcome, err := tr.Run()
 		switch {
 		case err != nil:
 			log.Error("cycle coordination failed", "err", err)
-			http.Error(w, "cycle coordination failed", http.StatusInternalServerError)
+			Errors(w, req, http.StatusInternalServerError, codeCycleFailed, "cycle coordination failed")
 			return
 		case outcome == scheduler.OutcomeGated:
-			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			Errors(w, req, http.StatusServiceUnavailable, codeShuttingDown, "shutting down")
 			return
 		case outcome == scheduler.OutcomeSkipped:
-			http.Error(w, "dump already in progress", http.StatusTooManyRequests)
+			Errors(w, req, http.StatusTooManyRequests, codeInProgress, "dump already in progress")
+			return
+		case len(results) == 0:
+			Errors(w, req, http.StatusInternalServerError, codeNoDatabases, "no databases configured")
 			return
 		}
 
 		var b strings.Builder
 		for _, r := range results {
 			fmt.Fprintf(&b, "%s/%s: %s\n", r.Host, r.DBName, r.BodyDetail())
-		}
-		if len(results) == 0 {
-			b.WriteString("no databases configured\n")
 		}
 
 		status := http.StatusOK

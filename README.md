@@ -85,7 +85,7 @@ pg-autodump dumps every database right after the first start. Run `docker logs p
 
 ## Starting a dump yourself
 
-The built-in timer dumps every 24 hours. To dump right now, run `curl -fsS -X POST http://127.0.0.1:9472/dump` on the Docker host, or `docker exec pg-autodump pg-autodump trigger`. The answer has one line per database and status `200` when every database dumped. Status `500` means at least one failed, and `429` means a dump is already running.
+The built-in timer dumps every 24 hours. To dump right now, run `curl -fsS -X POST http://127.0.0.1:9472/dump` on the Docker host, or `docker exec pg-autodump pg-autodump trigger`. The answer has one line per database and status `200` when every database dumped. Status `500` means at least one failed. A request that dumps nothing, such as one sent while a dump is already running (`429`), gets a JSON error with a `code` and a `remediation` instead; [HTTP endpoints](docs/configuration.md#http-endpoints) lists them.
 
 To let cron, a systemd timer or another scheduler decide when dumps run, set `DUMP_INTERVAL=off` and call `trigger` from it. `pg-autodump run`, started as a container of its own, does one dump and exits, with exit code `0` only when every database dumped. [Configuration](docs/configuration.md#scheduling) covers both.
 

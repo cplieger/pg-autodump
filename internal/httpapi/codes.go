@@ -34,7 +34,7 @@ const (
 var catalog = func() *httpwire.Catalog {
 	c := httpwire.NewCatalog()
 	for code, spec := range codeSpecs {
-		if err := c.Add(string(code), spec); err != nil {
+		if err := c.Add(code, spec); err != nil {
 			panic(err)
 		}
 	}

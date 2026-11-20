@@ -20,7 +20,7 @@ pg-autodump keeps a fresh, readable dump of every database you list for your bac
 
 pg-autodump is built for self-hosters who run PostgreSQL behind apps such as Authentik, Paperless or Immich and already back up a folder. It connects over the network as a read-only role. It dumps only the databases you list, without the server's roles or other server-wide settings. It sends no notifications itself, so alerts come from Prometheus, Loki or a tool watching Docker health.
 
-You need a PostgreSQL server, version 9.2 to 18, that the container can reach, and a role that can read every table.
+You need a PostgreSQL server, version 9.2 to 19, that the container can reach, and a role that can read every table.
 
 Consider [pgBackRest](https://pgbackrest.org/) if you want full, differential and incremental backups of a whole server in S3, Azure, GCS or SFTP storage.
 
@@ -138,7 +138,7 @@ The healthcheck runs `pg-autodump health`, which asks `/healthz` inside the cont
 
 - `dump auth_error` means the role, its password or the database name is wrong, or `.pgpass` is not mode 0600 and owned by the container user.
 - `dump connect_error` means the container cannot reach that host and port. Give it a network that reaches your server.
-- `dump version_mismatch` means the server is newer than the PostgreSQL 18 tools in the image.
+- `dump version_mismatch` means the server's major version is newer than the PostgreSQL client tools in the image. `pg_dump --version` inside the container shows theirs.
 - `dump timeout` means the database took longer than `DUMP_TIMEOUT`, so raise it.
 - `health preconditions not met` naming the dump dir means the container user cannot write to `./dumps`. Repeat quick start step 5.
 
@@ -173,6 +173,6 @@ This project was built with AI assistance. The human maintainer defines architec
 
 Apache-2.0. See [LICENSE](LICENSE).
 
-The image carries the license text of every bundled component under `/usr/share/licenses/`. The Alpine packages in the image ship no license file upstream, so their license texts are kept under `licenses/` in this repository and copied in.
+The image carries the license text of every bundled component under `/usr/share/licenses/`. The Alpine packages in the image ship no license file upstream, so their license texts are kept under `licenses/` in this repository and copied in. The PostgreSQL client tools are built from the PostgreSQL source release, and the build copies its `COPYRIGHT` file in.
 
 Third-party attributions are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

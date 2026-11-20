@@ -1,18 +1,22 @@
 #!/bin/sh
-# Build-time smoke test for the pg-autodump image's tini payload.
+# Build-time smoke test for the pg-autodump image's tini and PostgreSQL client
+# payloads.
 #
 # Runs in the Dockerfile `test` stage, so the centralized `ci / validate`
 # docker build-ability gate executes it on every PR and push (the final image
 # stage depends on this stage's marker). Catches a broken tini fetch/COPY
 # (missing or non-executable /sbin/tini, wrong release shipped) and a missing
-# or version-drifted embedded SBOM fragment: the failure modes for a payload
-# that is fetched from upstream instead of installed via apk. The app binary
+# or version-drifted embedded SBOM fragment, and the same for the PostgreSQL
+# client tools built from source (a binary missing a runtime library fails its
+# --version run): the failure modes for a payload that is fetched or built
+# from upstream instead of installed via apk. The app binary
 # itself is covered by the runtime image-smoke harness (tests/image-smoke.*),
 # which boots the final image and waits for its HEALTHCHECK.
 #
 # Run locally:  sh tests/smoke.sh   (needs tini at /sbin/tini or $TINI_BIN;
-# set TINI_EXPECTED_VERSION=<X.Y.Z> to also run the exact-version and SBOM
-# checks — the fragment only exists in-image, so a bare local run skips them)
+# set TINI_EXPECTED_VERSION=<X.Y.Z> and PG_EXPECTED_VERSION=<X.Y> to also run
+# the exact-version and SBOM checks — the fragments only exist in-image, so a
+# bare local run skips them)
 set -eu
 
 fail=0
@@ -82,6 +86,51 @@ if [ -n "${TINI_EXPECTED_VERSION:-}" ]; then
   fi
 else
   log "note: TINI_EXPECTED_VERSION unset - skipping SBOM fragment check (local run)"
+fi
+
+# 3. The PostgreSQL client tools pg-autodump runs (internal/pg requiredBins,
+#    plus pg_dumpall) are present and run, which proves every library they
+#    link is in the image, and each reports the pinned PG_VERSION. A tool
+#    prints "<name> (PostgreSQL) <version>"; the trailing end-of-line anchor
+#    keeps 19.1 from passing for 19.10.
+for tool in pg_dump pg_dumpall pg_restore psql; do
+  if ! tver=$("$tool" --version 2>&1); then
+    err "FAIL: '$tool --version' did not run"
+    err "$tver"
+    fail=1
+    continue
+  fi
+  if [ -n "${PG_EXPECTED_VERSION:-}" ] \
+    && ! printf '%s\n' "$tver" | head -n 1 | grep -qx "$tool (PostgreSQL) ${PG_EXPECTED_VERSION}"; then
+    err "FAIL: $tool version mismatch: expected ${PG_EXPECTED_VERSION}, got: $(printf '%s\n' "$tver" | head -n 1)"
+    fail=1
+  fi
+done
+
+# 4. The PostgreSQL client's SBOM fragment (Dockerfile pg-builder stage) ships,
+#    names the component and carries the ARG-derived version, as section 2
+#    checks for tini.
+if [ -n "${PG_EXPECTED_VERSION:-}" ]; then
+  pgsbom=/usr/share/sbom/postgresql.cdx.json
+  if [ ! -s "$pgsbom" ]; then
+    err "FAIL: embedded SBOM fragment missing or empty: $pgsbom"
+    fail=1
+  else
+    if [ "$(head -c 1 "$pgsbom")" != "{" ] || [ "$(tail -c 2 "$pgsbom")" != "}" ]; then
+      err "FAIL: PostgreSQL SBOM fragment is not a JSON object (bad first/last byte)"
+      fail=1
+    fi
+    grep -q '"name": "postgresql"' "$pgsbom" || {
+      err "FAIL: PostgreSQL SBOM fragment missing component: postgresql"
+      fail=1
+    }
+    grep -qF "\"version\": \"${PG_EXPECTED_VERSION}\"" "$pgsbom" || {
+      err "FAIL: PostgreSQL SBOM fragment version is not ${PG_EXPECTED_VERSION} (ARG wiring broken?)"
+      fail=1
+    }
+  fi
+else
+  log "note: PG_EXPECTED_VERSION unset - skipping PostgreSQL version and SBOM checks (local run)"
 fi
 
 [ "$fail" -eq 0 ] && log "pg-autodump image smoke: ok"

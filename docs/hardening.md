@@ -39,9 +39,9 @@ pg-autodump writes to two places. `/dumps` holds the dumps, the temporary file o
 
 ## What the image contains
 
-The image is Alpine Linux with the PostgreSQL 18 client package, which provides `pg_dump`, `pg_restore`, `psql` and libpq. `pg_dump` dumps servers back to version 9.2 and only up to its own major version, so this image dumps PostgreSQL 9.2 to 18. A newer server is reported as `version_mismatch` with a clear message.
+The image is Alpine Linux with the PostgreSQL client tools `pg_dump`, `pg_dumpall`, `pg_restore`, `psql` and libpq, built from the PostgreSQL source release the Dockerfile's `PG_VERSION` names, checked against a SHA256 sum. `pg_dump` dumps servers back to version 9.2 and only up to its own major version, so this image dumps PostgreSQL 9.2 up to that major. `pg_dump --version` in the container shows it. A newer server is reported as `version_mismatch` with a clear message.
 
-The client tools need a C library, which is why the image is Alpine rather than distroless. They stay the Alpine package rather than a separate build, so each image rebuild picks up the current package revision.
+The client tools need a C library, which is why the image is Alpine rather than distroless. They are built from source because Alpine packages one PostgreSQL major at a time under a name that carries the major, so the image could not follow a new major until Alpine shipped it. The build enables only what a dump client uses: TLS through OpenSSL, the gzip, lz4 and zstd dump compression methods, and readline for `psql`. Kerberos (GSSAPI), LDAP, PAM and ICU are left out, so their libraries are not in the image. Renovate moves `PG_VERSION` to each new PostgreSQL release, patch releases included.
 
 `tini` runs as process 1. It is the upstream static binary at a pinned version, checked against a SHA256 sum for each architecture, and the build fails when the sum does not match.
 
@@ -51,7 +51,7 @@ The client tools need a C library, which is why the image is Alpine rather than 
 | --- | --- |
 | golang | [Go](https://hub.docker.com/_/golang) |
 | alpine | [Alpine](https://hub.docker.com/_/alpine) |
-| postgresql18-client | [PostgreSQL](https://www.postgresql.org/) |
+| postgresql | [PostgreSQL](https://www.postgresql.org/ftp/source/) |
 | tini | [GitHub](https://github.com/krallin/tini) |
 | github.com/cplieger/go/filesafe | [GitHub](https://github.com/cplieger/go/tree/main/filesafe) |
 | github.com/cplieger/go/envx | [GitHub](https://github.com/cplieger/go/tree/main/envx) |

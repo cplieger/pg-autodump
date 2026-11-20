@@ -13,6 +13,17 @@ ARG TINI_SHA256_ARM64=eae1d3aa50c48fb23b8cbdf4e369d0910dfc538566bfd09df89a774aa8
 # repin: dep=krallin/tini url=https://raw.githubusercontent.com/krallin/tini/{version}/LICENSE
 ARG TINI_LICENSE_SHA256=e5f46bca81266bdd511cf08018d66866870531794569c04f9b45f50dd23c28b0
 
+# PG_VERSION is the PostgreSQL release whose client tools the pg-builder stage
+# compiles. Renovate reads new releases from the official postgres image's tags,
+# which track the source releases, so a patch, minor or new major arrives as a
+# bump of this one line, and scripts/repin-sha.sh recomputes the tarball pin in
+# the same commit. Keep the major at or above the newest server major you dump
+# (pg_dump refuses a newer server); the smoke test's server image follows it.
+# renovate: datasource=docker depName=postgres
+ARG PG_VERSION=19.0
+# repin: dep=postgres url=https://ftp.postgresql.org/pub/source/v{version}/postgresql-{version}.tar.bz2
+ARG PG_SHA256=a89fd70efbad6a08c7dbed8d4872e3af30170d9e5ca9dc7906523be95b4e692d
+
 # renovate: datasource=docker depName=golang
 FROM golang:1.27-alpine@sha256:7d5cbf6833f7331dafd25a2e8b9673477f559759ff8ed4ca8efabe6795ad08db AS builder
 
@@ -61,9 +72,9 @@ ARG TINI_LICENSE_SHA256
 # Syft inventories the final image from Alpine's APK database, Go-binary
 # buildinfo, and known binary classifiers, so the upstream-fetched tini static
 # binary is invisible to the signed release SBOM and to vulnerability scanners
-# (the Go binary and the postgresql18-client apk ARE visible — the Go module
-# graph is pg-autodump's own supply chain and needs no syft config beyond the
-# defaults). Generate a CycloneDX fragment from the same Renovate-tracked ARGs
+# (the Go binary and the APK packages ARE visible — the Go module graph is
+# pg-autodump's own supply chain and needs no syft config beyond the defaults;
+# the source-built PostgreSQL client gets its own fragment in pg-builder). Generate a CycloneDX fragment from the same Renovate-tracked ARGs
 # the fetch uses — a Renovate bump keeps the SBOM correct with zero extra
 # maintenance — and ship it in the runtime image where Syft's sbom-cataloger
 # picks it up. The cataloger is enabled centrally by the release pipeline
@@ -116,17 +127,84 @@ RUN case "$(uname -m)" in \
 }
 EOF
 
+# ---------------------------------------------------------------------------
+# PostgreSQL client build stage -- compiles pg_dump, pg_dumpall, pg_restore,
+# psql and libpq from the source release PG_VERSION names, verified fail-closed
+# against PG_SHA256. Alpine packages one PostgreSQL major per release branch
+# and its name carries the major (postgresql18-client), which no Renovate
+# manager can move; a source build follows PG_VERSION instead. Built on the
+# same Alpine pin as the runtime base, so the binaries link the musl, OpenSSL
+# and compression libraries the base installs. Only the features a network
+# dump client uses are enabled: TLS (OpenSSL), the lz4/zstd/gzip dump
+# compression methods and readline for psql. ICU, GSSAPI, LDAP, PAM and the
+# server-side languages stay off, so their libraries never reach the image.
+# Discarded at the end of the build; /pkg, the license text and the SBOM
+# fragment are all that reach the runtime image below.
+# ---------------------------------------------------------------------------
+# renovate: datasource=docker depName=alpine
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS pg-builder
+
+SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
+
+ARG PG_VERSION
+ARG PG_SHA256
+# bison, flex and perl: release tarballs ship no generated parser or catalog
+# headers since PostgreSQL 17, so the build generates them, first and alone
+# (generated-headers), because a parallel subdirectory build races them.
+RUN apk add --no-cache bison build-base flex linux-headers lz4-dev openssl-dev \
+      perl readline-dev zlib-dev zstd-dev
+WORKDIR /build
+RUN wget -q --tries=3 --timeout=60 -O /postgresql.tar.bz2 \
+      "https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2" \
+    && { echo "${PG_SHA256}  /postgresql.tar.bz2" | sha256sum -c - || { \
+      echo "PostgreSQL sha256 pin mismatch for ${PG_VERSION}: recompute from https://ftp.postgresql.org/pub/source/v${PG_VERSION}/ and update ARG PG_SHA256" >&2; \
+      exit 1; \
+    }; } \
+    && tar -xjf /postgresql.tar.bz2 --strip-components=1 \
+    && rm /postgresql.tar.bz2
+RUN ./configure --prefix=/usr/local --with-ssl=openssl --with-lz4 --with-zstd \
+      --without-icu --without-gssapi --without-ldap --without-pam \
+      --without-perl --without-python --without-tcl --without-libxml \
+      --without-llvm \
+    && make -j"$(nproc)" -C src/backend generated-headers \
+    && make -j"$(nproc)" -C src/interfaces/libpq install-strip DESTDIR=/out \
+    && make -j"$(nproc)" -C src/bin/pg_dump install-strip DESTDIR=/out \
+    && make -j"$(nproc)" -C src/bin/psql install-strip DESTDIR=/out \
+    && mkdir -p /pkg/usr/local/bin /pkg/usr/local/lib \
+    && cp -a /out/usr/local/bin/pg_dump /out/usr/local/bin/pg_dumpall \
+      /out/usr/local/bin/pg_restore /out/usr/local/bin/psql /pkg/usr/local/bin/ \
+    && cp -a /out/usr/local/lib/libpq.so.5* /pkg/usr/local/lib/ \
+    && mkdir -p /licenses/postgresql \
+    && cp COPYRIGHT /licenses/postgresql/COPYRIGHT \
+    && printf 'COPYRIGHT from https://ftp.postgresql.org/pub/source/v%s/postgresql-%s.tar.bz2, version %s\n' \
+      "${PG_VERSION}" "${PG_VERSION}" "${PG_VERSION}" > /licenses/postgresql/SOURCE \
+    && cat > /postgresql.cdx.json <<EOF
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "bom-ref": "pkg:generic/postgresql@${PG_VERSION}",
+      "type": "application",
+      "name": "postgresql",
+      "version": "${PG_VERSION}",
+      "purl": "pkg:generic/postgresql@${PG_VERSION}?download_url=https://ftp.postgresql.org/pub/source/v${PG_VERSION}/postgresql-${PG_VERSION}.tar.bz2&checksum=sha256:${PG_SHA256}",
+      "cpe": "cpe:2.3:a:postgresql:postgresql:${PG_VERSION}:*:*:*:*:*:*:*"
+    }
+  ]
+}
+EOF
+
 # Alpine for a libc base (the PostgreSQL client links libpq). pg-autodump is a
 # plain network client, so there is no Docker socket or docker CLI bundle.
-# postgresqlNN-client provides pg_dump/pg_restore/psql; pin the major to the
-# newest PostgreSQL SERVER major you dump (client must be >= server). Bump
-# together with your servers.
 # renovate: datasource=docker depName=alpine
 FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf AS base
 
 # apk upgrade: the pinned base ships some packages (e.g. libssl3) at a stale,
 # CVE-affected revision; upgrading floats them forward on each rebuild.
-# postgresql18-client: pg_dump / pg_restore / psql (network clients).
+# The runtime libraries the pg-builder binaries link: OpenSSL (libssl3 brings
+# libcrypto3), lz4, zstd and readline; zlib and musl are already in the base.
 # PKG_REFRESH busts the cache for this layer. Without it BuildKit restores the
 # layer verbatim on every rebuild, so the `apk upgrade` below floats nothing
 # forward after the first build and the image keeps shipping the packages that
@@ -136,7 +214,7 @@ FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5
 ARG PKG_REFRESH=static
 RUN echo "OS package refresh: ${PKG_REFRESH}" \
     && apk upgrade --no-cache \
-    && apk add --no-cache postgresql18-client \
+    && apk add --no-cache libssl3 lz4-libs readline zstd-libs \
     && addgroup -g 65532 -S pgautodump && adduser -S -G pgautodump -u 65532 pgautodump
 
 # tini (PID 1 for clean signal handling and zombie reaping): pinned upstream
@@ -157,18 +235,25 @@ COPY --chmod=755 --from=tini-fetcher /tini /sbin/tini
 # scanners see tini alongside the APK packages and the Go binary.
 COPY --from=tini-fetcher /tini.cdx.json /usr/share/sbom/pg-autodump.cdx.json
 
+# pg_dump, pg_dumpall, pg_restore, psql (/usr/local/bin) and libpq
+# (/usr/local/lib), built in the pg-builder stage, with their SBOM fragment.
+COPY --from=pg-builder /pkg/ /
+COPY --from=pg-builder /postgresql.cdx.json /usr/share/sbom/postgresql.cdx.json
+
 COPY --chmod=755 --from=builder /pg-autodump /usr/local/bin/pg-autodump
 
 COPY --from=builder /out/usr/share/licenses /usr/share/licenses
 COPY --from=tini-fetcher /out/usr/share/licenses/tini /usr/share/licenses/tini
+COPY --from=pg-builder /licenses/postgresql /usr/share/licenses/postgresql
 
 # Unprivileged by default: no Docker socket, no root. The container needs only
 # network reach to the databases, a read-only .pgpass, and a writable /dumps.
 USER 65532:65532
 
 # ---------------------------------------------------------------------------
-# Test stage — runs the build-time smoke test (the shipped tini runs at the
-# pinned version + the embedded SBOM fragment is present and version-true).
+# Test stage — runs the build-time smoke test (the shipped tini and PostgreSQL
+# client tools run at their pinned versions + both embedded SBOM fragments are
+# present and version-true).
 # A failure here fails the centralized `ci / validate` docker build gate,
 # because the final stage below depends on this stage's marker. Runs as the
 # runtime user (inherited from base); the marker lands in /tmp because / is
@@ -176,10 +261,12 @@ USER 65532:65532
 # ---------------------------------------------------------------------------
 FROM base AS test
 ARG TINI_VERSION
+ARG PG_VERSION
 COPY tests/ /tmp/tests/
 # ${TINI_VERSION:?} fails the build if the ARG wiring ever breaks, so the
 # smoke test's exact-version assertions can never be skipped in-image.
-RUN TINI_EXPECTED_VERSION="${TINI_VERSION:?}" sh /tmp/tests/smoke.sh \
+RUN TINI_EXPECTED_VERSION="${TINI_VERSION:?}" PG_EXPECTED_VERSION="${PG_VERSION:?}" \
+    sh /tmp/tests/smoke.sh \
     && touch /tmp/tests-passed
 
 # ---------------------------------------------------------------------------

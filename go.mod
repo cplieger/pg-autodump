@@ -12,7 +12,7 @@ require (
 	github.com/cplieger/go/masked v1.0.0-dev.1
 	github.com/cplieger/go/measure/v2 v2.1.0-dev.2
 	github.com/cplieger/go/pathinside v1.1.0
-	github.com/cplieger/go/scheduler/v2 v2.0.0-dev.1
+	github.com/cplieger/go/scheduler/v2 v2.0.0-dev.2
 	github.com/cplieger/go/slogx v1.1.0
 )
 

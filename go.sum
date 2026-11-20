@@ -6,8 +6,8 @@ github.com/cplieger/go/health/v2 v2.0.0 h1:WHZiSYIyvmaFvkohJopPptEg9oW4QxRSV5HUx
 github.com/cplieger/go/health/v2 v2.0.0/go.mod h1:Dmp78r+0ZHF2xMfOQqZ7c5pBiZF1el3QhLHA1y9um2A=
 github.com/cplieger/go/httpserver/v2 v2.0.0-dev.12 h1:AkVlSx8x7nYGwHsg2hcdLEgM/OSJ6dY93/ktamHroWk=
 github.com/cplieger/go/httpserver/v2 v2.0.0-dev.12/go.mod h1:7RaYglupSd53mWuL1RQGPxmUhQ/sCS9y1XpJIrXKF+A=
-github.com/cplieger/go/httpwire v1.0.0-dev.5 h1:67zvG/knjm1sTSX53wKS6kfMqxh1eMSGNF7YTiQWHKQ=
-github.com/cplieger/go/httpwire v1.0.0-dev.5/go.mod h1:i8/DLhKvW5jdZ9Q0Dmy8yHeOjH/3VnAnew+/j2mI9yg=
+github.com/cplieger/go/httpwire v1.0.0-dev.6 h1:kWRnWEwa8QViVlwV9VXuOzxsFQXr0NjuJobNgJkEmRk=
+github.com/cplieger/go/httpwire v1.0.0-dev.6/go.mod h1:i8/DLhKvW5jdZ9Q0Dmy8yHeOjH/3VnAnew+/j2mI9yg=
 github.com/cplieger/go/keyenc v1.3.0 h1:v0zvHSY4ZOZapGNYGAkghEXPz1SeifT/Trg0b9A8IBU=
 github.com/cplieger/go/keyenc v1.3.0/go.mod h1:EI1v4Q6FU1Y9hUWTE6kp1n3Mozrm0ws5GOT+Vt/x1+w=
 github.com/cplieger/go/masked v1.0.0-dev.1 h1:Do4+avpvVJP//Jm4LLH1y468Rxrz966dAgESVp/z7wU=

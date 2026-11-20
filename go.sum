@@ -16,8 +16,8 @@ github.com/cplieger/go/measure/v2 v2.1.0-dev.2 h1:Y0zNUFSubYyBdMqS1MpDX5x2qc7Rdr
 github.com/cplieger/go/measure/v2 v2.1.0-dev.2/go.mod h1:gG4hr0jum0sVWiAppZwHPdvHNIVPBbryOCxzCoPSo84=
 github.com/cplieger/go/pathinside v1.1.0 h1:INqhQezkPwf/gA4fGxVuTBvV4bh4CedFGKm36c+GeIQ=
 github.com/cplieger/go/pathinside v1.1.0/go.mod h1:fIyGk/T2XYqVLJ5/cXOFkjk202Mwbdu0aXhH7Ky1/kI=
-github.com/cplieger/go/scheduler/v2 v2.0.0-dev.1 h1:fRVtD+xXanV2ETy1GZweHTrMElfxvZCleIzrrggQSRs=
-github.com/cplieger/go/scheduler/v2 v2.0.0-dev.1/go.mod h1:wBsJM6M7edm3V8PiJXKWtkL/m88zZCMTJTErxzDQWZI=
+github.com/cplieger/go/scheduler/v2 v2.0.0-dev.2 h1:/hBEmSEemnhEzTIGauK6zsYJHLPVFWr6cCjUC/C2svI=
+github.com/cplieger/go/scheduler/v2 v2.0.0-dev.2/go.mod h1:aQdzY+H7znE9uYyKUO+dZFnG2i0FmRYCXk+9Ft7RbQE=
 github.com/cplieger/go/slogx v1.1.0 h1:whWmZcNmLuWGFM33SYFR+alUTfEodzBjKju44DHNgPY=
 github.com/cplieger/go/slogx v1.1.0/go.mod h1:N88y5LJZ1aVp++cLFqzEV4WsalaX5YKXoRtXT29Ngkw=
 github.com/cplieger/go/ssrf v1.1.0 h1:gyP7pYm1415RkHmIdod1YCvuX+I1xD1dXiRa8tvz8Bg=
